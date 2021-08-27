@@ -196,9 +196,9 @@ dependencies = [
 
 [[package]]
 name = "os_str_bytes"
-version = "3.1.0"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6acbef58a60fe69ab50510a55bc8cdd4d6cf2283d27ad338f54cb52747a9cf2d"
+checksum = "749d26d16b126e50c34d1e662259aa47ac548bc62f0822e91d81810f3b9c01fb"
 
 [[package]]
 name = "path-slash"
