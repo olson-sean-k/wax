@@ -19,7 +19,7 @@ categories = [
 [dependencies]
 bstr = "^0.2.0"
 itertools = "^0.10.0"
-nom = "^6.1.0"
+nom = "^7.0.0"
 os_str_bytes = "^3.1.0"
 regex = "^1.5.0"
 smallvec = "^1.5.0"
