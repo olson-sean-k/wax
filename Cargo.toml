@@ -25,7 +25,6 @@ bstr = "^0.2.0"
 itertools = "^0.10.0"
 nom = "^6.1.0"
 os_str_bytes = "^3.1.0"
-regex = "^1.5.0"
 smallvec = "^1.5.0"
 thiserror = "^1.0.0"
 walkdir = "^2.3.0"
@@ -33,6 +32,15 @@ walkdir = "^2.3.0"
 [dependencies.miette]
 version = "^2.0.0"
 optional = true
+
+[dependencies.regex]
+version = "^1.5.0"
+default-features = false
+features = [
+    "perf",
+    "std",
+    "unicode-case"
+]
 
 [target.'cfg(target_os = "windows")'.dependencies.path-slash]
 version = "^0.1.0"

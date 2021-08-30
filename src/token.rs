@@ -9,20 +9,25 @@ use std::ops::Deref;
 use std::path::{PathBuf, MAIN_SEPARATOR};
 use thiserror::Error;
 
-use crate::rule;
-use crate::GlobError;
-
+use crate::fragment::Stateful;
 #[cfg(feature = "diagnostics")]
-pub type Fragment<'i> = crate::fragment::Fragment<'i, str>;
-#[cfg(not(feature = "diagnostics"))]
-pub type Fragment<'i> = &'i str;
+use crate::fragment::{self, Locate};
+use crate::rule;
+use crate::{GlobError, StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
 
 #[cfg(feature = "diagnostics")]
 pub type Annotation = SourceSpan;
 #[cfg(not(feature = "diagnostics"))]
 pub type Annotation = ();
 
-type NomError<'t> = nom::Err<nom::error::Error<Fragment<'t>>>;
+#[cfg(feature = "diagnostics")]
+type Fragment<'i> = Locate<'i, str>;
+#[cfg(not(feature = "diagnostics"))]
+type Fragment<'i> = &'i str;
+
+type ParserInput<'i> = Stateful<Fragment<'i>, FlagState>;
+
+type NomError<'t> = nom::Err<nom::error::Error<ParserInput<'t>>>;
 
 #[derive(Debug, Error)]
 #[error("failed to parse glob expression: {kind:?}")]
@@ -40,7 +45,7 @@ pub struct ParseError<'t> {
 }
 
 impl<'t> ParseError<'t> {
-    fn new(text: Fragment<'t>, error: NomError<'t>) -> Self {
+    fn new(text: &'t str, error: NomError<'t>) -> Self {
         match error {
             NomError::Incomplete(_) => {
                 panic!("unexpected parse error: incomplete input")
@@ -49,11 +54,12 @@ impl<'t> ParseError<'t> {
             NomError::Error(error) | NomError::Failure(error) => {
                 use nom::Offset;
 
+                let input = error.input.as_ref().as_ref();
                 ParseError {
                     text: text.into(),
                     kind: error.code,
                     expression: (0, text.len()).into(),
-                    error: (Offset::offset(&text, &error.input), 0).into(),
+                    error: (Offset::offset(&text, &input), 0).into(),
                 }
             }
             #[cfg(not(feature = "diagnostics"))]
@@ -84,8 +90,26 @@ impl<'t> ParseError<'t> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FlagState {
+    is_case_insensitive: bool,
+}
+
+impl Default for FlagState {
+    fn default() -> Self {
+        FlagState {
+            is_case_insensitive: PATHS_ARE_CASE_INSENSITIVE,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FlagToggle {
+    CaseInsensitive(bool),
+}
+
 #[derive(Clone, Debug)]
-pub struct Alternative<'t, A = ()>(pub Vec<Vec<Token<'t, A>>>);
+pub struct Alternative<'t, A = ()>(Vec<Vec<Token<'t, A>>>);
 
 impl<'t, A> Alternative<'t, A> {
     pub fn into_owned(self) -> Alternative<'static, A> {
@@ -142,6 +166,29 @@ impl From<char> for Archetype {
 impl From<(char, char)> for Archetype {
     fn from(range: (char, char)) -> Archetype {
         Archetype::Range(range.0, range.1)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Literal<'t> {
+    text: Cow<'t, str>,
+    is_case_insensitive: bool,
+}
+
+impl<'t> Literal<'t> {
+    pub fn text(&self) -> &str {
+        self.text.as_ref()
+    }
+
+    pub fn is_case_insensitive(&self) -> bool {
+        self.is_case_insensitive
+    }
+
+    pub fn has_variant_casing(&self) -> bool {
+        // If path case sensitivity agrees with the literal case sensitivity,
+        // then the literal is not variant. Otherwise, the literal is variant if
+        // it contains characters with casing.
+        (PATHS_ARE_CASE_INSENSITIVE != self.is_case_insensitive) && self.text.has_casing()
     }
 }
 
@@ -235,7 +282,7 @@ pub enum TokenKind<'t, A = ()> {
         is_negated: bool,
         archetypes: Vec<Archetype>,
     },
-    Literal(Cow<'t, str>),
+    Literal(Literal<'t>),
     Separator,
     Wildcard(Wildcard),
 }
@@ -251,7 +298,13 @@ impl<'t, A> TokenKind<'t, A> {
                 is_negated,
                 archetypes,
             },
-            TokenKind::Literal(literal) => literal.into_owned().into(),
+            TokenKind::Literal(Literal {
+                text,
+                is_case_insensitive,
+            }) => TokenKind::Literal(Literal {
+                text: text.into_owned().into(),
+                is_case_insensitive,
+            }),
             TokenKind::Separator => TokenKind::Separator,
             TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
         }
@@ -268,7 +321,13 @@ impl<'t, A> TokenKind<'t, A> {
                 is_negated,
                 archetypes,
             },
-            TokenKind::Literal(literal) => TokenKind::Literal(literal),
+            TokenKind::Literal(Literal {
+                text,
+                is_case_insensitive,
+            }) => TokenKind::Literal(Literal {
+                text,
+                is_case_insensitive,
+            }),
             TokenKind::Separator => TokenKind::Separator,
             TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
         }
@@ -297,21 +356,36 @@ impl<'t, A> From<Alternative<'t, A>> for TokenKind<'t, A> {
     }
 }
 
-impl<'t, A> From<&'t str> for TokenKind<'t, A> {
-    fn from(literal: &'t str) -> Self {
-        TokenKind::Literal(literal.into())
-    }
-}
-
-impl<A> From<String> for TokenKind<'static, A> {
-    fn from(literal: String) -> Self {
-        TokenKind::Literal(literal.into())
-    }
-}
-
 impl<A> From<Wildcard> for TokenKind<'static, A> {
     fn from(wildcard: Wildcard) -> Self {
         TokenKind::Wildcard(wildcard)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LiteralSequence<'t>(SmallVec<[&'t Literal<'t>; 4]>);
+
+impl<'t> LiteralSequence<'t> {
+    pub fn literals(&self) -> &[&'t Literal<'t>] {
+        self.0.as_ref()
+    }
+
+    pub fn text(&self) -> Cow<'t, str> {
+        if self.literals().len() == 1 {
+            self.literals().first().unwrap().text.clone()
+        } else {
+            self.literals()
+                .iter()
+                .map(|literal| &literal.text)
+                .join("")
+                .into()
+        }
+    }
+
+    pub fn has_variant_casing(&self) -> bool {
+        self.literals()
+            .iter()
+            .any(|literal| literal.has_variant_casing())
     }
 }
 
@@ -323,7 +397,7 @@ impl<'t, A> Component<'t, A> {
         self.0.as_ref()
     }
 
-    pub fn literal(&self) -> Option<Cow<'t, str>> {
+    pub fn literal(&self) -> Option<LiteralSequence<'t>> {
         // This predicate is more easily expressed with `all`, but `any` is used
         // here, because it returns `false` for empty iterators and in that case
         // this function should return `None`.
@@ -332,21 +406,15 @@ impl<'t, A> Component<'t, A> {
             .iter()
             .any(|token| !matches!(token.kind(), TokenKind::Literal(_))))
         .then(|| {
-            if self.tokens().len() == 1 {
-                match self.tokens().first().unwrap().kind() {
-                    TokenKind::Literal(ref literal) => literal.clone(),
-                    _ => unreachable!(), // See predicate above.
-                }
-            } else {
+            LiteralSequence(
                 self.tokens()
                     .iter()
                     .map(|token| match token.kind() {
                         TokenKind::Literal(ref literal) => literal,
                         _ => unreachable!(), // See predicate above.
                     })
-                    .join("")
-                    .into()
-            }
+                    .collect(),
+            )
         })
     }
 }
@@ -396,9 +464,14 @@ where
     //       when it stabilizes.
     prefix.push_str(
         &components(tokens)
-            .map(|component| component.literal())
+            .map(|component| {
+                component
+                    .literal()
+                    .filter(|literal| !literal.has_variant_casing())
+            })
             .take_while(|literal| literal.is_some())
             .flatten()
+            .map(|literal| literal.text())
             .join(&MAIN_SEPARATOR.to_string()),
     );
     if prefix.is_empty() {
@@ -418,21 +491,73 @@ pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
     use nom::error::ParseError;
     use nom::{branch, combinator, multi, sequence, IResult, Parser};
 
+    use crate::token::FlagToggle::CaseInsensitive;
+
+    fn flags<'i, E, T, F>(
+        mut toggle: T,
+    ) -> impl FnMut(ParserInput<'i>) -> IResult<ParserInput<'i>, (), E>
+    where
+        E: ParseError<ParserInput<'i>>,
+        T: FnMut(FlagToggle) -> F,
+        F: Parser<ParserInput<'i>, (), E>,
+    {
+        move |input| {
+            let (input, _) = multi::many0(sequence::delimited(
+                bytes::tag("(?"),
+                multi::many1(branch::alt((
+                    sequence::tuple((bytes::tag("i"), toggle(CaseInsensitive(true)))),
+                    sequence::tuple((bytes::tag("-i"), toggle(CaseInsensitive(false)))),
+                ))),
+                bytes::tag(")"),
+            ))(input)?;
+            Ok((input, ()))
+        }
+    }
+
+    fn flags_with_state<'i, E>(input: ParserInput<'i>) -> IResult<ParserInput<'i>, (), E>
+    where
+        E: ParseError<ParserInput<'i>>,
+    {
+        flags(move |toggle| {
+            move |mut input: ParserInput<'i>| {
+                match toggle {
+                    CaseInsensitive(toggle) => {
+                        input.state.is_case_insensitive = toggle;
+                    }
+                }
+                Ok((input, ()))
+            }
+        })(input)
+    }
+
+    fn flags_without_state<'i, E>(input: ParserInput<'i>) -> IResult<ParserInput<'i>, (), E>
+    where
+        E: ParseError<ParserInput<'i>>,
+    {
+        flags(move |_| move |input: ParserInput<'i>| Ok((input, ())))(input)
+    }
+
     fn no_adjacent_tree<'i, O, E, F>(
         parser: F,
-    ) -> impl FnMut(Fragment<'i>) -> IResult<Fragment<'i>, O, E>
+    ) -> impl FnMut(ParserInput<'i>) -> IResult<ParserInput<'i>, O, E>
     where
-        E: ParseError<Fragment<'i>>,
-        F: Parser<Fragment<'i>, O, E>,
+        E: ParseError<ParserInput<'i>>,
+        F: Parser<ParserInput<'i>, O, E>,
     {
         sequence::delimited(
-            combinator::peek(combinator::not(bytes::tag("**"))),
+            combinator::peek(sequence::tuple((
+                combinator::not(bytes::tag("**")),
+                flags_without_state,
+            ))),
             parser,
-            combinator::peek(combinator::not(bytes::tag("**"))),
+            combinator::peek(sequence::tuple((
+                flags_without_state,
+                combinator::not(bytes::tag("**")),
+            ))),
         )
     }
 
-    fn literal(input: Fragment) -> IResult<Fragment, TokenKind<Annotation>> {
+    fn literal(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
         combinator::map(
             combinator::verify(
                 // NOTE: Character classes, which accept arbitrary characters,
@@ -440,12 +565,14 @@ pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
                 //       etc. For example, to escape `*`, either `\*` or `[*]`
                 //       can be used.
                 bytes::escaped_transform(
-                    no_adjacent_tree(bytes::is_not("/?*$[]{},\\")),
+                    no_adjacent_tree(bytes::is_not("/?*$()[]{},\\")),
                     '\\',
                     branch::alt((
                         combinator::value("?", bytes::tag("?")),
                         combinator::value("*", bytes::tag("*")),
                         combinator::value("$", bytes::tag("$")),
+                        combinator::value("(", bytes::tag("(")),
+                        combinator::value(")", bytes::tag(")")),
                         combinator::value("[", bytes::tag("[")),
                         combinator::value("]", bytes::tag("]")),
                         combinator::value("{", bytes::tag("{")),
@@ -455,26 +582,40 @@ pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
                 ),
                 |text: &str| !text.is_empty(),
             ),
-            TokenKind::from,
+            |text| {
+                TokenKind::Literal(Literal {
+                    text: text.into(),
+                    is_case_insensitive: input.state.is_case_insensitive,
+                })
+            },
         )(input)
     }
 
-    fn separator(input: Fragment) -> IResult<Fragment, TokenKind<Annotation>> {
+    fn separator(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
         combinator::value(TokenKind::Separator, bytes::tag("/"))(input)
     }
 
-    fn wildcard(input: Fragment) -> IResult<Fragment, TokenKind<Annotation>> {
+    fn wildcard(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
         branch::alt((
             combinator::map(no_adjacent_tree(bytes::tag("?")), |_| {
                 TokenKind::from(Wildcard::One)
             }),
             combinator::map(
                 sequence::tuple((
-                    branch::alt((bytes::tag("/"), bytes::tag(""))),
+                    branch::alt((
+                        combinator::map(
+                            sequence::tuple((bytes::tag("/"), flags_with_state)),
+                            |(left, _)| left,
+                        ),
+                        bytes::tag(""),
+                    )),
                     sequence::terminated(
                         bytes::tag("**"),
                         branch::alt((
-                            bytes::tag("/"),
+                            combinator::map(
+                                sequence::tuple((flags_with_state, bytes::tag("/"))),
+                                |(_, right)| right,
+                            ),
                             combinator::eof,
                             // In alternatives, tree tokens may be terminated by
                             // commas `,` or closing curly braces `}`. These
@@ -484,7 +625,7 @@ pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
                         )),
                     ),
                 )),
-                |(root, _): (Fragment, _)| {
+                |(root, _): (ParserInput, _)| {
                     Wildcard::Tree {
                         is_rooted: !root.is_empty(),
                     }
@@ -494,22 +635,40 @@ pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
             combinator::map(
                 sequence::terminated(
                     bytes::tag("*"),
-                    branch::alt((combinator::peek(bytes::is_not("*$")), combinator::eof)),
+                    branch::alt((
+                        combinator::map(
+                            combinator::peek(sequence::tuple((
+                                flags_without_state,
+                                bytes::is_not("*$"),
+                            ))),
+                            |(_, right)| right,
+                        ),
+                        combinator::eof,
+                    )),
                 ),
                 |_| Wildcard::ZeroOrMore(Evaluation::Eager).into(),
             ),
             combinator::map(
                 sequence::terminated(
                     bytes::tag("$"),
-                    branch::alt((combinator::peek(bytes::is_not("*$")), combinator::eof)),
+                    branch::alt((
+                        combinator::map(
+                            combinator::peek(sequence::tuple((
+                                flags_without_state,
+                                bytes::is_not("*$"),
+                            ))),
+                            |(_, right)| right,
+                        ),
+                        combinator::eof,
+                    )),
                 ),
                 |_| Wildcard::ZeroOrMore(Evaluation::Lazy).into(),
             ),
         ))(input)
     }
 
-    fn class(input: Fragment) -> IResult<Fragment, TokenKind<Annotation>> {
-        fn archetypes(input: Fragment) -> IResult<Fragment, Vec<Archetype>> {
+    fn class(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
+        fn archetypes(input: ParserInput) -> IResult<ParserInput, Vec<Archetype>> {
             let escaped_character = |input| {
                 branch::alt((
                     character::none_of("[]-\\"),
@@ -543,7 +702,7 @@ pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
         )(input)
     }
 
-    fn alternative(input: Fragment) -> IResult<Fragment, TokenKind<Annotation>> {
+    fn alternative(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
         sequence::delimited(
             bytes::tag("{"),
             combinator::map(
@@ -554,17 +713,15 @@ pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
         )(input)
     }
 
-    fn glob(input: Fragment) -> IResult<Fragment, Vec<Token<Annotation>>> {
+    fn glob(input: ParserInput) -> IResult<ParserInput, Vec<Token<Annotation>>> {
         #[cfg(feature = "diagnostics")]
         fn annotate<'i, E, F>(
             parser: F,
-        ) -> impl FnMut(Fragment<'i>) -> IResult<Fragment<'i>, Token<'i, Annotation>, E>
+        ) -> impl FnMut(ParserInput<'i>) -> IResult<ParserInput<'i>, Token<'i, Annotation>, E>
         where
-            E: ParseError<Fragment<'i>>,
-            F: Parser<Fragment<'i>, TokenKind<'i, Annotation>, E>,
+            E: ParseError<ParserInput<'i>>,
+            F: Parser<ParserInput<'i>, TokenKind<'i, Annotation>, E>,
         {
-            use crate::fragment;
-
             combinator::map(fragment::span(parser), |(span, kind)| {
                 Token::new(kind, span.into())
             })
@@ -573,26 +730,26 @@ pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
         #[cfg(not(feature = "diagnostics"))]
         fn annotate<'i, E, F>(
             parser: F,
-        ) -> impl FnMut(Fragment<'i>) -> IResult<Fragment<'i>, Token<'i, Annotation>, E>
+        ) -> impl FnMut(ParserInput<'i>) -> IResult<ParserInput<'i>, Token<'i, Annotation>, E>
         where
-            E: ParseError<Fragment<'i>>,
-            F: Parser<Fragment<'i>, TokenKind<'i, Annotation>, E>,
+            E: ParseError<ParserInput<'i>>,
+            F: Parser<ParserInput<'i>, TokenKind<'i, Annotation>, E>,
         {
             combinator::map(parser, |kind| Token::new(kind, ()))
         }
 
         multi::many1(branch::alt((
-            annotate(literal),
-            annotate(alternative),
-            annotate(wildcard),
-            annotate(class),
-            annotate(separator),
+            annotate(sequence::preceded(flags_with_state, literal)),
+            annotate(sequence::preceded(flags_with_state, alternative)),
+            annotate(sequence::preceded(flags_with_state, wildcard)),
+            annotate(sequence::preceded(flags_with_state, class)),
+            annotate(sequence::preceded(flags_with_state, separator)),
         )))(input)
     }
 
     #[cfg_attr(not(feature = "diagnostics"), allow(clippy::useless_conversion))]
-    let text = Fragment::from(text);
-    let tokens = combinator::all_consuming(glob)(text)
+    let input = ParserInput::new(Fragment::from(text), FlagState::default());
+    let tokens = combinator::all_consuming(glob)(input)
         .map(|(_, tokens)| tokens)
         .map_err(|error| crate::token::ParseError::new(text, error))
         .map_err(GlobError::from)?;
@@ -614,7 +771,25 @@ pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
 mod tests {
     use std::path::Path;
 
-    use crate::token;
+    use crate::token::{self, TokenKind};
+
+    #[test]
+    fn literal_case_insensitivity() {
+        let tokens = token::parse("(?-i)../foo/(?i)**/bar/**(?-i)/baz/*(?i)qux").unwrap();
+        let literals: Vec<_> = tokens
+            .into_iter()
+            .flat_map(|token| match token.kind {
+                TokenKind::Literal(literal) => Some(literal),
+                _ => None,
+            })
+            .collect();
+
+        assert!(!literals[0].is_case_insensitive); // `..`
+        assert!(!literals[1].is_case_insensitive); // `foo`
+        assert!(literals[2].is_case_insensitive); // `bar`
+        assert!(!literals[3].is_case_insensitive); // `baz`
+        assert!(literals[4].is_case_insensitive); // `qux`
+    }
 
     #[test]
     fn literal_path_prefix() {
@@ -642,6 +817,13 @@ mod tests {
             token::literal_path_prefix(token::parse("a/b/*/c").unwrap().iter()).unwrap(),
             Path::new("a/b/"),
         );
+        let prefix =
+            token::literal_path_prefix(token::parse("../foo/(?i)bar/(?-i)baz").unwrap().iter())
+                .unwrap();
+        #[cfg(windows)]
+        assert_eq!(prefix, Path::new("../foo/bar"));
+        #[cfg(not(windows))]
+        assert_eq!(prefix, Path::new("../foo"));
 
         assert!(token::literal_path_prefix(token::parse("**").unwrap().iter()).is_none());
         assert!(token::literal_path_prefix(token::parse("a*").unwrap().iter()).is_none());

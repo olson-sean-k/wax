@@ -15,7 +15,7 @@ use miette::{Diagnostic, SourceSpan};
 use std::borrow::Cow;
 use thiserror::Error;
 
-use crate::token::{Annotation, Fragment, Token};
+use crate::token::{Annotation, Token};
 #[cfg(feature = "diagnostics")]
 use crate::SourceSpanExt as _;
 use crate::{IteratorExt as _, SliceExt as _, Terminals};
@@ -37,7 +37,7 @@ pub struct RuleError<'t> {
 
 impl<'t> RuleError<'t> {
     #[cfg(feature = "diagnostics")]
-    fn new(text: Fragment<'t>, kind: ErrorKind, span: SourceSpan) -> Self {
+    fn new(text: &'t str, kind: ErrorKind, span: SourceSpan) -> Self {
         RuleError {
             text: text.into(),
             kind,
@@ -47,7 +47,7 @@ impl<'t> RuleError<'t> {
     }
 
     #[cfg(not(feature = "diagnostics"))]
-    fn new(text: Fragment<'t>, kind: ErrorKind) -> Self {
+    fn new(text: &'t str, kind: ErrorKind) -> Self {
         RuleError {
             text: text.into(),
             kind,
@@ -86,7 +86,7 @@ enum ErrorKind {
     BoundaryAdjacent,
 }
 
-pub fn check<'t, 'i, I>(text: Fragment<'t>, tokens: I) -> Result<(), RuleError<'t>>
+pub fn check<'t, 'i, I>(text: &'t str, tokens: I) -> Result<(), RuleError<'t>>
 where
     I: IntoIterator<Item = &'i Token<'t, Annotation>>,
     I::IntoIter: Clone,
@@ -98,7 +98,7 @@ where
     Ok(())
 }
 
-fn alternative<'t, 'i, I>(text: Fragment<'t>, tokens: I) -> Result<(), RuleError<'t>>
+fn alternative<'t, 'i, I>(text: &'t str, tokens: I) -> Result<(), RuleError<'t>>
 where
     I: IntoIterator<Item = &'i Token<'t, Annotation>>,
     't: 'i,
@@ -142,7 +142,7 @@ where
     }
 
     fn recurse<'t, 'i, I>(
-        text: Fragment<'t>,
+        text: &'t str,
         tokens: I,
         outer: Outer<'t, 'i>,
     ) -> Result<(), RuleError<'t>>
@@ -335,7 +335,7 @@ where
     recurse(text, tokens, Default::default())
 }
 
-fn boundary<'t, 'i, I>(text: Fragment<'t>, tokens: I) -> Result<(), RuleError<'t>>
+fn boundary<'t, 'i, I>(text: &'t str, tokens: I) -> Result<(), RuleError<'t>>
 where
     I: IntoIterator<Item = &'i Token<'t, Annotation>>,
     't: 'i,

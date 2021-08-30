@@ -6,7 +6,6 @@
 )]
 
 mod capture;
-#[cfg(feature = "diagnostics")]
 mod fragment;
 mod rule;
 mod token;
@@ -34,6 +33,11 @@ pub use crate::capture::{Capture, CaptureBuffer};
 pub use crate::rule::RuleError;
 pub use crate::token::ParseError;
 
+#[cfg(windows)]
+const PATHS_ARE_CASE_INSENSITIVE: bool = true;
+#[cfg(not(windows))]
+const PATHS_ARE_CASE_INSENSITIVE: bool = false;
+
 trait ResultExt<T, E> {
     fn expect_os_str_bytes(self) -> T;
 }
@@ -60,6 +64,26 @@ impl SourceSpanExt for SourceSpan {
         let start = cmp::min(self.offset(), other.offset());
         let end = cmp::max(self.offset() + self.len(), other.offset() + other.len());
         (start, end - start).into()
+    }
+}
+
+trait CharExt {
+    fn has_casing(&self) -> bool;
+}
+
+impl CharExt for char {
+    fn has_casing(&self) -> bool {
+        self.is_lowercase() != self.is_uppercase()
+    }
+}
+
+trait StrExt {
+    fn has_casing(&self) -> bool;
+}
+
+impl StrExt for str {
+    fn has_casing(&self) -> bool {
+        self.chars().any(|x| x.has_casing())
     }
 }
 
@@ -409,10 +433,21 @@ impl<'t> Glob<'t> {
                 pattern.push(')');
             }
 
+            // TODO: Use `Grouping` everywhere a group is encoded. For invariant
+            //       groups that ignore `grouping`, construct a local `Grouping`
+            //       instead.
             for token in tokens.into_iter().with_position() {
                 match token.interior_borrow().map(Token::kind).as_tuple() {
-                    (_, Literal(ref literal)) => {
-                        for &byte in literal.as_bytes() {
+                    (_, Literal(literal)) => {
+                        // TODO: Only encode changes to casing flags.
+                        // TODO: Should Unicode support also be toggled by
+                        //       casing flags?
+                        if literal.is_case_insensitive() {
+                            pattern.push_str("(?iu)");
+                        } else {
+                            pattern.push_str("(?-iu)");
+                        }
+                        for &byte in literal.text().as_bytes() {
                             pattern.push_str(&escape(byte));
                         }
                     }
@@ -520,12 +555,19 @@ impl<'t> Glob<'t> {
     /// Partitions a glob expression into a literal `PathBuf` prefix and
     /// non-literal `Glob` postfix.
     ///
-    /// A literal prefix is invariant, meaning it contains no glob patterns and
-    /// can be interpretted as a native path. The resulting `Glob` is variant
-    /// and contains the remaining components (in particular, patterns) that
-    /// follow the prefix. For example, the glob expression `.local/**/*.log`
-    /// would produce the path `.local` and glob `**/*.log`. It is possible for
-    /// either partition to be empty.
+    /// A literal prefix is invariant, meaning it contains no glob patterns nor
+    /// other variant components and can be interpretted as a native path. The
+    /// resulting `Glob` is variant and contains the remaining components (in
+    /// particular, patterns) that follow the prefix. For example, the glob
+    /// expression `.local/**/*.log` would produce the path `.local` and glob
+    /// `**/*.log`. It is possible for either partition to be empty.
+    ///
+    /// Literal components may be considered variant if they contain characters
+    /// with casing and the configured case sensitivity differs from the target
+    /// platform's file system. For example, the case-insensitive literal
+    /// `(?i)photos` is considered variant on Unix and invariant on Windows, as
+    /// `photos` resolves differently in Unix file system APIs than `Glob` APIs
+    /// (which respect the configured case-insensitivity).
     ///
     /// Partitioning a glob expression allows any literal prefix to be used as a
     /// native path to establish a working directory or to interpret semantic
@@ -569,7 +611,7 @@ impl<'t> Glob<'t> {
                     Separator => {
                         separator = Some(n);
                     }
-                    Literal(_) => {
+                    Literal(literal) if !literal.has_variant_casing() => {
                         continue;
                     }
                     Wildcard(Tree { .. }) => {
@@ -616,7 +658,7 @@ impl<'t> Glob<'t> {
         token::components(self.tokens.iter()).any(|component| {
             component
                 .literal()
-                .map(|literal| matches!(literal.as_ref(), "." | ".."))
+                .map(|literal| matches!(literal.text().as_ref(), "." | ".."))
                 .unwrap_or(false)
         })
     }
@@ -1014,6 +1056,15 @@ mod tests {
     }
 
     #[test]
+    fn build_glob_with_flags() {
+        Glob::new("(?i)a/b/c").unwrap();
+        Glob::new("(?-i)a/b/c").unwrap();
+        Glob::new("a/(?-i)b/c").unwrap();
+        Glob::new("a/b/(?-i)c").unwrap();
+        Glob::new("(?i)a/(?-i)b/(?i)c").unwrap();
+    }
+
+    #[test]
     fn reject_glob_with_adjacent_tree_or_zom_tokens() {
         assert!(Glob::new("***").is_err());
         assert!(Glob::new("****").is_err());
@@ -1085,6 +1136,23 @@ mod tests {
         assert!(Glob::new("/slash/{okay,/error}").is_err());
         assert!(Glob::new("{okay,error/}/slash").is_err());
         assert!(Glob::new("slash/{okay,/error/,okay}/slash").is_err());
+    }
+
+    #[test]
+    fn reject_glob_with_invalid_flags() {
+        assert!(Glob::new("(?)a").is_err());
+        assert!(Glob::new("(?-)a").is_err());
+        assert!(Glob::new("()a").is_err());
+    }
+
+    #[test]
+    fn reject_glob_with_adjacent_tokens_through_flags() {
+        assert!(Glob::new("/(?i)/").is_err());
+        assert!(Glob::new("$(?i)$").is_err());
+        assert!(Glob::new("*(?i)*").is_err());
+        assert!(Glob::new("**(?i)?").is_err());
+        assert!(Glob::new("a(?i)**").is_err());
+        assert!(Glob::new("**(?i)a").is_err());
     }
 
     #[test]
@@ -1215,6 +1283,23 @@ mod tests {
         let path = BytePath::from_path(Path::new("/var/log/network.log"));
         let captures = glob.captures(&path).unwrap();
         assert_eq!(b"/", captures.get(1).unwrap().as_ref());
+    }
+
+    #[test]
+    fn match_glob_with_flags() {
+        let glob = Glob::new("(?-i)photos/**/*.(?i){jpg,jpeg}").unwrap();
+
+        assert!(glob.is_match(Path::new("photos/flower.jpg")));
+        assert!(glob.is_match(Path::new("photos/flower.JPEG")));
+
+        assert!(!glob.is_match(Path::new("Photos/flower.jpeg")));
+    }
+
+    #[test]
+    fn match_glob_with_escaped_flags() {
+        let glob = Glob::new("a\\(b\\)").unwrap();
+
+        assert!(glob.is_match(Path::new("a(b)")));
     }
 
     #[test]

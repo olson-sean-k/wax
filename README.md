@@ -77,9 +77,9 @@ component boundaries (separators and tree wildcards; see below).
 
 ## Patterns
 
-Globs resemble Unix paths, but additionally support wildcard, character class,
-and alternative patterns that can be matched against paths and directory trees.
-Patterns use a syntax that resembles globbing in Unix shells and similar tools.
+Globs resemble Unix paths, but additionally support patterns that can be matched
+against paths and directory trees. Patterns use a syntax that resembles globbing
+in Unix shells and similar tools.
 
 ```rust
 use wax::Glob;
@@ -119,7 +119,7 @@ The exactly-one wildcard `?` matches any single character **except path
 separators**. Exactly-one wildcards do not group automatically, so a pattern of
 contiguous wildcards such as `???` form distinct captures for each `?` wildcard.
 An alternative can be used to group exactly-one wildcards into a single capture,
-such as `{???}` (see below).
+such as `{???}` (see [below](#alternatives)).
 
 ### Character Classes
 
@@ -163,12 +163,36 @@ example, wildcards must respect adjacency rules, so `*{a,b*}` is allowed but
 `a/{b/,c/**/}d` and `a{/b,/c}` are allowed but `a/{b/,/**/c}/d` and `a/{/b,/c}`
 are not.
 
-Importantly, both path separators and tree wildcards are considered component
-boundaries and tree wildcards are parsed together with their surrounding forward
-slashes: `**`, `/**`, `**/`, and `/**/` are all considered tree wildcards and
-produce no independent path separators. This is typically intuitive, but means
-that despite no adjacent forward slashes, `a/{**/b,c}` and `{a/**,b}/c` are not
-allowed just as `a//**` is not allowed.
+Both path separators and tree wildcards are considered component boundaries and
+tree wildcards are parsed together with their surrounding forward slashes: `**`,
+`/**`, `**/`, and `/**/` are all considered tree wildcards and produce no
+independent path separators. This is typically intuitive, but means that despite
+no adjacent forward slashes, `a/{**/b,c}` and `{a/**,b}/c` are not allowed just
+as `a//**` is not allowed.
+
+## Flags and Case Sensitivity
+
+Flags toggle the matching behavior of globs. Importantly, flags are a part of a
+glob expression rather than a separate API. Behaviors are toggled immediately
+following flags in the order in which they appear in glob expressions. Flags are
+delimited by parenthesis with a leading question mark `(?...)` and may appear
+anywhere within a glob expression so long as they do not split tree wildcards
+(for example, `a/*(?i)*`). Each flag is represented by a single character and
+can be negated by preceding the corresponding character with a dash `-`. Flags
+are toggled in the order in which they appear within `(?...)`.
+
+The only supported flag is the case-insensitivty flag `i`. By default, glob
+expressions use the same case sensitivity as the target platforms's file system
+(case-sensitive on Unix and case-insensitive on Windows), but `i` can be used to
+toggle this explicitly as needed. For example, `(?-i)photos/**/*.(?i){jpg,jpeg}`
+matches file paths beneath a `photos` directory with a case-sensitive base and a
+case-**in**sensitive extension `jpg` or `jpeg`.
+
+Wax considers literals, their configured case sensitivity, and the case
+sensitivity of the target platform's file system when partitioning glob
+expressions with [`Glob::partitioned`] (see
+[below](#partitioning-and-semantic-literals)). Partitioning is unaffected in
+glob expressions with no flags.
 
 ## Errors and Diagnostics
 
@@ -229,9 +253,10 @@ directory.
 [`Glob::partitioned`] can be used to parse glob expressions that contain
 semantic components that precede patterns and would be interpreted as literals
 (namely `..`). [`Glob::partitioned`] partitions a glob expression into an
-invariant [`PathBuf`] prefix and a variant [`Glob`] postfix. Here, _invariant_
-means that the partition contains no glob patterns. The path can be used as
-needed in combination with the glob.
+invariant [`PathBuf`] prefix and a variant [`Glob`] postfix. Here, invariant
+means that the partition contains no glob patterns and resolves the same literal
+paths on the target platform's file system (has invariant literals and/or case
+sensitivity). The path can be used as needed in combination with the glob.
 
 ```rust
 use std::path::Path;
