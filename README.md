@@ -42,7 +42,7 @@ Match files in a directory tree against a glob:
 ```rust
 use wax::Glob;
 
-let glob = Glob::new("**/*.{md,txt}}").unwrap();
+let glob = Glob::new("**/*.{md,txt}").unwrap();
 for entry in glob.walk("doc", usize::MAX) {
     // ...
 }
@@ -55,8 +55,8 @@ See more details below.
 Globs are encoded as strings called glob expressions that resemble Unix paths
 consisting of nominal components delimited by separators. Wax exposes its APIs
 via the [`Glob`] type, which is constructed from a glob expression via inherent
-functions or the [`FromStr`] trait. All data is borrowed where possible but can
-be copied into owned instances using `into_owned`.
+functions or standard conversion traits. All data is borrowed where possible but
+can be copied into owned instances using `into_owned`.
 
 ```rust
 use wax::Glob;
@@ -170,6 +170,39 @@ produce no independent path separators. This is typically intuitive, but means
 that despite no adjacent forward slashes, `a/{**/b,c}` and `{a/**,b}/c` are not
 allowed just as `a//**` is not allowed.
 
+## Errors and Diagnostics
+
+The [`GlobError`] type represents error conditions that can occur when parsing a
+glob expression, validating a glob expression, or walking a directory tree with
+a glob. [`GlobError`] and its sub-errors implement the standard [`Error`] and
+[`Display`] traits via [`thiserror`][thiserror], which express basic information
+about failures.
+
+Wax optionally integrates with the [`miette`][miette] crate, which can be used
+to capture and display diagnostics. This can be useful for reporting errors to
+users that provide glob expressions.
+
+```
+Error: ────[glob::rule]─────────────────────────────────────────────────────────────────────────
+
+    × invalid glob: rooted sub-glob or adjacent component boundaries `/` or `**` in alternative
+
+   ╭───[1:1] in this expression:
+ 1 │ .local/{bin,{lib/,share}/**/log}/**
+   ·             ────────┬───────
+   ·                     ╰──────── here
+   ╰───
+```
+
+Diagnostics are disabled by default and can be enabled with the `diagnostics`
+feature. This can be done via Cargo in a crate's `Cargo.toml` file.
+
+```toml
+[dependency.wax]
+version = "^0.0.0"
+features = ["diagnostics"]
+```
+
 ## Unsupported Path Features
 
 Any components not recognized as separators nor patterns are interpreted as
@@ -230,13 +263,17 @@ represented directly as a glob.
 This can be limiting, but the design of Wax explicitly forbids this: Windows
 prefixes and other volume components are not portable. Instead, when this is
 needed, an additional native path or working directory can be used, such as [the
-`--tree`/`-C` option provided by Nym][nym]. In most contexts, globs are applied
+`--tree` option provided by Nym][nym]. In most contexts, globs are applied
 relative to some such working directory.
 
+[miette]: https://github.com/zkat/miette
 [nym]: https://github.com/olson-sean-k/nym
+[thiserror]: https://github.com/dtolnay/thiserror
 
-[`FromStr`]: https://doc.rust-lang.org/std/str/trait.FromStr.html
+[`Display`]: https://doc.rust-lang.org/std/fmt/trait.Display.html
+[`Error`]: https://doc.rust-lang.org/std/error/trait.Error.html
 [`Glob`]: https://docs.rs/wax/*/wax/struct.Glob.html
 [`Glob::has_semantic_literals`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.has_semantic_literals
 [`Glob::partitioned`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.partitioned
+[`GlobError`]: https://docs.rs/wax/*/wax/enum.GlobError.html
 [`PathBuf`]: https://doc.rust-lang.org/std/path/struct.PathBuf.html

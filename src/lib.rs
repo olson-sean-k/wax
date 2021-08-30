@@ -6,12 +6,15 @@
 )]
 
 mod capture;
+#[cfg(feature = "diagnostics")]
+mod fragment;
 mod rule;
 mod token;
 
 use bstr::ByteVec;
 use itertools::{Itertools as _, Position};
-use nom::error::ErrorKind;
+#[cfg(feature = "diagnostics")]
+use miette::{Diagnostic, SourceSpan};
 use os_str_bytes::OsStrBytes as _;
 use regex::bytes::Regex;
 use std::borrow::{Borrow, Cow};
@@ -23,12 +26,13 @@ use std::iter::Fuse;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use thiserror::Error;
-use walkdir::{self, DirEntry, WalkDir};
+use walkdir::{self, DirEntry, Error as WalkError, WalkDir};
 
-use crate::token::Token;
+use crate::token::{Token, TokenKind};
 
 pub use crate::capture::{Capture, CaptureBuffer};
 pub use crate::rule::RuleError;
+pub use crate::token::ParseError;
 
 trait ResultExt<T, E> {
     fn expect_os_str_bytes(self) -> T;
@@ -40,6 +44,22 @@ where
 {
     fn expect_os_str_bytes(self) -> T {
         self.expect("unexpected encoding")
+    }
+}
+
+#[cfg(feature = "diagnostics")]
+trait SourceSpanExt {
+    fn union(&self, other: &SourceSpan) -> SourceSpan;
+}
+
+#[cfg(feature = "diagnostics")]
+impl SourceSpanExt for SourceSpan {
+    fn union(&self, other: &SourceSpan) -> SourceSpan {
+        use std::cmp;
+
+        let start = cmp::min(self.offset(), other.offset());
+        let end = cmp::max(self.offset() + self.len(), other.offset() + other.len());
+        (start, end - start).into()
     }
 }
 
@@ -141,6 +161,10 @@ where
 trait PositionExt<T> {
     fn as_tuple(&self) -> (Position<()>, &T);
 
+    fn map<U, F>(self, f: F) -> Position<U>
+    where
+        F: FnMut(T) -> U;
+
     fn interior_borrow<B>(&self) -> Position<&B>
     where
         T: Borrow<B>;
@@ -153,6 +177,18 @@ impl<T> PositionExt<T> for Position<T> {
             Position::Middle(ref item) => (Position::Middle(()), item),
             Position::Last(ref item) => (Position::Last(()), item),
             Position::Only(ref item) => (Position::Only(()), item),
+        }
+    }
+
+    fn map<U, F>(self, mut f: F) -> Position<U>
+    where
+        F: FnMut(T) -> U,
+    {
+        match self {
+            Position::First(item) => Position::First(f(item)),
+            Position::Middle(item) => Position::Middle(f(item)),
+            Position::Last(item) => Position::Last(f(item)),
+            Position::Only(item) => Position::Only(f(item)),
         }
     }
 
@@ -192,31 +228,57 @@ enum Terminals<T> {
     StartEnd(T, T),
 }
 
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum GlobError {
-    #[error("failed to parse glob: {0}")]
-    Parse(nom::Err<(String, ErrorKind)>),
-    #[error("invalid glob: {0}")]
-    Rule(RuleError),
-    #[error("failed to walk directory tree: {0}")]
-    Walk(walkdir::Error),
-}
-
-impl<'i> From<nom::Err<(&'i str, ErrorKind)>> for GlobError {
-    fn from(error: nom::Err<(&'i str, ErrorKind)>) -> Self {
-        GlobError::Parse(error.to_owned())
+impl<T> Terminals<T> {
+    pub fn map<U, F>(self, mut f: F) -> Terminals<U>
+    where
+        F: FnMut(T) -> U,
+    {
+        match self {
+            Terminals::Only(only) => Terminals::Only(f(only)),
+            Terminals::StartEnd(start, end) => Terminals::StartEnd(f(start), f(end)),
+        }
     }
 }
 
-impl From<walkdir::Error> for GlobError {
-    fn from(error: walkdir::Error) -> Self {
+#[derive(Debug, Error)]
+#[non_exhaustive]
+#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
+pub enum GlobError<'t> {
+    #[error(transparent)]
+    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
+    Parse(ParseError<'t>),
+    #[error(transparent)]
+    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
+    Rule(RuleError<'t>),
+    #[error("failed to walk directory tree: {0}")]
+    #[cfg_attr(feature = "diagnostics", diagnostic(code = "glob::walk"))]
+    Walk(WalkError),
+}
+
+impl<'t> GlobError<'t> {
+    pub fn into_owned(self) -> GlobError<'static> {
+        match self {
+            GlobError::Parse(error) => GlobError::Parse(error.into_owned()),
+            GlobError::Rule(error) => GlobError::Rule(error.into_owned()),
+            GlobError::Walk(error) => GlobError::Walk(error),
+        }
+    }
+}
+
+impl<'t> From<ParseError<'t>> for GlobError<'t> {
+    fn from(error: ParseError) -> Self {
+        GlobError::Parse(error.into_owned())
+    }
+}
+
+impl From<WalkError> for GlobError<'static> {
+    fn from(error: WalkError) -> Self {
         GlobError::Walk(error)
     }
 }
 
-impl From<RuleError> for GlobError {
-    fn from(error: RuleError) -> Self {
+impl<'t> From<RuleError<'t>> for GlobError<'t> {
+    fn from(error: RuleError<'t>) -> Self {
         GlobError::Rule(error)
     }
 }
@@ -338,7 +400,7 @@ impl<'t> Glob<'t> {
 
             use crate::token::Archetype::{Character, Range};
             use crate::token::Evaluation::{Eager, Lazy};
-            use crate::token::Token::{Alternative, Class, Literal, Separator, Wildcard};
+            use crate::token::TokenKind::{Alternative, Class, Literal, Separator, Wildcard};
             use crate::token::Wildcard::{One, Tree, ZeroOrMore};
 
             fn encode_intermediate_tree(grouping: Grouping, pattern: &mut String) {
@@ -348,7 +410,7 @@ impl<'t> Glob<'t> {
             }
 
             for token in tokens.into_iter().with_position() {
-                match token.interior_borrow().as_tuple() {
+                match token.interior_borrow().map(Token::kind).as_tuple() {
                     (_, Literal(ref literal)) => {
                         for &byte in literal.as_bytes() {
                             pattern.push_str(&escape(byte));
@@ -449,8 +511,8 @@ impl<'t> Glob<'t> {
         Regex::new(&pattern).expect("glob compilation failed")
     }
 
-    pub fn new(text: &'t str) -> Result<Self, GlobError> {
-        let tokens: Vec<_> = token::optimize(token::parse(text)?).collect();
+    pub fn new(text: &'t str) -> Result<Self, GlobError<'t>> {
+        let tokens = token::parse(text)?;
         let regex = Glob::compile(tokens.iter());
         Ok(Glob { tokens, regex })
     }
@@ -496,13 +558,13 @@ impl<'t> Glob<'t> {
     ///
     /// Returns an error if the glob expression cannot be parsed or violates
     /// glob component rules.
-    pub fn partitioned(text: &'t str) -> Result<(PathBuf, Self), GlobError> {
-        use crate::token::Token::{Literal, Separator, Wildcard};
+    pub fn partitioned(text: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
+        use crate::token::TokenKind::{Literal, Separator, Wildcard};
         use crate::token::Wildcard::Tree;
 
         pub fn literal_prefix_upper_bound(tokens: &[Token]) -> usize {
             let mut separator = None;
-            for (n, token) in tokens.iter().enumerate() {
+            for (n, token) in tokens.iter().map(Token::kind).enumerate() {
                 match token {
                     Separator => {
                         separator = Some(n);
@@ -525,15 +587,13 @@ impl<'t> Glob<'t> {
         }
 
         // Get the literal path prefix for the token sequence.
-        let mut tokens: Vec<_> = token::optimize(token::parse(text)?).collect();
+        let mut tokens = token::parse(text)?;
         let prefix = token::literal_path_prefix(tokens.iter()).unwrap_or_else(PathBuf::new);
 
-        // Drain literal tokens from the beginning of the token sequence. If the
-        // token sequence begins with a rooted tree wildcard, then unroot it.
+        // Drain literal tokens from the beginning of the token sequence. Unroot
+        // any tokens at the beginning of the sequence (tree wildcards)
         tokens.drain(0..literal_prefix_upper_bound(&tokens));
-        if let Some(Wildcard(Tree { ref mut is_rooted })) = tokens.first_mut() {
-            *is_rooted = false;
-        }
+        tokens.first_mut().map(Token::unroot);
 
         let regex = Glob::compile(tokens.iter());
         Ok((prefix, Glob { tokens, regex }))
@@ -607,7 +667,7 @@ impl<'t> Glob<'t> {
 }
 
 impl<'t> TryFrom<&'t str> for Glob<'t> {
-    type Error = GlobError;
+    type Error = GlobError<'t>;
 
     fn try_from(text: &'t str) -> Result<Self, Self::Error> {
         Glob::new(text)
@@ -615,10 +675,12 @@ impl<'t> TryFrom<&'t str> for Glob<'t> {
 }
 
 impl FromStr for Glob<'static> {
-    type Err = GlobError;
+    type Err = GlobError<'static>;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        Glob::new(text).map(|glob| glob.into_owned())
+        Glob::new(text)
+            .map(|glob| glob.into_owned())
+            .map_err(|error| error.into_owned())
     }
 }
 
@@ -743,7 +805,7 @@ impl<'e> WalkEntry<'e> {
         self.entry.file_type()
     }
 
-    pub fn metadata(&self) -> Result<Metadata, GlobError> {
+    pub fn metadata(&self) -> Result<Metadata, GlobError<'static>> {
         self.entry.metadata().map_err(From::from)
     }
 
@@ -772,8 +834,8 @@ impl<'g> Walk<'g> {
     {
         let mut regexes = Vec::new();
         for component in token::components(tokens) {
-            if component.tokens().iter().any(|token| match token {
-                Token::Alternative(ref alternative) => alternative.has_component_boundary(),
+            if component.tokens().iter().any(|token| match token.kind() {
+                TokenKind::Alternative(ref alternative) => alternative.has_component_boundary(),
                 token => token.is_component_boundary(),
             }) {
                 // NOTE: `token::components` omits any separators outside of
@@ -802,7 +864,7 @@ impl<'g> Walk<'g> {
 }
 
 impl<'g> Iterator for Walk<'g> {
-    type Item = Result<WalkEntry<'static>, GlobError>;
+    type Item = Result<WalkEntry<'static>, GlobError<'static>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         walk!(self => |entry| {

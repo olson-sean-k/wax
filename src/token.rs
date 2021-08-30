@@ -1,40 +1,128 @@
 use itertools::Itertools as _;
+#[cfg(feature = "diagnostics")]
+use miette::{self, Diagnostic, SourceSpan};
+use nom::error::ErrorKind;
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
+use std::mem;
+use std::ops::Deref;
 use std::path::{PathBuf, MAIN_SEPARATOR};
+use thiserror::Error;
 
 use crate::rule;
 use crate::GlobError;
 
-#[derive(Clone, Debug)]
-pub struct Alternative<'t>(pub Vec<Vec<Token<'t>>>);
+#[cfg(feature = "diagnostics")]
+pub type Fragment<'i> = crate::fragment::Fragment<'i, str>;
+#[cfg(not(feature = "diagnostics"))]
+pub type Fragment<'i> = &'i str;
 
-impl<'t> Alternative<'t> {
-    pub fn into_owned(self) -> Alternative<'static> {
+#[cfg(feature = "diagnostics")]
+pub type Annotation = SourceSpan;
+#[cfg(not(feature = "diagnostics"))]
+pub type Annotation = ();
+
+type NomError<'t> = nom::Err<nom::error::Error<Fragment<'t>>>;
+
+#[derive(Debug, Error)]
+#[error("failed to parse glob expression: {kind:?}")]
+#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
+#[cfg_attr(feature = "diagnostics", diagnostic(code = "glob::parse"))]
+pub struct ParseError<'t> {
+    text: Cow<'t, str>,
+    kind: ErrorKind,
+    #[cfg(feature = "diagnostics")]
+    #[snippet(text, message("in this expression"))]
+    expression: SourceSpan,
+    #[cfg(feature = "diagnostics")]
+    #[highlight(expression, label("here"))]
+    error: SourceSpan,
+}
+
+impl<'t> ParseError<'t> {
+    fn new(text: Fragment<'t>, error: NomError<'t>) -> Self {
+        match error {
+            NomError::Incomplete(_) => {
+                panic!("unexpected parse error: incomplete input")
+            }
+            #[cfg(feature = "diagnostics")]
+            NomError::Error(error) | NomError::Failure(error) => {
+                use nom::Offset;
+
+                ParseError {
+                    text: text.into(),
+                    kind: error.code,
+                    expression: (0, text.len()).into(),
+                    error: (Offset::offset(&text, &error.input), 0).into(),
+                }
+            }
+            #[cfg(not(feature = "diagnostics"))]
+            NomError::Error(error) | NomError::Failure(error) => ParseError {
+                text: text.into(),
+                kind: error.code,
+            },
+        }
+    }
+
+    pub fn into_owned(self) -> ParseError<'static> {
+        let ParseError {
+            text,
+            kind,
+            #[cfg(feature = "diagnostics")]
+            expression,
+            #[cfg(feature = "diagnostics")]
+            error,
+        } = self;
+        ParseError {
+            text: text.into_owned().into(),
+            kind,
+            #[cfg(feature = "diagnostics")]
+            expression,
+            #[cfg(feature = "diagnostics")]
+            error,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Alternative<'t, A = ()>(pub Vec<Vec<Token<'t, A>>>);
+
+impl<'t, A> Alternative<'t, A> {
+    pub fn into_owned(self) -> Alternative<'static, A> {
         Alternative(
             self.0
                 .into_iter()
-                .map(|tokens| tokens.into_iter().map(|token| token.into_owned()).collect())
+                .map(|tokens| tokens.into_iter().map(Token::into_owned).collect())
                 .collect(),
         )
     }
 
-    pub fn branches(&self) -> &Vec<Vec<Token<'t>>> {
+    #[cfg(feature = "diagnostics")]
+    pub fn unannotate(self) -> Alternative<'t, ()> {
+        Alternative(
+            self.0
+                .into_iter()
+                .map(|tokens| tokens.into_iter().map(Token::unannotate).collect())
+                .collect(),
+        )
+    }
+
+    pub fn branches(&self) -> &Vec<Vec<Token<'t, A>>> {
         &self.0
     }
 
     pub fn has_component_boundary(&self) -> bool {
         self.0.iter().any(|tokens| {
-            tokens.iter().any(|token| match token {
-                Token::Alternative(ref alternative) => alternative.has_component_boundary(),
+            tokens.iter().any(|token| match token.kind() {
+                TokenKind::Alternative(ref alternative) => alternative.has_component_boundary(),
                 _ => token.is_component_boundary(),
             })
         })
     }
 }
 
-impl<'t> From<Vec<Vec<Token<'t>>>> for Alternative<'t> {
-    fn from(alternatives: Vec<Vec<Token<'t>>>) -> Self {
+impl<'t, A> From<Vec<Vec<Token<'t, A>>>> for Alternative<'t, A> {
+    fn from(alternatives: Vec<Vec<Token<'t, A>>>) -> Self {
         Alternative(alternatives)
     }
 }
@@ -71,8 +159,78 @@ pub enum Wildcard {
 }
 
 #[derive(Clone, Debug)]
-pub enum Token<'t> {
-    Alternative(Alternative<'t>),
+pub struct Token<'t, A = ()> {
+    kind: TokenKind<'t, A>,
+    annotation: A,
+}
+
+impl<'t, A> Token<'t, A> {
+    fn new(kind: TokenKind<'t, A>, annotation: A) -> Self {
+        Token { kind, annotation }
+    }
+
+    pub fn into_owned(self) -> Token<'static, A> {
+        let Token { kind, annotation } = self;
+        Token {
+            kind: kind.into_owned(),
+            annotation,
+        }
+    }
+
+    #[cfg(feature = "diagnostics")]
+    pub fn unannotate(self) -> Token<'t, ()> {
+        let Token { kind, .. } = self;
+        Token {
+            kind: kind.unannotate(),
+            annotation: (),
+        }
+    }
+
+    pub fn unroot(&mut self) -> bool {
+        self.kind.unroot()
+    }
+
+    pub fn kind(&self) -> &TokenKind<'t, A> {
+        self.as_ref()
+    }
+
+    pub fn annotation(&self) -> &A {
+        self.as_ref()
+    }
+}
+
+impl<'t, A> AsRef<TokenKind<'t, A>> for Token<'t, A> {
+    fn as_ref(&self) -> &TokenKind<'t, A> {
+        &self.kind
+    }
+}
+
+impl<'t, A> AsRef<A> for Token<'t, A> {
+    fn as_ref(&self) -> &A {
+        &self.annotation
+    }
+}
+
+impl<'t, A> Deref for Token<'t, A> {
+    type Target = TokenKind<'t, A>;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
+impl<'t> From<TokenKind<'t, ()>> for Token<'t, ()> {
+    fn from(kind: TokenKind<'t, ()>) -> Self {
+        Token {
+            kind,
+            annotation: (),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum TokenKind<'t, A = ()> {
+    Alternative(Alternative<'t, A>),
     Class {
         is_negated: bool,
         archetypes: Vec<Archetype>,
@@ -82,60 +240,86 @@ pub enum Token<'t> {
     Wildcard(Wildcard),
 }
 
-impl<'t> Token<'t> {
-    pub fn into_owned(self) -> Token<'static> {
+impl<'t, A> TokenKind<'t, A> {
+    pub fn into_owned(self) -> TokenKind<'static, A> {
         match self {
-            Token::Alternative(alternative) => alternative.into_owned().into(),
-            Token::Class {
+            TokenKind::Alternative(alternative) => alternative.into_owned().into(),
+            TokenKind::Class {
                 is_negated,
                 archetypes,
-            } => Token::Class {
+            } => TokenKind::Class {
                 is_negated,
                 archetypes,
             },
-            Token::Literal(literal) => literal.into_owned().into(),
-            Token::Separator => Token::Separator,
-            Token::Wildcard(wildcard) => Token::Wildcard(wildcard),
+            TokenKind::Literal(literal) => literal.into_owned().into(),
+            TokenKind::Separator => TokenKind::Separator,
+            TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
+        }
+    }
+
+    #[cfg(feature = "diagnostics")]
+    pub fn unannotate(self) -> TokenKind<'t, ()> {
+        match self {
+            TokenKind::Alternative(alternative) => alternative.unannotate().into(),
+            TokenKind::Class {
+                is_negated,
+                archetypes,
+            } => TokenKind::Class {
+                is_negated,
+                archetypes,
+            },
+            TokenKind::Literal(literal) => TokenKind::Literal(literal),
+            TokenKind::Separator => TokenKind::Separator,
+            TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
+        }
+    }
+
+    pub fn unroot(&mut self) -> bool {
+        match self {
+            TokenKind::Wildcard(Wildcard::Tree { ref mut is_rooted }) => {
+                mem::replace(is_rooted, false)
+            }
+            _ => false,
         }
     }
 
     pub fn is_component_boundary(&self) -> bool {
         matches!(
             self,
-            Token::Separator | Token::Wildcard(Wildcard::Tree { .. })
+            TokenKind::Separator | TokenKind::Wildcard(Wildcard::Tree { .. })
         )
     }
 }
 
-impl<'t> From<Alternative<'t>> for Token<'t> {
-    fn from(alternative: Alternative<'t>) -> Self {
-        Token::Alternative(alternative)
+impl<'t, A> From<Alternative<'t, A>> for TokenKind<'t, A> {
+    fn from(alternative: Alternative<'t, A>) -> Self {
+        TokenKind::Alternative(alternative)
     }
 }
 
-impl<'t> From<&'t str> for Token<'t> {
+impl<'t, A> From<&'t str> for TokenKind<'t, A> {
     fn from(literal: &'t str) -> Self {
-        Token::Literal(literal.into())
+        TokenKind::Literal(literal.into())
     }
 }
 
-impl From<String> for Token<'static> {
+impl<A> From<String> for TokenKind<'static, A> {
     fn from(literal: String) -> Self {
-        Token::Literal(literal.into())
+        TokenKind::Literal(literal.into())
     }
 }
 
-impl From<Wildcard> for Token<'static> {
+impl<A> From<Wildcard> for TokenKind<'static, A> {
     fn from(wildcard: Wildcard) -> Self {
-        Token::Wildcard(wildcard)
+        TokenKind::Wildcard(wildcard)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Component<'t>(SmallVec<[&'t Token<'t>; 4]>);
+pub struct Component<'t, A = ()>(SmallVec<[&'t Token<'t, A>; 4]>);
 
-impl<'t> Component<'t> {
-    pub fn tokens(&self) -> &[&'t Token<'t>] {
+impl<'t, A> Component<'t, A> {
+    pub fn tokens(&self) -> &[&'t Token<'t, A>] {
         self.0.as_ref()
     }
 
@@ -146,18 +330,18 @@ impl<'t> Component<'t> {
         (!self
             .tokens()
             .iter()
-            .any(|token| !matches!(token, Token::Literal(_))))
+            .any(|token| !matches!(token.kind(), TokenKind::Literal(_))))
         .then(|| {
             if self.tokens().len() == 1 {
-                match self.tokens().first().unwrap() {
-                    Token::Literal(ref literal) => literal.clone(),
+                match self.tokens().first().unwrap().kind() {
+                    TokenKind::Literal(ref literal) => literal.clone(),
                     _ => unreachable!(), // See predicate above.
                 }
             } else {
                 self.tokens()
                     .iter()
-                    .map(|token| match token {
-                        Token::Literal(ref literal) => literal,
+                    .map(|token| match token.kind() {
+                        TokenKind::Literal(ref literal) => literal,
                         _ => unreachable!(), // See predicate above.
                     })
                     .join("")
@@ -167,18 +351,19 @@ impl<'t> Component<'t> {
     }
 }
 
-pub fn components<'t, I>(tokens: I) -> impl Iterator<Item = Component<'t>>
+pub fn components<'t, A, I>(tokens: I) -> impl Iterator<Item = Component<'t, A>>
 where
-    I: IntoIterator<Item = &'t Token<'t>>,
+    A: 't,
+    I: IntoIterator<Item = &'t Token<'t, A>>,
     I::IntoIter: Clone,
 {
     tokens.into_iter().batching(|tokens| {
         let mut first = tokens.next();
-        while matches!(first, Some(Token::Separator)) {
+        while matches!(first.map(Token::kind), Some(TokenKind::Separator)) {
             first = tokens.next();
         }
-        first.map(|first| match first {
-            Token::Wildcard(Wildcard::Tree { .. }) => Component(smallvec![first]),
+        first.map(|first| match first.kind() {
+            TokenKind::Wildcard(Wildcard::Tree { .. }) => Component(smallvec![first]),
             _ => Component(
                 Some(first)
                     .into_iter()
@@ -189,17 +374,20 @@ where
     })
 }
 
-pub fn literal_path_prefix<'t, I>(tokens: I) -> Option<PathBuf>
+pub fn literal_path_prefix<'t, A, I>(tokens: I) -> Option<PathBuf>
 where
-    I: IntoIterator<Item = &'t Token<'t>>,
+    A: 't,
+    I: IntoIterator<Item = &'t Token<'t, A>>,
     I::IntoIter: Clone,
 {
-    use crate::token::Token::{Separator, Wildcard};
+    use crate::token::TokenKind::{Separator, Wildcard};
     use crate::token::Wildcard::Tree;
 
     let mut tokens = tokens.into_iter().peekable();
     let mut prefix = String::new();
-    if let Some(Separator | Wildcard(Tree { is_rooted: true })) = tokens.peek() {
+    if let Some(Separator | Wildcard(Tree { is_rooted: true })) =
+        tokens.peek().map(|token| token.kind())
+    {
         // Include any rooting component boundary at the beginning of the token
         // sequence.
         prefix.push(MAIN_SEPARATOR);
@@ -224,16 +412,18 @@ where
 //       like literals and character classes. This means escaping back slashes
 //       is not possible (despite common conventions). This avoids non-separator
 //       tokens parsing over directory boundaries (in particular on Windows).
-pub fn parse(text: &str) -> Result<Vec<Token<'_>>, GlobError> {
+pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
     use nom::bytes::complete as bytes;
     use nom::character::complete as character;
     use nom::error::ParseError;
     use nom::{branch, combinator, multi, sequence, IResult, Parser};
 
-    fn no_adjacent_tree<'i, O, E, F>(parser: F) -> impl FnMut(&'i str) -> IResult<&'i str, O, E>
+    fn no_adjacent_tree<'i, O, E, F>(
+        parser: F,
+    ) -> impl FnMut(Fragment<'i>) -> IResult<Fragment<'i>, O, E>
     where
-        E: ParseError<&'i str>,
-        F: Parser<&'i str, O, E>,
+        E: ParseError<Fragment<'i>>,
+        F: Parser<Fragment<'i>, O, E>,
     {
         sequence::delimited(
             combinator::peek(combinator::not(bytes::tag("**"))),
@@ -242,10 +432,7 @@ pub fn parse(text: &str) -> Result<Vec<Token<'_>>, GlobError> {
         )
     }
 
-    fn literal<'i, E>(input: &'i str) -> IResult<&'i str, Token, E>
-    where
-        E: ParseError<&'i str>,
-    {
+    fn literal(input: Fragment) -> IResult<Fragment, TokenKind<Annotation>> {
         combinator::map(
             combinator::verify(
                 // NOTE: Character classes, which accept arbitrary characters,
@@ -268,24 +455,18 @@ pub fn parse(text: &str) -> Result<Vec<Token<'_>>, GlobError> {
                 ),
                 |text: &str| !text.is_empty(),
             ),
-            Token::from,
+            TokenKind::from,
         )(input)
     }
 
-    fn separator<'i, E>(input: &'i str) -> IResult<&'i str, Token, E>
-    where
-        E: ParseError<&'i str>,
-    {
-        combinator::value(Token::Separator, bytes::tag("/"))(input)
+    fn separator(input: Fragment) -> IResult<Fragment, TokenKind<Annotation>> {
+        combinator::value(TokenKind::Separator, bytes::tag("/"))(input)
     }
 
-    fn wildcard<'i, E>(input: &'i str) -> IResult<&'i str, Token, E>
-    where
-        E: ParseError<&'i str>,
-    {
+    fn wildcard(input: Fragment) -> IResult<Fragment, TokenKind<Annotation>> {
         branch::alt((
             combinator::map(no_adjacent_tree(bytes::tag("?")), |_| {
-                Token::from(Wildcard::One)
+                TokenKind::from(Wildcard::One)
             }),
             combinator::map(
                 sequence::tuple((
@@ -303,7 +484,7 @@ pub fn parse(text: &str) -> Result<Vec<Token<'_>>, GlobError> {
                         )),
                     ),
                 )),
-                |(root, _): (&str, _)| {
+                |(root, _): (Fragment, _)| {
                     Wildcard::Tree {
                         is_rooted: !root.is_empty(),
                     }
@@ -327,14 +508,8 @@ pub fn parse(text: &str) -> Result<Vec<Token<'_>>, GlobError> {
         ))(input)
     }
 
-    fn class<'i, E>(input: &'i str) -> IResult<&'i str, Token, E>
-    where
-        E: ParseError<&'i str>,
-    {
-        fn archetypes<'i, E>(input: &'i str) -> IResult<&'i str, Vec<Archetype>, E>
-        where
-            E: ParseError<&'i str>,
-        {
+    fn class(input: Fragment) -> IResult<Fragment, TokenKind<Annotation>> {
+        fn archetypes(input: Fragment) -> IResult<Fragment, Vec<Archetype>> {
             let escaped_character = |input| {
                 branch::alt((
                     character::none_of("[]-\\"),
@@ -361,17 +536,14 @@ pub fn parse(text: &str) -> Result<Vec<Token<'_>>, GlobError> {
                 sequence::tuple((combinator::opt(bytes::tag("!")), archetypes)),
                 bytes::tag("]"),
             ),
-            |(negation, archetypes)| Token::Class {
+            |(negation, archetypes)| TokenKind::Class {
                 is_negated: negation.is_some(),
                 archetypes,
             },
         )(input)
     }
 
-    fn alternative<'i, E>(input: &'i str) -> IResult<&'i str, Token, E>
-    where
-        E: ParseError<&'i str>,
-    {
+    fn alternative(input: Fragment) -> IResult<Fragment, TokenKind<Annotation>> {
         sequence::delimited(
             bytes::tag("{"),
             combinator::map(
@@ -382,48 +554,60 @@ pub fn parse(text: &str) -> Result<Vec<Token<'_>>, GlobError> {
         )(input)
     }
 
-    fn glob<'i, E>(input: &'i str) -> IResult<&'i str, Vec<Token>, E>
-    where
-        E: ParseError<&'i str>,
-    {
+    fn glob(input: Fragment) -> IResult<Fragment, Vec<Token<Annotation>>> {
+        #[cfg(feature = "diagnostics")]
+        fn annotate<'i, E, F>(
+            parser: F,
+        ) -> impl FnMut(Fragment<'i>) -> IResult<Fragment<'i>, Token<'i, Annotation>, E>
+        where
+            E: ParseError<Fragment<'i>>,
+            F: Parser<Fragment<'i>, TokenKind<'i, Annotation>, E>,
+        {
+            use crate::fragment;
+
+            combinator::map(fragment::span(parser), |(span, kind)| {
+                Token::new(kind, span.into())
+            })
+        }
+
+        #[cfg(not(feature = "diagnostics"))]
+        fn annotate<'i, E, F>(
+            parser: F,
+        ) -> impl FnMut(Fragment<'i>) -> IResult<Fragment<'i>, Token<'i, Annotation>, E>
+        where
+            E: ParseError<Fragment<'i>>,
+            F: Parser<Fragment<'i>, TokenKind<'i, Annotation>, E>,
+        {
+            combinator::map(parser, |kind| Token::new(kind, ()))
+        }
+
         multi::many1(branch::alt((
-            literal,
-            alternative,
-            wildcard,
-            class,
-            separator,
+            annotate(literal),
+            annotate(alternative),
+            annotate(wildcard),
+            annotate(class),
+            annotate(separator),
         )))(input)
     }
 
+    #[cfg_attr(not(feature = "diagnostics"), allow(clippy::useless_conversion))]
+    let text = Fragment::from(text);
     let tokens = combinator::all_consuming(glob)(text)
         .map(|(_, tokens)| tokens)
+        .map_err(|error| crate::token::ParseError::new(text, error))
         .map_err(GlobError::from)?;
-    rule::check(tokens.iter())?;
-    Ok(tokens)
-}
-
-// NOTE: Some optimization cases cannot occur using `token::parse` alone, but
-//       all optimizations assume that the token sequence is accepted by
-//       `rule::check`; there are no optimizations for sequences that are
-//       rejected by `rule::check`.
-pub fn optimize<'t>(
-    tokens: impl IntoIterator<Item = Token<'t>>,
-) -> impl Iterator<Item = Token<'t>> {
-    tokens
-        .into_iter()
-        // Discard empty literal tokens.
-        .filter(|token| match &token {
-            Token::Literal(ref literal) => !literal.is_empty(),
-            _ => true,
-        })
-        // Coalesce adjacent literal tokens into a single concatenated literal
-        // token.
-        .coalesce(|left, right| match (&left, &right) {
-            (Token::Literal(ref left), Token::Literal(ref right)) => {
-                Ok(Token::Literal(format!("{}{}", left, right).into()))
-            }
-            _ => Err((left, right)),
-        })
+    rule::check(text, tokens.iter())?;
+    #[cfg(feature = "diagnostics")]
+    {
+        // TODO: Token sequences tend to be small (tens of tokens). It may not
+        //       be worth the additional allocation and moves to drop
+        //       annotations.
+        Ok(tokens.into_iter().map(Token::unannotate).collect())
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    {
+        Ok(tokens)
+    }
 }
 
 #[cfg(test)]
