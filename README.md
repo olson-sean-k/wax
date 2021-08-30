@@ -17,7 +17,7 @@ Match a specific path against a glob:
 ```rust
 use wax::Glob;
 
-let glob = Glob::new("*.png");
+let glob = Glob::new("*.png").unwrap();
 if glob.is_match("logo.png") {
     // ...
 }
@@ -217,7 +217,7 @@ components in a glob that have special semantics on the target platform.
 ```rust
 use wax::Glob;
 
-let glob = Glob::new("../**/src/**/main.rs");
+let glob = Glob::new("../**/src/**/main.rs").unwrap();
 assert!(glob.has_semantic_literals());
 ```
 
