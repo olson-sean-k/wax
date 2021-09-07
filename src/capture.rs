@@ -88,21 +88,21 @@ impl<'t> Capture<'t> {
         self.bytes
     }
 
-    pub fn as_str(&self) -> Option<&str> {
+    pub fn as_str(&self) -> Option<&'t str> {
         str::from_utf8(self.bytes).ok()
     }
 
-    pub fn to_string_lossy(&self) -> Cow<str> {
+    pub fn to_string_lossy(&self) -> Cow<'t, str> {
         String::from_utf8_lossy(self.bytes)
     }
 
     #[cfg(not(windows))]
-    pub fn to_path(&self) -> Cow<Path> {
+    pub fn to_path(&self) -> Cow<'t, Path> {
         Path::from_raw_bytes(self.bytes).expect_os_str_bytes()
     }
 
     #[cfg(windows)]
-    pub fn to_path(&self) -> Cow<Path> {
+    pub fn to_path(&self) -> Cow<'t, Path> {
         use path_slash::PathBufExt as _;
         use std::path::PathBuf;
 
