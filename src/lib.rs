@@ -696,7 +696,7 @@ impl<'t> Glob<'t> {
         };
         let regexes = Walk::compile(self.tokens.iter());
         Walk {
-            glob: self,
+            regex: Cow::Borrowed(&self.regex),
             regexes,
             prefix: prefix.into_owned(),
             walk: WalkDir::new(root)
@@ -780,7 +780,11 @@ macro_rules! walk {
                     (Last(_) | Only(_), Both(component, regex)) => {
                         if regex.is_match(component) {
                             let bytes = BytePath::from_path(&path);
-                            if let Some(captures) = $state.glob.captures(&bytes) {
+                            if let Some(captures) = $state
+                                .regex
+                                .captures(bytes.as_ref())
+                                .map(CaptureBuffer::from)
+                            {
                                 let $entry = Ok(WalkEntry {
                                     entry: Cow::Borrowed(&entry),
                                     captures,
@@ -798,7 +802,11 @@ macro_rules! walk {
                     }
                     (_, Left(_component)) => {
                         let bytes = BytePath::from_path(&path);
-                        if let Some(captures) = $state.glob.captures(&bytes) {
+                        if let Some(captures) = $state
+                            .regex
+                            .captures(bytes.as_ref())
+                            .map(CaptureBuffer::from)
+                        {
                             let $entry = Ok(WalkEntry {
                                 entry: Cow::Borrowed(&entry),
                                 captures,
@@ -862,16 +870,16 @@ impl<'e> WalkEntry<'e> {
 
 /// Iterator over files matching a `Glob` in a directory tree.
 pub struct Walk<'g> {
-    glob: &'g Glob<'g>,
+    regex: Cow<'g, Regex>,
     regexes: Vec<Regex>,
     prefix: PathBuf,
     walk: walkdir::IntoIter,
 }
 
 impl<'g> Walk<'g> {
-    fn compile<I>(tokens: I) -> Vec<Regex>
+    fn compile<'t, I>(tokens: I) -> Vec<Regex>
     where
-        I: IntoIterator<Item = &'g Token<'g>>,
+        I: IntoIterator<Item = &'t Token<'t>>,
         I::IntoIter: Clone,
     {
         let mut regexes = Vec::new();
@@ -891,6 +899,21 @@ impl<'g> Walk<'g> {
             }
         }
         regexes
+    }
+
+    pub fn into_owned(self) -> Walk<'static> {
+        let Walk {
+            regex,
+            regexes,
+            prefix,
+            walk,
+        } = self;
+        Walk {
+            regex: Cow::Owned(regex.into_owned()),
+            regexes,
+            prefix,
+            walk,
+        }
     }
 
     /// Calls a closure on each matched file or error.
@@ -914,6 +937,17 @@ impl<'g> Iterator for Walk<'g> {
         });
         None
     }
+}
+
+pub fn walk(
+    text: &str,
+    directory: impl AsRef<Path>,
+    depth: usize,
+) -> Result<Walk<'static>, GlobError> {
+    let (prefix, glob) = Glob::partitioned(text)?;
+    Ok(glob
+        .walk(directory.as_ref().join(prefix), depth)
+        .into_owned())
 }
 
 #[cfg(test)]
