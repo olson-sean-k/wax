@@ -25,7 +25,9 @@ use std::iter::Fuse;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use thiserror::Error;
-use walkdir::{self, DirEntry, Error as WalkError, WalkDir};
+use walkdir::{self, DirEntry, WalkDir};
+
+pub use walkdir::Error as WalkError;
 
 use crate::token::{Token, TokenKind};
 
