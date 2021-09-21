@@ -21,11 +21,11 @@ pub type Annotation = SourceSpan;
 pub type Annotation = ();
 
 #[cfg(feature = "diagnostics")]
-type Fragment<'i> = Locate<'i, str>;
+type Expression<'i> = Locate<'i, str>;
 #[cfg(not(feature = "diagnostics"))]
-type Fragment<'i> = &'i str;
+type Expression<'i> = &'i str;
 
-type ParserInput<'i> = Stateful<Fragment<'i>, FlagState>;
+type ParserInput<'i> = Stateful<Expression<'i>, FlagState>;
 
 type NomError<'t> = nom::Err<nom::error::Error<ParserInput<'t>>>;
 
@@ -106,103 +106,6 @@ impl Default for FlagState {
 #[derive(Clone, Copy, Debug)]
 enum FlagToggle {
     CaseInsensitive(bool),
-}
-
-#[derive(Clone, Debug)]
-pub struct Alternative<'t, A = ()>(Vec<Vec<Token<'t, A>>>);
-
-impl<'t, A> Alternative<'t, A> {
-    pub fn into_owned(self) -> Alternative<'static, A> {
-        Alternative(
-            self.0
-                .into_iter()
-                .map(|tokens| tokens.into_iter().map(Token::into_owned).collect())
-                .collect(),
-        )
-    }
-
-    #[cfg(feature = "diagnostics")]
-    pub fn unannotate(self) -> Alternative<'t, ()> {
-        Alternative(
-            self.0
-                .into_iter()
-                .map(|tokens| tokens.into_iter().map(Token::unannotate).collect())
-                .collect(),
-        )
-    }
-
-    pub fn branches(&self) -> &Vec<Vec<Token<'t, A>>> {
-        &self.0
-    }
-
-    pub fn has_component_boundary(&self) -> bool {
-        self.0.iter().any(|tokens| {
-            tokens.iter().any(|token| match token.kind() {
-                TokenKind::Alternative(ref alternative) => alternative.has_component_boundary(),
-                _ => token.is_component_boundary(),
-            })
-        })
-    }
-}
-
-impl<'t, A> From<Vec<Vec<Token<'t, A>>>> for Alternative<'t, A> {
-    fn from(alternatives: Vec<Vec<Token<'t, A>>>) -> Self {
-        Alternative(alternatives)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Archetype {
-    Character(char),
-    Range(char, char),
-}
-
-impl From<char> for Archetype {
-    fn from(literal: char) -> Archetype {
-        Archetype::Character(literal)
-    }
-}
-
-impl From<(char, char)> for Archetype {
-    fn from(range: (char, char)) -> Archetype {
-        Archetype::Range(range.0, range.1)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Literal<'t> {
-    text: Cow<'t, str>,
-    is_case_insensitive: bool,
-}
-
-impl<'t> Literal<'t> {
-    pub fn text(&self) -> &str {
-        self.text.as_ref()
-    }
-
-    pub fn is_case_insensitive(&self) -> bool {
-        self.is_case_insensitive
-    }
-
-    pub fn has_variant_casing(&self) -> bool {
-        // If path case sensitivity agrees with the literal case sensitivity,
-        // then the literal is not variant. Otherwise, the literal is variant if
-        // it contains characters with casing.
-        (PATHS_ARE_CASE_INSENSITIVE != self.is_case_insensitive) && self.text.has_casing()
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Evaluation {
-    Eager,
-    Lazy,
-}
-
-#[derive(Clone, Debug)]
-pub enum Wildcard {
-    One,
-    ZeroOrMore(Evaluation),
-    Tree { is_rooted: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -360,6 +263,103 @@ impl<A> From<Wildcard> for TokenKind<'static, A> {
     fn from(wildcard: Wildcard) -> Self {
         TokenKind::Wildcard(wildcard)
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct Alternative<'t, A = ()>(Vec<Vec<Token<'t, A>>>);
+
+impl<'t, A> Alternative<'t, A> {
+    pub fn into_owned(self) -> Alternative<'static, A> {
+        Alternative(
+            self.0
+                .into_iter()
+                .map(|tokens| tokens.into_iter().map(Token::into_owned).collect())
+                .collect(),
+        )
+    }
+
+    #[cfg(feature = "diagnostics")]
+    pub fn unannotate(self) -> Alternative<'t, ()> {
+        Alternative(
+            self.0
+                .into_iter()
+                .map(|tokens| tokens.into_iter().map(Token::unannotate).collect())
+                .collect(),
+        )
+    }
+
+    pub fn branches(&self) -> &Vec<Vec<Token<'t, A>>> {
+        &self.0
+    }
+
+    pub fn has_component_boundary(&self) -> bool {
+        self.0.iter().any(|tokens| {
+            tokens.iter().any(|token| match token.kind() {
+                TokenKind::Alternative(ref alternative) => alternative.has_component_boundary(),
+                _ => token.is_component_boundary(),
+            })
+        })
+    }
+}
+
+impl<'t, A> From<Vec<Vec<Token<'t, A>>>> for Alternative<'t, A> {
+    fn from(alternatives: Vec<Vec<Token<'t, A>>>) -> Self {
+        Alternative(alternatives)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Archetype {
+    Character(char),
+    Range(char, char),
+}
+
+impl From<char> for Archetype {
+    fn from(literal: char) -> Archetype {
+        Archetype::Character(literal)
+    }
+}
+
+impl From<(char, char)> for Archetype {
+    fn from(range: (char, char)) -> Archetype {
+        Archetype::Range(range.0, range.1)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Evaluation {
+    Eager,
+    Lazy,
+}
+
+#[derive(Clone, Debug)]
+pub struct Literal<'t> {
+    text: Cow<'t, str>,
+    is_case_insensitive: bool,
+}
+
+impl<'t> Literal<'t> {
+    pub fn text(&self) -> &str {
+        self.text.as_ref()
+    }
+
+    pub fn is_case_insensitive(&self) -> bool {
+        self.is_case_insensitive
+    }
+
+    pub fn has_variant_casing(&self) -> bool {
+        // If path case sensitivity agrees with the literal case sensitivity,
+        // then the literal is not variant. Otherwise, the literal is variant if
+        // it contains characters with casing.
+        (PATHS_ARE_CASE_INSENSITIVE != self.is_case_insensitive) && self.text.has_casing()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Wildcard {
+    One,
+    ZeroOrMore(Evaluation),
+    Tree { is_rooted: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -748,7 +748,7 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
     }
 
     #[cfg_attr(not(feature = "diagnostics"), allow(clippy::useless_conversion))]
-    let input = ParserInput::new(Fragment::from(expression), FlagState::default());
+    let input = ParserInput::new(Expression::from(expression), FlagState::default());
     let tokens = combinator::all_consuming(glob)(input)
         .map(|(_, tokens)| tokens)
         .map_err(|error| crate::token::ParseError::new(expression, error))

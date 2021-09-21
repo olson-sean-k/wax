@@ -13,8 +13,8 @@ pub struct Locate<'i, T>
 where
     T: ?Sized,
 {
-    offset: usize,
     data: &'i T,
+    offset: usize,
 }
 
 impl<'i, T> Locate<'i, T>
@@ -64,8 +64,8 @@ where
 {
     fn clone(&self) -> Self {
         Locate {
-            offset: self.offset,
             data: self.data,
+            offset: self.offset,
         }
     }
 }
@@ -130,7 +130,7 @@ where
     T: ?Sized,
 {
     fn from(data: &'i T) -> Self {
-        Locate { offset: 0, data }
+        Locate { data, offset: 0 }
     }
 }
 
@@ -271,8 +271,8 @@ where
         let sliced = self.data.slice(range);
         let offset = self.data.offset(&sliced);
         Locate {
-            offset: self.offset + offset,
             data: sliced,
+            offset: self.offset + offset,
         }
     }
 }
