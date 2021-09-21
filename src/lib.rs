@@ -69,12 +69,28 @@ impl SourceSpanExt for SourceSpan {
     }
 }
 
-trait CharExt {
-    fn has_casing(&self) -> bool;
+trait CharExt: Sized {
+    const ESCAPE: Self;
+
+    // This trait is only implemented by `char`, which is trivially copyable.
+    // The inherent functions of `char` also use `self` as a receiver.
+    #[allow(clippy::wrong_self_convention)]
+    fn is_control(self) -> bool;
+
+    fn has_casing(self) -> bool;
 }
 
 impl CharExt for char {
-    fn has_casing(&self) -> bool {
+    const ESCAPE: Self = '\\';
+
+    fn is_control(self) -> bool {
+        matches!(
+            self,
+            '?' | '*' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | ',',
+        )
+    }
+
+    fn has_casing(self) -> bool {
         self.is_lowercase() != self.is_uppercase()
     }
 }
@@ -966,6 +982,21 @@ pub fn walk(
         .into_owned())
 }
 
+pub fn escape(unescaped: &str) -> Cow<str> {
+    if unescaped.chars().any(CharExt::is_control) {
+        let mut escaped = String::new();
+        for x in unescaped.chars() {
+            if CharExt::is_control(x) {
+                escaped.push(char::ESCAPE);
+            }
+            escaped.push(x);
+        }
+        escaped.into()
+    } else {
+        unescaped.into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -996,6 +1027,21 @@ mod tests {
         );
         assert_eq!(adjacent.next(), Some(Adjacency::Last { left: 1, item: 2 }));
         assert_eq!(adjacent.next(), None);
+    }
+
+    #[test]
+    fn escape() {
+        assert_eq!(crate::escape("/usr/local/lib"), "/usr/local/lib",);
+        assert_eq!(
+            crate::escape("record[D00,00].txt"),
+            "record\\[D00\\,00\\].txt",
+        );
+        assert_eq!(
+            crate::escape("Do You Remember Love?.mp4"),
+            "Do You Remember Love\\?.mp4",
+        );
+        assert_eq!(crate::escape("左{}右"), "左\\{\\}右",);
+        assert_eq!(crate::escape("*中*"), "\\*中\\*",);
     }
 
     #[test]
