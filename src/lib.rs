@@ -546,8 +546,8 @@ impl<'t> Glob<'t> {
         Regex::new(&pattern).expect("glob compilation failed")
     }
 
-    pub fn new(text: &'t str) -> Result<Self, GlobError<'t>> {
-        let tokens = token::parse(text)?;
+    pub fn new(expression: &'t str) -> Result<Self, GlobError<'t>> {
+        let tokens = token::parse(expression)?;
         let regex = Glob::compile(tokens.iter());
         Ok(Glob { tokens, regex })
     }
@@ -600,7 +600,7 @@ impl<'t> Glob<'t> {
     ///
     /// Returns an error if the glob expression cannot be parsed or violates
     /// glob component rules.
-    pub fn partitioned(text: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
+    pub fn partitioned(expression: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
         use crate::token::TokenKind::{Literal, Separator, Wildcard};
         use crate::token::Wildcard::Tree;
 
@@ -629,7 +629,7 @@ impl<'t> Glob<'t> {
         }
 
         // Get the literal path prefix for the token sequence.
-        let mut tokens = token::parse(text)?;
+        let mut tokens = token::parse(expression)?;
         let prefix = token::literal_path_prefix(tokens.iter()).unwrap_or_else(PathBuf::new);
 
         // Drain literal tokens from the beginning of the token sequence. Unroot
@@ -711,16 +711,16 @@ impl<'t> Glob<'t> {
 impl<'t> TryFrom<&'t str> for Glob<'t> {
     type Error = GlobError<'t>;
 
-    fn try_from(text: &'t str) -> Result<Self, Self::Error> {
-        Glob::new(text)
+    fn try_from(expression: &'t str) -> Result<Self, Self::Error> {
+        Glob::new(expression)
     }
 }
 
 impl FromStr for Glob<'static> {
     type Err = GlobError<'static>;
 
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        Glob::new(text)
+    fn from_str(expression: &str) -> Result<Self, Self::Err> {
+        Glob::new(expression)
             .map(|glob| glob.into_owned())
             .map_err(|error| error.into_owned())
     }
@@ -940,11 +940,11 @@ impl<'g> Iterator for Walk<'g> {
 }
 
 pub fn walk(
-    text: &str,
+    expression: &str,
     directory: impl AsRef<Path>,
     depth: usize,
 ) -> Result<Walk<'static>, GlobError> {
-    let (prefix, glob) = Glob::partitioned(text)?;
+    let (prefix, glob) = Glob::partitioned(expression)?;
     Ok(glob
         .walk(directory.as_ref().join(prefix), depth)
         .into_owned())

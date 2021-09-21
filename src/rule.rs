@@ -25,49 +25,49 @@ use crate::{IteratorExt as _, SliceExt as _, Terminals};
 #[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
 #[cfg_attr(feature = "diagnostics", diagnostic(code = "glob::rule"))]
 pub struct RuleError<'t> {
-    text: Cow<'t, str>,
+    expression: Cow<'t, str>,
     kind: ErrorKind,
     #[cfg(feature = "diagnostics")]
-    #[snippet(text, message("in this expression"))]
-    expression: SourceSpan,
+    #[snippet(expression, message("in this expression"))]
+    snippet: SourceSpan,
     #[cfg(feature = "diagnostics")]
-    #[highlight(expression, label("here"))]
+    #[highlight(snippet, label("here"))]
     error: SourceSpan,
 }
 
 impl<'t> RuleError<'t> {
     #[cfg(feature = "diagnostics")]
-    fn new(text: &'t str, kind: ErrorKind, span: SourceSpan) -> Self {
+    fn new(expression: &'t str, kind: ErrorKind, span: SourceSpan) -> Self {
         RuleError {
-            text: text.into(),
+            expression: expression.into(),
             kind,
-            expression: (0, text.len()).into(),
+            snippet: (0, expression.len()).into(),
             error: span,
         }
     }
 
     #[cfg(not(feature = "diagnostics"))]
-    fn new(text: &'t str, kind: ErrorKind) -> Self {
+    fn new(expression: &'t str, kind: ErrorKind) -> Self {
         RuleError {
-            text: text.into(),
+            expression: expression.into(),
             kind,
         }
     }
 
     pub fn into_owned(self) -> RuleError<'static> {
         let RuleError {
-            text,
+            expression,
             kind,
             #[cfg(feature = "diagnostics")]
-            expression,
+            snippet,
             #[cfg(feature = "diagnostics")]
             error,
         } = self;
         RuleError {
-            text: text.into_owned().into(),
+            expression: expression.into_owned().into(),
             kind,
             #[cfg(feature = "diagnostics")]
-            expression,
+            snippet,
             #[cfg(feature = "diagnostics")]
             error,
         }
@@ -86,19 +86,19 @@ enum ErrorKind {
     BoundaryAdjacent,
 }
 
-pub fn check<'t, 'i, I>(text: &'t str, tokens: I) -> Result<(), RuleError<'t>>
+pub fn check<'t, 'i, I>(expression: &'t str, tokens: I) -> Result<(), RuleError<'t>>
 where
     I: IntoIterator<Item = &'i Token<'t, Annotation>>,
     I::IntoIter: Clone,
     't: 'i,
 {
     let tokens = tokens.into_iter();
-    alternative(text, tokens.clone())?;
-    boundary(text, tokens)?;
+    alternative(expression, tokens.clone())?;
+    boundary(expression, tokens)?;
     Ok(())
 }
 
-fn alternative<'t, 'i, I>(text: &'t str, tokens: I) -> Result<(), RuleError<'t>>
+fn alternative<'t, 'i, I>(expression: &'t str, tokens: I) -> Result<(), RuleError<'t>>
 where
     I: IntoIterator<Item = &'i Token<'t, Annotation>>,
     't: 'i,
@@ -142,7 +142,7 @@ where
     }
 
     fn recurse<'t, 'i, I>(
-        text: &'t str,
+        expression: &'t str,
         tokens: I,
         outer: Outer<'t, 'i>,
     ) -> Result<(), RuleError<'t>>
@@ -175,7 +175,7 @@ where
                              span,
                          }| {
                             RuleError::new(
-                                text,
+                                expression,
                                 kind,
                                 // TODO: Reverse this relationship. `check`
                                 //       should compose the final span, which
@@ -191,7 +191,7 @@ where
                         },
                     )?;
                 }
-                recurse(text, tokens.iter(), outer)?;
+                recurse(expression, tokens.iter(), outer)?;
             }
         }
         Ok(())
@@ -332,10 +332,10 @@ where
         }
     }
 
-    recurse(text, tokens, Default::default())
+    recurse(expression, tokens, Default::default())
 }
 
-fn boundary<'t, 'i, I>(text: &'t str, tokens: I) -> Result<(), RuleError<'t>>
+fn boundary<'t, 'i, I>(expression: &'t str, tokens: I) -> Result<(), RuleError<'t>>
 where
     I: IntoIterator<Item = &'i Token<'t, Annotation>>,
     't: 'i,
@@ -348,7 +348,7 @@ where
         .map(|(left, right)| (left.annotation(), right.annotation()))
     {
         Err(RuleError::new(
-            text,
+            expression,
             ErrorKind::BoundaryAdjacent,
             #[cfg(feature = "diagnostics")]
             left.union(right),

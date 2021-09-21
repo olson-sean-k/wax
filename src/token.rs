@@ -34,18 +34,18 @@ type NomError<'t> = nom::Err<nom::error::Error<ParserInput<'t>>>;
 #[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
 #[cfg_attr(feature = "diagnostics", diagnostic(code = "glob::parse"))]
 pub struct ParseError<'t> {
-    text: Cow<'t, str>,
+    expression: Cow<'t, str>,
     kind: ErrorKind,
     #[cfg(feature = "diagnostics")]
-    #[snippet(text, message("in this expression"))]
-    expression: SourceSpan,
+    #[snippet(expression, message("in this expression"))]
+    snippet: SourceSpan,
     #[cfg(feature = "diagnostics")]
-    #[highlight(expression, label("here"))]
+    #[highlight(snippet, label("here"))]
     error: SourceSpan,
 }
 
 impl<'t> ParseError<'t> {
-    fn new(text: &'t str, error: NomError<'t>) -> Self {
+    fn new(expression: &'t str, error: NomError<'t>) -> Self {
         match error {
             NomError::Incomplete(_) => {
                 panic!("unexpected parse error: incomplete input")
@@ -56,15 +56,15 @@ impl<'t> ParseError<'t> {
 
                 let input = error.input.as_ref().as_ref();
                 ParseError {
-                    text: text.into(),
+                    expression: expression.into(),
                     kind: error.code,
-                    expression: (0, text.len()).into(),
-                    error: (Offset::offset(&text, &input), 0).into(),
+                    snippet: (0, expression.len()).into(),
+                    error: (Offset::offset(&expression, &input), 0).into(),
                 }
             }
             #[cfg(not(feature = "diagnostics"))]
             NomError::Error(error) | NomError::Failure(error) => ParseError {
-                text: text.into(),
+                expression: expression.into(),
                 kind: error.code,
             },
         }
@@ -72,18 +72,18 @@ impl<'t> ParseError<'t> {
 
     pub fn into_owned(self) -> ParseError<'static> {
         let ParseError {
-            text,
+            expression,
             kind,
             #[cfg(feature = "diagnostics")]
-            expression,
+            snippet,
             #[cfg(feature = "diagnostics")]
             error,
         } = self;
         ParseError {
-            text: text.into_owned().into(),
+            expression: expression.into_owned().into(),
             kind,
             #[cfg(feature = "diagnostics")]
-            expression,
+            snippet,
             #[cfg(feature = "diagnostics")]
             error,
         }
@@ -485,7 +485,7 @@ where
 //       like literals and character classes. This means escaping back slashes
 //       is not possible (despite common conventions). This avoids non-separator
 //       tokens parsing over directory boundaries (in particular on Windows).
-pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
+pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
     use nom::bytes::complete as bytes;
     use nom::character::complete as character;
     use nom::error::ParseError;
@@ -748,12 +748,12 @@ pub fn parse(text: &str) -> Result<Vec<Token>, GlobError> {
     }
 
     #[cfg_attr(not(feature = "diagnostics"), allow(clippy::useless_conversion))]
-    let input = ParserInput::new(Fragment::from(text), FlagState::default());
+    let input = ParserInput::new(Fragment::from(expression), FlagState::default());
     let tokens = combinator::all_consuming(glob)(input)
         .map(|(_, tokens)| tokens)
-        .map_err(|error| crate::token::ParseError::new(text, error))
+        .map_err(|error| crate::token::ParseError::new(expression, error))
         .map_err(GlobError::from)?;
-    rule::check(text, tokens.iter())?;
+    rule::check(expression, tokens.iter())?;
     #[cfg(feature = "diagnostics")]
     {
         // TODO: Token sequences tend to be small (tens of tokens). It may not
