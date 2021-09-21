@@ -358,8 +358,22 @@ impl<'b> BytePath<'b> {
         }
     }
 
+    #[cfg(not(windows))]
     pub fn to_path(&self) -> Cow<Path> {
         Path::from_raw_bytes(self.path.as_ref()).expect_os_str_bytes()
+    }
+
+    #[cfg(windows)]
+    pub fn to_path(&self) -> Cow<Path> {
+        use path_slash::PathBufExt as _;
+        use std::path::PathBuf;
+
+        PathBuf::from_slash_lossy(
+            Path::from_raw_bytes(self.path.as_ref())
+                .expect_os_str_bytes()
+                .as_ref(),
+        )
+        .into()
     }
 }
 
