@@ -17,6 +17,7 @@ use miette::{Diagnostic, SourceSpan};
 use os_str_bytes::OsStrBytes as _;
 use regex::bytes::Regex;
 use std::borrow::{Borrow, Cow};
+use std::cmp;
 use std::convert::TryFrom;
 use std::ffi::OsStr;
 use std::fmt::Debug;
@@ -61,8 +62,6 @@ trait SourceSpanExt {
 #[cfg(feature = "diagnostics")]
 impl SourceSpanExt for SourceSpan {
     fn union(&self, other: &SourceSpan) -> SourceSpan {
-        use std::cmp;
-
         let start = cmp::min(self.offset(), other.offset());
         let end = cmp::max(self.offset() + self.len(), other.offset() + other.len());
         (start, end - start).into()
@@ -785,17 +784,19 @@ macro_rules! walk {
                     continue; // May be unreachable.
                 }
             };
+            let depth = cmp::max(entry.depth(), 1) - 1;
             let path = entry
                 .path()
                 .strip_prefix(&$state.prefix)
                 .expect("path is not in tree");
             for candidate in path
                 .components()
+                .skip(depth)
                 .filter_map(|component| match component {
                     Component::Normal(component) => Some(component.to_raw_bytes()),
                     _ => None,
                 })
-                .zip_longest($state.regexes.iter())
+                .zip_longest($state.regexes.iter().skip(depth))
                 .with_position()
             {
                 match candidate.as_tuple() {
@@ -920,9 +921,6 @@ impl<'g> Walk<'g> {
                 TokenKind::Alternative(ref alternative) => alternative.has_component_boundary(),
                 token => token.is_component_boundary(),
             }) {
-                // NOTE: `token::components` omits any separators outside of
-                //       alternatives, so this will not stop at top-level
-                //       separators.
                 // Stop at component boundaries, such as tree wildcards or any
                 // boundary within an alternative token.
                 break;
