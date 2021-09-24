@@ -34,14 +34,12 @@ type NomError<'t> = nom::Err<nom::error::Error<ParserInput<'t>>>;
 #[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
 #[cfg_attr(feature = "diagnostics", diagnostic(code = "glob::parse"))]
 pub struct ParseError<'t> {
+    #[cfg_attr(feature = "diagnostics", source_code)]
     expression: Cow<'t, str>,
     kind: ErrorKind,
     #[cfg(feature = "diagnostics")]
-    #[snippet(expression, message("in this expression"))]
-    snippet: SourceSpan,
-    #[cfg(feature = "diagnostics")]
-    #[highlight(snippet, label("here"))]
-    error: SourceSpan,
+    #[label("starting here")]
+    span: SourceSpan,
 }
 
 impl<'t> ParseError<'t> {
@@ -58,8 +56,7 @@ impl<'t> ParseError<'t> {
                 ParseError {
                     expression: expression.into(),
                     kind: error.code,
-                    snippet: (0, expression.len()).into(),
-                    error: (Offset::offset(&expression, &input), 0).into(),
+                    span: (Offset::offset(&expression, &input), 0).into(),
                 }
             }
             #[cfg(not(feature = "diagnostics"))]
@@ -75,18 +72,18 @@ impl<'t> ParseError<'t> {
             expression,
             kind,
             #[cfg(feature = "diagnostics")]
-            snippet,
-            #[cfg(feature = "diagnostics")]
-            error,
+            span,
         } = self;
         ParseError {
             expression: expression.into_owned().into(),
             kind,
             #[cfg(feature = "diagnostics")]
-            snippet,
-            #[cfg(feature = "diagnostics")]
-            error,
+            span,
         }
+    }
+
+    pub fn expression(&self) -> &str {
+        self.expression.as_ref()
     }
 }
 

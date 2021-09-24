@@ -207,15 +207,14 @@ to capture and display diagnostics. This can be useful for reporting errors to
 users that provide glob expressions.
 
 ```
-Error: ────[glob::rule]─────────────────────────────────────────────────────────────────────────
+Error: glob::rule
 
-    × invalid glob: rooted sub-glob or adjacent component boundaries `/` or `**` in alternative
-
-   ╭───[1:1] in this expression:
- 1 │ .local/{bin,{lib/,share}/**/log}/**
-   ·             ────────┬───────
-   ·                     ╰──────── here
-   ╰───
+  x invalid glob expression: adjacent zero-or-more wildcards `*` or `$` in alternative
+   ,----
+ 1 | doc/**/*{.md,*.txt}
+   :        ^^^^^^|^^^^^
+   :              `-- here
+   `----
 ```
 
 Diagnostics are disabled by default and can be enabled with the `diagnostics`

@@ -21,18 +21,16 @@ use crate::SourceSpanExt as _;
 use crate::{IteratorExt as _, SliceExt as _, Terminals};
 
 #[derive(Debug, Error)]
-#[error("invalid glob: {kind}")]
+#[error("invalid glob expression: {kind}")]
 #[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
 #[cfg_attr(feature = "diagnostics", diagnostic(code = "glob::rule"))]
 pub struct RuleError<'t> {
+    #[cfg_attr(feature = "diagnostics", source_code)]
     expression: Cow<'t, str>,
     kind: ErrorKind,
     #[cfg(feature = "diagnostics")]
-    #[snippet(expression, message("in this expression"))]
-    snippet: SourceSpan,
-    #[cfg(feature = "diagnostics")]
-    #[highlight(snippet, label("here"))]
-    error: SourceSpan,
+    #[label("here")]
+    span: SourceSpan,
 }
 
 impl<'t> RuleError<'t> {
@@ -41,8 +39,7 @@ impl<'t> RuleError<'t> {
         RuleError {
             expression: expression.into(),
             kind,
-            snippet: (0, expression.len()).into(),
-            error: span,
+            span,
         }
     }
 
@@ -59,18 +56,18 @@ impl<'t> RuleError<'t> {
             expression,
             kind,
             #[cfg(feature = "diagnostics")]
-            snippet,
-            #[cfg(feature = "diagnostics")]
-            error,
+            span,
         } = self;
         RuleError {
             expression: expression.into_owned().into(),
             kind,
             #[cfg(feature = "diagnostics")]
-            snippet,
-            #[cfg(feature = "diagnostics")]
-            error,
+            span,
         }
+    }
+
+    pub fn expression(&self) -> &str {
+        self.expression.as_ref()
     }
 }
 
