@@ -211,9 +211,11 @@ Error: glob::rule
 
   x invalid glob expression: adjacent zero-or-more wildcards `*` or `$` in alternative
    ,----
- 1 | doc/**/*{.md,*.txt}
-   :        ^^^^^^|^^^^^
-   :              `-- here
+ 1 | doc/**/*{.md,.tex,*.txt}
+   :        |^^^^^^^^|^^^^^^^
+   :        |        | `-- here
+   :        |        `-- in this alternative
+   :        `-- here
    `----
 ```
 

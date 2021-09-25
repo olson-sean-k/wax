@@ -11,8 +11,10 @@
 
 use itertools::Itertools as _;
 #[cfg(feature = "diagnostics")]
-use miette::{Diagnostic, SourceSpan};
+use miette::{Diagnostic, LabeledSpan, SourceCode, SourceSpan};
 use std::borrow::Cow;
+#[cfg(feature = "diagnostics")]
+use std::fmt::Display;
 use thiserror::Error;
 
 use crate::token::{Annotation, Token};
@@ -20,30 +22,24 @@ use crate::token::{Annotation, Token};
 use crate::SourceSpanExt as _;
 use crate::{IteratorExt as _, SliceExt as _, Terminals};
 
+#[cfg(feature = "diagnostics")]
+type AlternativeAnnotation = AlternativeSpan;
+#[cfg(not(feature = "diagnostics"))]
+type AlternativeAnnotation = ();
+
+#[cfg(feature = "diagnostics")]
+type BoundaryAnnotation = SourceSpan;
+#[cfg(not(feature = "diagnostics"))]
+type BoundaryAnnotation = ();
+
 #[derive(Debug, Error)]
 #[error("invalid glob expression: {kind}")]
-#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
-#[cfg_attr(feature = "diagnostics", diagnostic(code = "glob::rule"))]
 pub struct RuleError<'t> {
-    #[cfg_attr(feature = "diagnostics", source_code)]
     expression: Cow<'t, str>,
     kind: ErrorKind,
-    #[cfg(feature = "diagnostics")]
-    #[label("here")]
-    span: SourceSpan,
 }
 
 impl<'t> RuleError<'t> {
-    #[cfg(feature = "diagnostics")]
-    fn new(expression: &'t str, kind: ErrorKind, span: SourceSpan) -> Self {
-        RuleError {
-            expression: expression.into(),
-            kind,
-            span,
-        }
-    }
-
-    #[cfg(not(feature = "diagnostics"))]
     fn new(expression: &'t str, kind: ErrorKind) -> Self {
         RuleError {
             expression: expression.into(),
@@ -52,17 +48,10 @@ impl<'t> RuleError<'t> {
     }
 
     pub fn into_owned(self) -> RuleError<'static> {
-        let RuleError {
-            expression,
-            kind,
-            #[cfg(feature = "diagnostics")]
-            span,
-        } = self;
+        let RuleError { expression, kind } = self;
         RuleError {
             expression: expression.into_owned().into(),
             kind,
-            #[cfg(feature = "diagnostics")]
-            span,
         }
     }
 
@@ -71,16 +60,97 @@ impl<'t> RuleError<'t> {
     }
 }
 
-// TODO: This probably shouldn't implement `Error`.
-#[derive(Clone, Copy, Debug, Error, Eq, Hash, PartialEq)]
+#[cfg(feature = "diagnostics")]
+impl<'t> Diagnostic for RuleError<'t> {
+    fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
+        Some(Box::new(String::from("glob::rule")))
+    }
+
+    fn source_code(&self) -> Option<&dyn SourceCode> {
+        Some(&self.expression)
+    }
+
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan>>> {
+        use crate::rule::ErrorKind::{
+            AlternativeBoundary, AlternativeSingularTree, AlternativeZeroOrMore, BoundaryAdjacent,
+        };
+
+        let here = Some(String::from("here"));
+        Some(Box::new(
+            match self.kind {
+                AlternativeBoundary(ref annotation)
+                | AlternativeSingularTree(ref annotation)
+                | AlternativeZeroOrMore(ref annotation) => {
+                    let alternative = LabeledSpan::new_with_span(
+                        Some(String::from("in this alternative")),
+                        annotation.alternative.clone(),
+                    );
+                    match annotation.conflicts {
+                        SpanGroup::Contiguous(ref contiguous) => {
+                            vec![
+                                alternative,
+                                LabeledSpan::new_with_span(here, contiguous.clone()),
+                            ]
+                        }
+                        SpanGroup::Split(ref left, ref right) => vec![
+                            alternative,
+                            LabeledSpan::new_with_span(here.clone(), left.clone()),
+                            LabeledSpan::new_with_span(here, right.clone()),
+                        ],
+                    }
+                }
+                BoundaryAdjacent(ref annotation) => {
+                    vec![LabeledSpan::new_with_span(here, annotation.clone())]
+                }
+            }
+            .into_iter(),
+        ))
+    }
+}
+
+#[derive(Clone, Debug, Error)]
 #[non_exhaustive]
 enum ErrorKind {
     #[error("rooted sub-glob or adjacent component boundaries `/` or `**` in alternative")]
-    AlternativeBoundary,
+    AlternativeBoundary(AlternativeAnnotation),
+    #[error("singular tree wildcard `**` in alternative")]
+    AlternativeSingularTree(AlternativeAnnotation),
     #[error("adjacent zero-or-more wildcards `*` or `$` in alternative")]
-    AlternativeZeroOrMore,
+    AlternativeZeroOrMore(AlternativeAnnotation),
     #[error("adjacent component boundaries `/` or `**`")]
-    BoundaryAdjacent,
+    BoundaryAdjacent(BoundaryAnnotation),
+}
+
+#[cfg(feature = "diagnostics")]
+#[derive(Clone, Debug)]
+struct AlternativeSpan {
+    alternative: SourceSpan,
+    conflicts: SpanGroup,
+}
+
+#[cfg(feature = "diagnostics")]
+#[derive(Clone, Debug)]
+enum SpanGroup {
+    Contiguous(SourceSpan),
+    Split(SourceSpan, SourceSpan),
+}
+
+#[cfg(feature = "diagnostics")]
+impl SpanGroup {
+    pub fn split_some(left: Option<SourceSpan>, right: SourceSpan) -> Self {
+        if let Some(left) = left {
+            SpanGroup::Split(left, right)
+        } else {
+            SpanGroup::Contiguous(right)
+        }
+    }
+}
+
+#[cfg(feature = "diagnostics")]
+impl From<SourceSpan> for SpanGroup {
+    fn from(span: SourceSpan) -> Self {
+        SpanGroup::Contiguous(span)
+    }
 }
 
 pub fn check<'t, 'i, I>(expression: &'t str, tokens: I) -> Result<(), RuleError<'t>>
@@ -103,22 +173,6 @@ where
     use crate::token::TokenKind::{Alternative, Separator, Wildcard};
     use crate::token::Wildcard::{Tree, ZeroOrMore};
     use crate::Terminals::{Only, StartEnd};
-
-    struct CheckError {
-        kind: ErrorKind,
-        #[cfg(feature = "diagnostics")]
-        span: Option<SourceSpan>,
-    }
-
-    impl From<ErrorKind> for CheckError {
-        fn from(kind: ErrorKind) -> CheckError {
-            CheckError {
-                kind,
-                #[cfg(feature = "diagnostics")]
-                span: None,
-            }
-        }
-    }
 
     #[derive(Clone, Copy, Default)]
     struct Outer<'t, 'i> {
@@ -165,28 +219,8 @@ where
                 if let Some(terminals) = tokens.terminals() {
                     // Check branch terminals against the tokens adjacent to
                     // their corresponding alternative token.
-                    check(terminals, outer).map_err(
-                        |CheckError {
-                             kind,
-                             #[cfg(feature = "diagnostics")]
-                             span,
-                         }| {
-                            RuleError::new(
-                                expression,
-                                kind,
-                                // TODO: Reverse this relationship. `check`
-                                //       should compose the final span, which
-                                //       may be smaller than the span of the
-                                //       alternative token.
-                                #[cfg(feature = "diagnostics")]
-                                if let Some(span) = span {
-                                    span.union(token.annotation())
-                                } else {
-                                    token.annotation().clone()
-                                },
-                            )
-                        },
-                    )?;
+                    check(terminals, outer, token.annotation())
+                        .map_err(|kind| RuleError::new(expression, kind))?;
                 }
                 recurse(expression, tokens.iter(), outer)?;
             }
@@ -197,56 +231,53 @@ where
     fn check<'t, 'i>(
         terminals: Terminals<&'i Token<'t, Annotation>>,
         outer: Outer<'t, 'i>,
-    ) -> Result<(), CheckError> {
+        #[cfg_attr(not(feature = "diagnostics"), allow(unused))] annotation: &Annotation,
+    ) -> Result<(), ErrorKind> {
+        #[cfg(feature = "diagnostics")]
+        let annotate = |outer: Option<_>, inner: &Token<Annotation>| AlternativeSpan {
+            alternative: annotation.clone(),
+            conflicts: SpanGroup::split_some(
+                outer.map(Token::annotation).cloned(),
+                inner.annotation().clone(),
+            ),
+        };
+        #[cfg(not(feature = "diagnostics"))]
+        let annotate = |_: Option<_>, _: &Token<Annotation>| {};
+
         let Outer { left, right } = outer;
-        match terminals.map(Token::kind) {
-            Only(Separator) if is_component_boundary_or_terminal(left) => {
+        #[cfg_attr(not(feature = "diagnostics"), allow(clippy::unit_arg))]
+        match terminals.map(|token| (token, token.kind())) {
+            Only((inner, Separator)) if is_component_boundary_or_terminal(left) => {
                 // The alternative is preceded by component boundaries or
                 // terminations; disallow singular separators and rooted
                 // sub-globs.
                 //
                 // For example, `foo/{bar,/}` or `{/,foo}`.
-                Err(CheckError {
-                    kind: ErrorKind::AlternativeBoundary,
-                    #[cfg(feature = "diagnostics")]
-                    span: left.map(|left| left.annotation().clone()),
-                })
+                Err(ErrorKind::AlternativeBoundary(annotate(left, inner)))
             }
-            Only(Separator) if is_component_boundary(right) => {
+            Only((inner, Separator)) if is_component_boundary(right) => {
                 // The alternative is followed by component boundaries; disallow
                 // singular separators and rooted sub-globs.
                 //
                 // For example, `foo/{bar,/}` or `{/,foo}`.
-                Err(CheckError {
-                    kind: ErrorKind::AlternativeBoundary,
-                    #[cfg(feature = "diagnostics")]
-                    span: right.map(|right| right.annotation().clone()),
-                })
+                Err(ErrorKind::AlternativeBoundary(annotate(right, inner)))
             }
-            StartEnd(Separator, _) if is_component_boundary_or_terminal(left) => {
+            StartEnd((inner, Separator), _) if is_component_boundary_or_terminal(left) => {
                 // The alternative is preceded by component boundaries or
                 // terminations; disallow leading separators and rooted
                 // sub-globs.
                 //
                 // For example, `foo/{bar,/baz}` or `{bar,/baz}`.
-                Err(CheckError {
-                    kind: ErrorKind::AlternativeBoundary,
-                    #[cfg(feature = "diagnostics")]
-                    span: left.map(|left| left.annotation().clone()),
-                })
+                Err(ErrorKind::AlternativeBoundary(annotate(left, inner)))
             }
-            StartEnd(_, Separator) if is_component_boundary(right) => {
+            StartEnd(_, (inner, Separator)) if is_component_boundary(right) => {
                 // The alternative is followed by component boundaries; disallow
                 // trailing separators.
                 //
                 // For example, `{foo,bar/}/baz`.
-                Err(CheckError {
-                    kind: ErrorKind::AlternativeBoundary,
-                    #[cfg(feature = "diagnostics")]
-                    span: right.map(|right| right.annotation().clone()),
-                })
+                Err(ErrorKind::AlternativeBoundary(annotate(right, inner)))
             }
-            Only(Wildcard(Tree { .. })) => {
+            Only((inner, Wildcard(Tree { .. }))) => {
                 // NOTE: Supporting singular tree tokens is possible, but
                 //       presents subtle edge cases that may be misleading or
                 //       confusing. Rather than optimize or otherwise allow
@@ -255,75 +286,65 @@ where
                 // Disallow singular tree tokens.
                 //
                 // For example, `{foo,bar,**}`.
-                Err(ErrorKind::AlternativeBoundary.into())
+                Err(ErrorKind::AlternativeSingularTree(annotate(None, inner)))
             }
-            StartEnd(Wildcard(Tree { is_rooted: true }), _) if left.is_none() => {
+            StartEnd((inner, Wildcard(Tree { is_rooted: true })), _) if left.is_none() => {
                 // NOTE: `is_rooted` is not considered when the alternative is
                 //       prefixed.
                 // Disallow rooted sub-globs.
                 //
                 // For example, `{/**/foo,bar}`.
-                Err(ErrorKind::AlternativeBoundary.into())
+                Err(ErrorKind::AlternativeBoundary(annotate(None, inner)))
             }
-            StartEnd(Wildcard(Tree { .. }), _) if is_component_boundary(left) => {
+            StartEnd((inner, Wildcard(Tree { .. })), _) if is_component_boundary(left) => {
                 // The alternative is preceded by component boundaries; disallow
                 // leading tree tokens.
                 //
                 // For example, `foo/{bar,**/baz}`.
-                Err(CheckError {
-                    kind: ErrorKind::AlternativeBoundary,
-                    #[cfg(feature = "diagnostics")]
-                    span: left.map(|left| left.annotation().clone()),
-                })
+                Err(ErrorKind::AlternativeBoundary(annotate(left, inner)))
             }
-            StartEnd(_, Wildcard(Tree { .. })) if is_component_boundary(right) => {
+            StartEnd(_, (inner, Wildcard(Tree { .. }))) if is_component_boundary(right) => {
                 // The alternative is followed by component boundaries; disallow
                 // trailing tree tokens.
                 //
                 // For example, `{foo,bar/**}/baz`.
-                Err(CheckError {
-                    kind: ErrorKind::AlternativeBoundary,
-                    #[cfg(feature = "diagnostics")]
-                    span: right.map(|right| right.annotation().clone()),
-                })
+                Err(ErrorKind::AlternativeBoundary(annotate(right, inner)))
             }
-            Only(Wildcard(ZeroOrMore(_)))
-                if matches!(
-                    (left.map(Token::kind), right.map(Token::kind)),
-                    (Some(Wildcard(ZeroOrMore(_))), _) | (_, Some(Wildcard(ZeroOrMore(_))))
-                ) =>
+            Only((inner, Wildcard(ZeroOrMore(_))))
+                if matches!(left.map(Token::kind), Some(Wildcard(ZeroOrMore(_)))) =>
             {
-                // The alternative is adjacent to a zero-or-more token; disallow
+                // The alternative is prefixed by a zero-or-more token; disallow
                 // singular zero-or-more tokens.
                 //
                 // For example, `foo*{bar,*,baz}`.
-                Err(ErrorKind::AlternativeZeroOrMore.into())
+                Err(ErrorKind::AlternativeZeroOrMore(annotate(left, inner)))
             }
-            StartEnd(Wildcard(ZeroOrMore(_)), _)
+            Only((inner, Wildcard(ZeroOrMore(_))))
+                if matches!(right.map(Token::kind), Some(Wildcard(ZeroOrMore(_)))) =>
+            {
+                // The alternative is followed by a zero-or-more token; disallow
+                // singular zero-or-more tokens.
+                //
+                // For example, `foo*{bar,*,baz}`.
+                Err(ErrorKind::AlternativeZeroOrMore(annotate(right, inner)))
+            }
+            StartEnd((inner, Wildcard(ZeroOrMore(_))), _)
                 if matches!(left.map(Token::kind), Some(Wildcard(ZeroOrMore(_)))) =>
             {
                 // The alternative is prefixed by a zero-or-more token; disallow
                 // leading zero-or-more tokens.
                 //
                 // For example, `foo*{bar,*baz}`.
-                Err(CheckError {
-                    kind: ErrorKind::AlternativeZeroOrMore,
-                    #[cfg(feature = "diagnostics")]
-                    span: left.map(|left| left.annotation().clone()),
-                })
+                Err(ErrorKind::AlternativeZeroOrMore(annotate(left, inner)))
             }
-            StartEnd(_, Wildcard(ZeroOrMore(_)))
+            StartEnd(_, (inner, Wildcard(ZeroOrMore(_))))
                 if matches!(right.map(Token::kind), Some(Wildcard(ZeroOrMore(_)))) =>
             {
                 // The alternative is postfixed by a zero-or-more token;
                 // disallow trailing zero-or-more tokens.
                 //
                 // For example, `{foo,bar*}*baz`.
-                Err(CheckError {
-                    kind: ErrorKind::AlternativeZeroOrMore,
-                    #[cfg(feature = "diagnostics")]
-                    span: right.map(|right| right.annotation().clone()),
-                })
+                Err(ErrorKind::AlternativeZeroOrMore(annotate(right, inner)))
             }
             _ => Ok(()),
         }
@@ -337,8 +358,12 @@ where
     I: IntoIterator<Item = &'i Token<'t, Annotation>>,
     't: 'i,
 {
-    #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
-    if let Some((left, right)) = tokens
+    #[cfg(feature = "diagnostics")]
+    let annotate = |(left, right): (&SourceSpan, _)| left.union(right);
+    #[cfg(not(feature = "diagnostics"))]
+    let annotate = |_| {};
+
+    if let Some(annotations) = tokens
         .into_iter()
         .tuple_windows::<(_, _)>()
         .find(|(left, right)| left.is_component_boundary() && right.is_component_boundary())
@@ -346,9 +371,8 @@ where
     {
         Err(RuleError::new(
             expression,
-            ErrorKind::BoundaryAdjacent,
-            #[cfg(feature = "diagnostics")]
-            left.union(right),
+            #[cfg_attr(not(feature = "diagnostics"), allow(clippy::unit_arg))]
+            ErrorKind::BoundaryAdjacent(annotate(annotations)),
         ))
     } else {
         Ok(())
