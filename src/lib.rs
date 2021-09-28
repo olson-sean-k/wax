@@ -69,26 +69,10 @@ impl SourceSpanExt for SourceSpan {
 }
 
 trait CharExt: Sized {
-    const ESCAPE: Self;
-
-    // This trait is only implemented by `char`, which is trivially copyable.
-    // The inherent functions of `char` also use `self` as a receiver.
-    #[allow(clippy::wrong_self_convention)]
-    fn is_control(self) -> bool;
-
     fn has_casing(self) -> bool;
 }
 
 impl CharExt for char {
-    const ESCAPE: Self = '\\';
-
-    fn is_control(self) -> bool {
-        matches!(
-            self,
-            '?' | '*' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | ',',
-        )
-    }
-
     fn has_casing(self) -> bool {
         self.is_lowercase() != self.is_uppercase()
     }
@@ -980,12 +964,20 @@ pub fn walk(
         .into_owned())
 }
 
+// TODO: Unify the specification of control and escape characters with parsing
+//       (the `token` module).
 pub fn escape(unescaped: &str) -> Cow<str> {
-    if unescaped.chars().any(CharExt::is_control) {
+    const ESCAPE: char = '\\';
+
+    fn is_control(x: char) -> bool {
+        matches!(x, '?' | '*' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | ',',)
+    }
+
+    if unescaped.chars().any(is_control) {
         let mut escaped = String::new();
         for x in unescaped.chars() {
-            if CharExt::is_control(x) {
-                escaped.push(char::ESCAPE);
+            if is_control(x) {
+                escaped.push(ESCAPE);
             }
             escaped.push(x);
         }
