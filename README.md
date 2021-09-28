@@ -26,11 +26,11 @@ if glob.is_match("logo.png") {
 Match a specific path against a glob and extract captures:
 
 ```rust
-use wax::{BytePath, Glob};
+use wax::{EncodedPath, Glob};
 
 let glob = Glob::new("**/{*.{go,rs}}").unwrap();
 
-let path = BytePath::from_path("src/main.go");
+let path = EncodedPath::from("src/main.go");
 let captures = glob.captures(&path).unwrap();
 
 // Prints `main.go`.
@@ -52,11 +52,12 @@ See more details below.
 
 ## Construction
 
-Globs are encoded as strings called glob expressions that resemble Unix paths
-consisting of nominal components delimited by separators. Wax exposes its APIs
-via the [`Glob`] type, which is constructed from a glob expression via inherent
-functions or standard conversion traits. All data is borrowed where possible but
-can be copied into owned instances using `into_owned`.
+Globs are encoded as UTF-8 encoded strings called glob expressions that resemble
+Unix paths consisting of nominal components delimited by separators. Wax exposes
+most of its APIs via the [`Glob`] type, which is constructed from a glob
+expression via inherent functions or standard conversion traits. All data is
+borrowed where possible but can be copied into owned instances using an
+`into_owned` method.
 
 ```rust
 use wax::Glob;
@@ -135,7 +136,7 @@ character class. For example, `[qa-cX-Z]` matches any of `q`, `a`, `b`, `c`,
 
 Character classes may be negated by including an exclamation mark `!` at the
 beginning of the class pattern. For example, `[!a]` matches any character except
-for `a`.
+for `a`. These are the only patterns that support negation.
 
 Note that character classes can also be used to escape metacharacters like `*`,
 `$`, etc., though globs also support escaping via a backslash `\`. To match the
@@ -292,11 +293,22 @@ needed, an additional native path or working directory can be used, such as [the
 `--tree` option provided by Nym][nym]. In most contexts, globs are applied
 relative to some such working directory.
 
+### Encoding
+
+Globs operate exclusively on UTF-8 encoded text. However, this encoding is not
+used for file names and paths on all platforms. Wax uses the [`EncodedPath`]
+type to re-encode native paths via lossy conversions that use Unicode
+replacement codepoints whenever a part of a path cannot be represented as valid
+UTF-8. On some platforms these conversions are always no-ops. In practice, the
+overwhelming majority of paths can be losslessly encoded in UTF-8 and paths that
+cannot rarely match incorrectly due to replacement characters.
+
 [miette]: https://github.com/zkat/miette
 [nym]: https://github.com/olson-sean-k/nym
 [thiserror]: https://github.com/dtolnay/thiserror
 
 [`Display`]: https://doc.rust-lang.org/std/fmt/trait.Display.html
+[`EncodedPath`]: https://docs.rs/wax/*/wax/struct.EncodedPath.html
 [`Error`]: https://doc.rust-lang.org/std/error/trait.Error.html
 [`Glob`]: https://docs.rs/wax/*/wax/struct.Glob.html
 [`Glob::has_semantic_literals`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.has_semantic_literals

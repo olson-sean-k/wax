@@ -1,11 +1,5 @@
-use os_str_bytes::OsStrBytes as _;
-use regex::bytes::Captures as BorrowedCaptures;
-use std::borrow::Cow;
-use std::ops::Deref;
-use std::path::Path;
+use regex::Captures as BorrowedCaptures;
 use std::str;
-
-use crate::ResultExt as _;
 
 #[derive(Debug)]
 enum MaybeOwnedCaptures<'t> {
@@ -43,12 +37,12 @@ impl From<OwnedCaptures> for MaybeOwnedCaptures<'static> {
 
 #[derive(Clone, Debug)]
 struct OwnedCaptures {
-    matched: Vec<u8>,
+    matched: String,
     ranges: Vec<Option<(usize, usize)>>,
 }
 
 impl OwnedCaptures {
-    pub fn get(&self, index: usize) -> Option<&[u8]> {
+    pub fn get(&self, index: usize) -> Option<&str> {
         if index == 0 {
             Some(self.matched.as_ref())
         } else {
@@ -68,7 +62,7 @@ impl<'t> From<BorrowedCaptures<'t>> for OwnedCaptures {
 
 impl<'c, 't> From<&'c BorrowedCaptures<'t>> for OwnedCaptures {
     fn from(captures: &'c BorrowedCaptures<'t>) -> Self {
-        let matched = captures.get(0).unwrap().as_bytes().into();
+        let matched = captures.get(0).unwrap().as_str().into();
         let ranges = captures
             .iter()
             .skip(1)
@@ -78,89 +72,51 @@ impl<'c, 't> From<&'c BorrowedCaptures<'t>> for OwnedCaptures {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Capture<'t> {
-    bytes: &'t [u8],
-}
-
-impl<'t> Capture<'t> {
-    pub fn into_bytes(self) -> &'t [u8] {
-        self.bytes
-    }
-
-    pub fn as_str(&self) -> Option<&'t str> {
-        str::from_utf8(self.bytes).ok()
-    }
-
-    pub fn to_string_lossy(&self) -> Cow<'t, str> {
-        String::from_utf8_lossy(self.bytes)
-    }
-
-    pub fn to_path(&self) -> Cow<'t, Path> {
-        Path::from_raw_bytes(self.bytes).expect_os_str_bytes()
-    }
-}
-
-impl<'t> AsRef<[u8]> for Capture<'t> {
-    fn as_ref(&self) -> &[u8] {
-        self.bytes
-    }
-}
-
-impl<'t> Deref for Capture<'t> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.bytes
-    }
-}
-
 #[derive(Debug)]
-pub struct CaptureBuffer<'t> {
+pub struct Captures<'t> {
     inner: MaybeOwnedCaptures<'t>,
 }
 
-impl<'t> CaptureBuffer<'t> {
-    pub fn into_owned(self) -> CaptureBuffer<'static> {
-        let CaptureBuffer { inner } = self;
-        CaptureBuffer {
+impl<'t> Captures<'t> {
+    pub fn into_owned(self) -> Captures<'static> {
+        let Captures { inner } = self;
+        Captures {
             inner: inner.into_owned(),
         }
     }
 
-    pub fn to_owned(&self) -> CaptureBuffer<'static> {
-        CaptureBuffer {
+    pub fn to_owned(&self) -> Captures<'static> {
+        Captures {
             inner: self.inner.to_owned(),
         }
     }
 
-    pub fn matched(&self) -> Capture {
+    pub fn matched(&self) -> &str {
         self.get(0).unwrap()
     }
 
-    pub fn get(&self, index: usize) -> Option<Capture> {
+    pub fn get(&self, index: usize) -> Option<&str> {
         match self.inner {
             MaybeOwnedCaptures::Borrowed(ref captures) => {
-                captures.get(index).map(|capture| capture.as_bytes())
+                captures.get(index).map(|capture| capture.as_str())
             }
             MaybeOwnedCaptures::Owned(ref captures) => captures.get(index),
         }
-        .map(|bytes| Capture { bytes })
     }
 }
 
-// TODO: Maybe this shouldn't be part of the public API.
-impl<'t> From<BorrowedCaptures<'t>> for CaptureBuffer<'t> {
+// TODO: This probably shouldn't be part of the public API.
+impl<'t> From<BorrowedCaptures<'t>> for Captures<'t> {
     fn from(captures: BorrowedCaptures<'t>) -> Self {
-        CaptureBuffer {
+        Captures {
             inner: captures.into(),
         }
     }
 }
 
-impl From<OwnedCaptures> for CaptureBuffer<'static> {
+impl From<OwnedCaptures> for Captures<'static> {
     fn from(captures: OwnedCaptures) -> Self {
-        CaptureBuffer {
+        Captures {
             inner: captures.into(),
         }
     }

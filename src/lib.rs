@@ -15,17 +15,16 @@ use bstr::ByteVec;
 use itertools::{Itertools as _, Position};
 #[cfg(feature = "diagnostics")]
 use miette::{Diagnostic, SourceSpan};
-use os_str_bytes::OsStrBytes as _;
-use regex::bytes::Regex;
+use regex::Regex;
 use std::borrow::{Borrow, Cow};
 use std::cmp;
 use std::convert::TryFrom;
 use std::ffi::OsStr;
-use std::fmt::Debug;
+use std::fmt::{self, Debug, Display, Formatter};
 use std::fs::{FileType, Metadata};
 use std::iter::Fuse;
 use std::path::{Component, Path, PathBuf};
-use std::str::FromStr;
+use std::str::{self, FromStr};
 use thiserror::Error;
 use walkdir::{self, DirEntry, WalkDir};
 
@@ -33,7 +32,7 @@ pub use walkdir::Error as WalkError;
 
 use crate::token::{Token, TokenKind};
 
-pub use crate::capture::{Capture, CaptureBuffer};
+pub use crate::capture::Captures;
 pub use crate::rule::RuleError;
 pub use crate::token::ParseError;
 
@@ -43,14 +42,14 @@ const PATHS_ARE_CASE_INSENSITIVE: bool = true;
 const PATHS_ARE_CASE_INSENSITIVE: bool = false;
 
 trait ResultExt<T, E> {
-    fn expect_os_str_bytes(self) -> T;
+    fn expect_encoding(self) -> T;
 }
 
 impl<T, E> ResultExt<T, E> for Result<T, E>
 where
     E: Debug,
 {
-    fn expect_os_str_bytes(self) -> T {
+    fn expect_encoding(self) -> T {
         self.expect("unexpected encoding")
     }
 }
@@ -309,26 +308,57 @@ impl<'t> From<RuleError<'t>> for GlobError<'t> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct BytePath<'b> {
-    bytes: Cow<'b, [u8]>,
+#[derive(Clone)]
+pub struct EncodedPath<'b> {
+    text: Cow<'b, str>,
 }
 
-impl<'b> BytePath<'b> {
-    pub fn from_path(path: &'b Path) -> Self {
-        BytePath {
-            bytes: Vec::from_path_lossy(path),
+impl<'b> EncodedPath<'b> {
+    pub fn into_owned(self) -> EncodedPath<'static> {
+        EncodedPath {
+            text: self.text.into_owned().into(),
         }
     }
+}
 
-    pub fn from_os_str(text: &'b OsStr) -> Self {
-        BytePath {
-            bytes: Vec::from_os_str_lossy(text),
+impl<'b> AsRef<str> for EncodedPath<'b> {
+    fn as_ref(&self) -> &str {
+        self.text.as_ref()
+    }
+}
+
+impl<'b> Debug for EncodedPath<'b> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.text)
+    }
+}
+
+impl<'b> Display for EncodedPath<'b> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.text)
+    }
+}
+
+impl<'b> From<&'b OsStr> for EncodedPath<'b> {
+    fn from(text: &'b OsStr) -> Self {
+        EncodedPath {
+            text: match Vec::from_os_str_lossy(text) {
+                Cow::Borrowed(bytes) => str::from_utf8(bytes).expect_encoding().into(),
+                Cow::Owned(bytes) => String::from_utf8(bytes).expect_encoding().into(),
+            },
         }
     }
+}
 
-    pub fn to_path(&self) -> Cow<Path> {
-        Path::from_raw_bytes(self.bytes.as_ref()).expect_os_str_bytes()
+impl<'b> From<&'b Path> for EncodedPath<'b> {
+    fn from(path: &'b Path) -> Self {
+        EncodedPath::from(path.as_os_str())
+    }
+}
+
+impl<'b> From<&'b str> for EncodedPath<'b> {
+    fn from(text: &'b str) -> Self {
+        EncodedPath { text: text.into() }
     }
 }
 
@@ -468,13 +498,13 @@ impl<'t> Glob<'t> {
         false
     }
 
-    pub fn is_match(&self, path: impl AsRef<Path>) -> bool {
-        let path = BytePath::from_path(path.as_ref());
-        self.regex.is_match(path.bytes.as_ref())
+    pub fn is_match<'p>(&self, path: impl Into<EncodedPath<'p>>) -> bool {
+        let path = path.into();
+        self.regex.is_match(path.as_ref())
     }
 
-    pub fn captures<'p>(&self, path: &'p BytePath<'_>) -> Option<CaptureBuffer<'p>> {
-        self.regex.captures(path.bytes.as_ref()).map(From::from)
+    pub fn captures<'p>(&self, path: &'p EncodedPath<'_>) -> Option<Captures<'p>> {
+        self.regex.captures(path.as_ref()).map(From::from)
     }
 
     pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
@@ -562,7 +592,7 @@ macro_rules! walk {
                 .components()
                 .skip(depth)
                 .filter_map(|component| match component {
-                    Component::Normal(component) => Some(component.to_raw_bytes()),
+                    Component::Normal(component) => Some(EncodedPath::from(component)),
                     _ => None,
                 })
                 .zip_longest($state.regexes.iter().skip(depth))
@@ -570,7 +600,7 @@ macro_rules! walk {
             {
                 match candidate.as_tuple() {
                     (First(_) | Middle(_), Both(component, regex)) => {
-                        if !regex.is_match(component) {
+                        if !regex.is_match(component.as_ref()) {
                             // Do not descend into directories that do not match
                             // the corresponding component regex.
                             if entry.file_type().is_dir() {
@@ -580,12 +610,10 @@ macro_rules! walk {
                         }
                     }
                     (Last(_) | Only(_), Both(component, regex)) => {
-                        if regex.is_match(component) {
-                            let path = BytePath::from_path(&path);
-                            if let Some(captures) = $state
-                                .regex
-                                .captures(path.bytes.as_ref())
-                                .map(CaptureBuffer::from)
+                        if regex.is_match(component.as_ref()) {
+                            let path = EncodedPath::from(path);
+                            if let Some(captures) =
+                                $state.regex.captures(path.as_ref()).map(Captures::from)
                             {
                                 let $entry = Ok(WalkEntry {
                                     entry: Cow::Borrowed(&entry),
@@ -603,11 +631,9 @@ macro_rules! walk {
                         }
                     }
                     (_, Left(_component)) => {
-                        let path = BytePath::from_path(&path);
-                        if let Some(captures) = $state
-                            .regex
-                            .captures(path.bytes.as_ref())
-                            .map(CaptureBuffer::from)
+                        let path = EncodedPath::from(path);
+                        if let Some(captures) =
+                            $state.regex.captures(path.as_ref()).map(Captures::from)
                         {
                             let $entry = Ok(WalkEntry {
                                 entry: Cow::Borrowed(&entry),
@@ -630,7 +656,7 @@ macro_rules! walk {
 #[derive(Debug)]
 pub struct WalkEntry<'e> {
     entry: Cow<'e, DirEntry>,
-    captures: CaptureBuffer<'e>,
+    captures: Captures<'e>,
 }
 
 impl<'e> WalkEntry<'e> {
@@ -653,6 +679,10 @@ impl<'e> WalkEntry<'e> {
         self.entry.path()
     }
 
+    pub fn to_encoded_path(&self) -> EncodedPath<'_> {
+        self.path().into()
+    }
+
     pub fn file_type(&self) -> FileType {
         self.entry.file_type()
     }
@@ -665,7 +695,7 @@ impl<'e> WalkEntry<'e> {
         self.entry.depth()
     }
 
-    pub fn captures(&self) -> &CaptureBuffer<'e> {
+    pub fn captures(&self) -> &Captures<'e> {
         &self.captures
     }
 }
@@ -772,11 +802,14 @@ pub fn escape(unescaped: &str) -> Cow<str> {
     }
 }
 
+// TODO: Construct paths from components in tests. In practice, using string
+//       literals works, but is technically specific to platforms that support
+//       `/` as a separator.
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use crate::{Adjacency, BytePath, Glob, IteratorExt as _};
+    use crate::{Adjacency, EncodedPath, Glob, IteratorExt as _};
 
     #[test]
     fn adjacent() {
@@ -1038,12 +1071,11 @@ mod tests {
         assert!(!glob.is_match(Path::new("b/a")));
 
         assert_eq!(
-            b"x/y/z/",
-            glob.captures(&BytePath::from_path(Path::new("a/x/y/z/b")))
+            "x/y/z/",
+            glob.captures(&EncodedPath::from(Path::new("a/x/y/z/b")))
                 .unwrap()
                 .get(1)
-                .unwrap()
-                .as_ref(),
+                .unwrap(),
         );
     }
 
@@ -1055,10 +1087,10 @@ mod tests {
         assert!(glob.is_match(Path::new("a/file.ext")));
         assert!(glob.is_match(Path::new("a/b/file.ext")));
 
-        let path = BytePath::from_path(Path::new("a/file.ext"));
+        let path = EncodedPath::from(Path::new("a/file.ext"));
         let captures = glob.captures(&path).unwrap();
-        assert_eq!(b"a/", captures.get(1).unwrap().as_ref());
-        assert_eq!(b"file", captures.get(2).unwrap().as_ref());
+        assert_eq!("a/", captures.get(1).unwrap());
+        assert_eq!("file", captures.get(2).unwrap());
     }
 
     #[test]
@@ -1068,11 +1100,11 @@ mod tests {
         assert!(glob.is_match(Path::new("prefix-file.ext")));
         assert!(glob.is_match(Path::new("a-b-c.ext")));
 
-        let path = BytePath::from_path(Path::new("a-b-c.ext"));
+        let path = EncodedPath::from(Path::new("a-b-c.ext"));
         let captures = glob.captures(&path).unwrap();
-        assert_eq!(b"a", captures.get(1).unwrap().as_ref());
-        assert_eq!(b"b-c", captures.get(2).unwrap().as_ref());
-        assert_eq!(b"ext", captures.get(3).unwrap().as_ref());
+        assert_eq!("a", captures.get(1).unwrap());
+        assert_eq!("b-c", captures.get(2).unwrap());
+        assert_eq!("ext", captures.get(3).unwrap());
     }
 
     #[test]
@@ -1085,9 +1117,23 @@ mod tests {
 
         assert!(!glob.is_match(Path::new("a/b/file.ext")));
 
-        let path = BytePath::from_path(Path::new("a/i/file.ext"));
+        let path = EncodedPath::from(Path::new("a/i/file.ext"));
         let captures = glob.captures(&path).unwrap();
-        assert_eq!(b"i", captures.get(1).unwrap().as_ref());
+        assert_eq!("i", captures.get(1).unwrap());
+    }
+
+    #[test]
+    fn match_glob_with_non_ascii_class_tokens() {
+        let glob = Glob::new("a/[金銀]/**").unwrap();
+
+        assert!(glob.is_match(Path::new("a/金/file.ext")));
+        assert!(glob.is_match(Path::new("a/銀/file.ext")));
+
+        assert!(!glob.is_match(Path::new("a/銅/file.ext")));
+
+        let path = EncodedPath::from(Path::new("a/金/file.ext"));
+        let captures = glob.captures(&path).unwrap();
+        assert_eq!("金", captures.get(1).unwrap());
     }
 
     #[test]
@@ -1100,9 +1146,9 @@ mod tests {
 
         assert!(!glob.is_match(Path::new("a/b/file.ext")));
 
-        let path = BytePath::from_path(Path::new("a/[/file.ext"));
+        let path = EncodedPath::from(Path::new("a/[/file.ext"));
         let captures = glob.captures(&path).unwrap();
-        assert_eq!(b"[", captures.get(1).unwrap().as_ref());
+        assert_eq!("[", captures.get(1).unwrap());
     }
 
     #[test]
@@ -1116,18 +1162,18 @@ mod tests {
         assert!(!glob.is_match(Path::new("a/y/file.ext")));
         assert!(!glob.is_match(Path::new("a/xyzub/file.ext")));
 
-        let path = BytePath::from_path(Path::new("a/xyzb/file.ext"));
+        let path = EncodedPath::from(Path::new("a/xyzb/file.ext"));
         let captures = glob.captures(&path).unwrap();
-        assert_eq!(b"xyz", captures.get(1).unwrap().as_ref());
+        assert_eq!("xyz", captures.get(1).unwrap());
     }
 
     #[test]
     fn match_glob_with_nested_alternative_tokens() {
         let glob = Glob::new("a/{y$,{x?z,?z}}b/*").unwrap();
 
-        let path = BytePath::from_path(Path::new("a/xyzb/file.ext"));
+        let path = EncodedPath::from(Path::new("a/xyzb/file.ext"));
         let captures = glob.captures(&path).unwrap();
-        assert_eq!(b"xyz", captures.get(1).unwrap().as_ref());
+        assert_eq!("xyz", captures.get(1).unwrap());
     }
 
     #[test]
@@ -1151,9 +1197,9 @@ mod tests {
         assert!(!glob.is_match(Path::new("./var/cron.log")));
         assert!(!glob.is_match(Path::new("mnt/var/log/cron.log")));
 
-        let path = BytePath::from_path(Path::new("/var/log/network.log"));
+        let path = EncodedPath::from(Path::new("/var/log/network.log"));
         let captures = glob.captures(&path).unwrap();
-        assert_eq!(b"/", captures.get(1).unwrap().as_ref());
+        assert_eq!("/", captures.get(1).unwrap());
     }
 
     #[test]

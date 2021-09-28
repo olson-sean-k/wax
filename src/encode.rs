@@ -1,13 +1,16 @@
 use const_format::formatcp;
 use itertools::{Itertools as _, Position};
-use regex::bytes::Regex;
+use regex::Regex;
 use std::borrow::{Borrow, Cow};
 
 use crate::token::Token;
 use crate::PositionExt as _;
 
 #[cfg(windows)]
-const SEPARATOR_EXPRESSION: &str = "(?:/|\\\\)";
+const SEPARATOR: SeparatorMatch = SeparatorMatch {
+    expression: "(?:/|\\\\)",
+    class: "/\\\\",
+};
 // NOTE: Not only is this specific to Unix, but each supported platform must
 //       specify its separator expression, especially when more than one
 //       separator is supported. It is not possible to use `MAIN_SEPARATOR` here
@@ -16,12 +19,39 @@ const SEPARATOR_EXPRESSION: &str = "(?:/|\\\\)";
 //       does not support hexadecimal formatting with a fixed width and it is
 //       possible that the separator is a control character.
 #[cfg(not(windows))]
-const SEPARATOR_EXPRESSION: &str = "/";
+const SEPARATOR: SeparatorMatch = SeparatorMatch {
+    expression: "/",
+    class: "/",
+};
+
+struct SeparatorMatch {
+    expression: &'static str,
+    // Character classes do not support arbitrary sub-expressions, so platforms
+    // with multiple separators typically require a bespoke expression for
+    // subtracting separators from the class of characters.
+    class: &'static str,
+}
 
 macro_rules! sepexpr {
     ($fmt: expr) => {
-        formatcp!($fmt, SEPARATOR_EXPRESSION)
+        formatcp!($fmt, SEPARATOR.expression)
     };
+}
+
+trait Escaped {
+    fn escaped(&self) -> String;
+}
+
+impl Escaped for char {
+    fn escaped(&self) -> String {
+        regex::escape(&self.to_string())
+    }
+}
+
+impl Escaped for str {
+    fn escaped(&self) -> String {
+        regex::escape(self)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -53,7 +83,7 @@ where
     T: Borrow<Token<'t>>,
 {
     let mut pattern = String::new();
-    pattern.push_str("(?-u)^");
+    pattern.push('^');
     encode(Grouping::Capture, None, &mut pattern, tokens);
     pattern.push('$');
     Regex::new(&pattern).expect("glob compilation failed")
@@ -88,15 +118,13 @@ fn encode<'t, T>(
                 // TODO: Only encode changes to casing flags.
                 // TODO: Should Unicode support also be toggled by casing flags?
                 if literal.is_case_insensitive() {
-                    pattern.push_str("(?iu)");
+                    pattern.push_str("(?i)");
                 } else {
-                    pattern.push_str("(?-iu)");
+                    pattern.push_str("(?-i)");
                 }
-                for &byte in literal.text().as_bytes() {
-                    pattern.push_str(&escape(byte));
-                }
+                pattern.push_str(&literal.text().escaped());
             }
-            (_, Separator) => pattern.push_str(SEPARATOR_EXPRESSION),
+            (_, Separator) => pattern.push_str(SEPARATOR.expression),
             (position, Alternative(alternative)) => {
                 let encodings: Vec<_> = alternative
                     .branches()
@@ -131,21 +159,15 @@ fn encode<'t, T>(
                     }
                     for archetype in archetypes {
                         match archetype {
-                            Character(literal) => {
-                                let mut bytes = [0u8; 4];
-                                literal.encode_utf8(&mut bytes);
-                                for &byte in &bytes {
-                                    pattern.push_str(&escape(byte))
-                                }
-                            }
+                            Character(literal) => pattern.push_str(&literal.escaped()),
                             Range(left, right) => {
-                                pattern.push(*left);
+                                pattern.push_str(&left.escaped());
                                 pattern.push('-');
-                                pattern.push(*right);
+                                pattern.push_str(&right.escaped());
                             }
                         }
                     }
-                    pattern.push_str(sepexpr!("&&[^{0}]]"));
+                    pattern.push_str(formatcp!("&&[^{0}]]", SEPARATOR.class));
                     pattern.into()
                 });
             }
@@ -181,15 +203,5 @@ fn encode<'t, T>(
             },
             (Only(_), Wildcard(Tree { .. })) => grouping.push_str(pattern, ".*"),
         }
-    }
-}
-
-fn escape(byte: u8) -> String {
-    const ASCII_TERMINATOR: u8 = 0x7F;
-
-    if byte <= ASCII_TERMINATOR {
-        regex::escape(&(byte as char).to_string())
-    } else {
-        format!("\\x{:02x}", byte)
     }
 }
