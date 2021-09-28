@@ -11,6 +11,7 @@ mod rule;
 mod token;
 
 use bstr::ByteVec;
+use const_format::formatcp;
 use itertools::{Itertools as _, Position};
 #[cfg(feature = "diagnostics")]
 use miette::{Diagnostic, SourceSpan};
@@ -310,75 +311,24 @@ impl<'t> From<RuleError<'t>> for GlobError<'t> {
 
 #[derive(Clone, Debug)]
 pub struct BytePath<'b> {
-    path: Cow<'b, [u8]>,
+    bytes: Cow<'b, [u8]>,
 }
 
 impl<'b> BytePath<'b> {
-    fn from_bytes(bytes: Cow<'b, [u8]>) -> Self {
-        #[cfg(unix)]
-        fn normalize(path: Cow<[u8]>) -> Cow<[u8]> {
-            path
+    pub fn from_path(path: &'b Path) -> Self {
+        BytePath {
+            bytes: Vec::from_path_lossy(path),
         }
-
-        // NOTE: This doesn't consider platforms where `/` is not a path
-        //       separator or is otherwise supported in file and directory
-        //       names. `/` and `\` are by far the most common separators
-        //       (including mixed-mode operation as seen in Windows), but there
-        //       is precedence for alternatives like `>`, `.`, and `:`.
-        #[cfg(not(unix))]
-        fn normalize(mut path: Cow<[u8]>) -> Cow<[u8]> {
-            use std::path;
-
-            for i in 0..path.len() {
-                if path[i] == b'/' || !path::is_separator(path[i] as char) {
-                    continue;
-                }
-                path.to_mut()[i] = b'/';
-            }
-            path
-        }
-
-        let path = normalize(bytes);
-        BytePath { path }
     }
 
     pub fn from_os_str(text: &'b OsStr) -> Self {
-        Self::from_bytes(Vec::from_os_str_lossy(text))
-    }
-
-    pub fn from_path(path: &'b (impl AsRef<Path> + ?Sized)) -> Self {
-        Self::from_bytes(Vec::from_path_lossy(path.as_ref()))
-    }
-
-    pub fn into_owned(self) -> BytePath<'static> {
-        let BytePath { path } = self;
         BytePath {
-            path: path.into_owned().into(),
+            bytes: Vec::from_os_str_lossy(text),
         }
     }
 
-    #[cfg(not(windows))]
     pub fn to_path(&self) -> Cow<Path> {
-        Path::from_raw_bytes(self.path.as_ref()).expect_os_str_bytes()
-    }
-
-    #[cfg(windows)]
-    pub fn to_path(&self) -> Cow<Path> {
-        use path_slash::PathBufExt as _;
-        use std::path::PathBuf;
-
-        PathBuf::from_slash_lossy(
-            Path::from_raw_bytes(self.path.as_ref())
-                .expect_os_str_bytes()
-                .as_ref(),
-        )
-        .into()
-    }
-}
-
-impl<'b> AsRef<[u8]> for BytePath<'b> {
-    fn as_ref(&self) -> &[u8] {
-        self.path.as_ref()
+        Path::from_raw_bytes(self.bytes.as_ref()).expect_os_str_bytes()
     }
 }
 
@@ -442,9 +392,20 @@ impl<'t> Glob<'t> {
             use crate::token::TokenKind::{Alternative, Class, Literal, Separator, Wildcard};
             use crate::token::Wildcard::{One, Tree, ZeroOrMore};
 
+            #[cfg(windows)]
+            const SEPARATOR_EXPRESSION: &str = "(?:/|\\\\)";
+            #[cfg(not(windows))]
+            const SEPARATOR_EXPRESSION: &str = "/";
+
+            macro_rules! sepexpr {
+                ($fmt: expr) => {
+                    formatcp!($fmt, SEPARATOR_EXPRESSION)
+                };
+            }
+
             fn encode_intermediate_tree(grouping: Grouping, pattern: &mut String) {
-                pattern.push_str("(?:/|/");
-                grouping.push_str(pattern, ".*/");
+                pattern.push_str(sepexpr!("(?:{0}|{0}"));
+                grouping.push_str(pattern, sepexpr!(".*{0}"));
                 pattern.push(')');
             }
 
@@ -466,7 +427,7 @@ impl<'t> Glob<'t> {
                             pattern.push_str(&escape(byte));
                         }
                     }
-                    (_, Separator) => pattern.push_str(&escape(b'/')),
+                    (_, Separator) => pattern.push_str(SEPARATOR_EXPRESSION),
                     (position, Alternative(alternative)) => {
                         let encodings: Vec<_> = alternative
                             .branches()
@@ -515,23 +476,27 @@ impl<'t> Glob<'t> {
                                     }
                                 }
                             }
-                            pattern.push_str("&&[^/]]");
+                            pattern.push_str(sepexpr!("&&[^{0}]]"));
                             pattern.into()
                         });
                     }
-                    (_, Wildcard(One)) => grouping.push_str(pattern, "[^/]"),
-                    (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, "[^/]*"),
-                    (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, "[^/]*?"),
+                    (_, Wildcard(One)) => grouping.push_str(pattern, sepexpr!("[^{0}]")),
+                    (_, Wildcard(ZeroOrMore(Eager))) => {
+                        grouping.push_str(pattern, sepexpr!("[^{0}]*"))
+                    }
+                    (_, Wildcard(ZeroOrMore(Lazy))) => {
+                        grouping.push_str(pattern, sepexpr!("[^{0}]*?"))
+                    }
                     (First(_), Wildcard(Tree { is_rooted })) => match subposition {
                         Some(Middle(_)) | Some(Last(_)) => {
                             encode_intermediate_tree(grouping, pattern);
                         }
                         _ => {
                             if *is_rooted {
-                                grouping.push_str(pattern, "/.*/?");
+                                grouping.push_str(pattern, sepexpr!("{0}.*{0}?"));
                             } else {
-                                pattern.push_str("(?:/?|");
-                                grouping.push_str(pattern, ".*/");
+                                pattern.push_str(sepexpr!("(?:{0}?|"));
+                                grouping.push_str(pattern, sepexpr!(".*{0}"));
                                 pattern.push(')');
                             }
                         }
@@ -544,7 +509,7 @@ impl<'t> Glob<'t> {
                             encode_intermediate_tree(grouping, pattern);
                         }
                         _ => {
-                            pattern.push_str("(?:/?|/");
+                            pattern.push_str(sepexpr!("(?:{0}?|{0}"));
                             grouping.push_str(pattern, ".*");
                             pattern.push(')');
                         }
@@ -685,11 +650,11 @@ impl<'t> Glob<'t> {
 
     pub fn is_match(&self, path: impl AsRef<Path>) -> bool {
         let path = BytePath::from_path(path.as_ref());
-        self.regex.is_match(&path.path)
+        self.regex.is_match(path.bytes.as_ref())
     }
 
     pub fn captures<'p>(&self, path: &'p BytePath<'_>) -> Option<CaptureBuffer<'p>> {
-        self.regex.captures(path.as_ref()).map(From::from)
+        self.regex.captures(path.bytes.as_ref()).map(From::from)
     }
 
     pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
@@ -796,10 +761,10 @@ macro_rules! walk {
                     }
                     (Last(_) | Only(_), Both(component, regex)) => {
                         if regex.is_match(component) {
-                            let bytes = BytePath::from_path(&path);
+                            let path = BytePath::from_path(&path);
                             if let Some(captures) = $state
                                 .regex
-                                .captures(bytes.as_ref())
+                                .captures(path.bytes.as_ref())
                                 .map(CaptureBuffer::from)
                             {
                                 let $entry = Ok(WalkEntry {
@@ -818,10 +783,10 @@ macro_rules! walk {
                         }
                     }
                     (_, Left(_component)) => {
-                        let bytes = BytePath::from_path(&path);
+                        let path = BytePath::from_path(&path);
                         if let Some(captures) = $state
                             .regex
-                            .captures(bytes.as_ref())
+                            .captures(path.bytes.as_ref())
                             .map(CaptureBuffer::from)
                         {
                             let $entry = Ok(WalkEntry {

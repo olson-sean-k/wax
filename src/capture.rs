@@ -96,22 +96,8 @@ impl<'t> Capture<'t> {
         String::from_utf8_lossy(self.bytes)
     }
 
-    #[cfg(not(windows))]
     pub fn to_path(&self) -> Cow<'t, Path> {
         Path::from_raw_bytes(self.bytes).expect_os_str_bytes()
-    }
-
-    #[cfg(windows)]
-    pub fn to_path(&self) -> Cow<'t, Path> {
-        use path_slash::PathBufExt as _;
-        use std::path::PathBuf;
-
-        PathBuf::from_slash_lossy(
-            Path::from_raw_bytes(self.bytes)
-                .expect_os_str_bytes()
-                .as_ref(),
-        )
-        .into()
     }
 }
 
