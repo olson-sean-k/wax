@@ -4,9 +4,11 @@ use miette::{self, Diagnostic, SourceSpan};
 use nom::error::ErrorKind;
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
+use std::cmp;
 use std::mem;
-use std::ops::Deref;
+use std::ops::{Bound, Deref, RangeBounds};
 use std::path::{PathBuf, MAIN_SEPARATOR};
+use std::str::FromStr;
 use thiserror::Error;
 
 use crate::fragment::Stateful;
@@ -152,6 +154,7 @@ impl<'t, A> Token<'t, A> {
     pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
         match self.kind() {
             TokenKind::Alternative(ref alternative) => alternative.has_token_with(f),
+            TokenKind::Repetition(ref repetition) => repetition.has_token_with(f),
             _ => f(self),
         }
     }
@@ -159,6 +162,7 @@ impl<'t, A> Token<'t, A> {
     pub fn has_preceding_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
         match self.kind() {
             TokenKind::Alternative(ref alternative) => alternative.has_preceding_token_with(f),
+            TokenKind::Repetition(ref repetition) => repetition.has_preceding_token_with(f),
             _ => f(self),
         }
     }
@@ -166,6 +170,7 @@ impl<'t, A> Token<'t, A> {
     pub fn has_terminating_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
         match self.kind() {
             TokenKind::Alternative(ref alternative) => alternative.has_terminating_token_with(f),
+            TokenKind::Repetition(ref repetition) => repetition.has_terminating_token_with(f),
             _ => f(self),
         }
     }
@@ -208,6 +213,7 @@ pub enum TokenKind<'t, A = ()> {
         archetypes: Vec<Archetype>,
     },
     Literal(Literal<'t>),
+    Repetition(Repetition<'t, A>),
     Separator,
     Wildcard(Wildcard),
 }
@@ -230,6 +236,7 @@ impl<'t, A> TokenKind<'t, A> {
                 text: text.into_owned().into(),
                 is_case_insensitive,
             }),
+            TokenKind::Repetition(repetition) => repetition.into_owned().into(),
             TokenKind::Separator => TokenKind::Separator,
             TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
         }
@@ -253,6 +260,7 @@ impl<'t, A> TokenKind<'t, A> {
                 text,
                 is_case_insensitive,
             }),
+            TokenKind::Repetition(repetition) => repetition.unannotate().into(),
             TokenKind::Separator => TokenKind::Separator,
             TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
         }
@@ -278,6 +286,12 @@ impl<'t, A> TokenKind<'t, A> {
 impl<'t, A> From<Alternative<'t, A>> for TokenKind<'t, A> {
     fn from(alternative: Alternative<'t, A>) -> Self {
         TokenKind::Alternative(alternative)
+    }
+}
+
+impl<'t, A> From<Repetition<'t, A>> for TokenKind<'t, A> {
+    fn from(repetition: Repetition<'t, A>) -> Self {
+        TokenKind::Repetition(repetition)
     }
 }
 
@@ -393,9 +407,102 @@ impl<'t> Literal<'t> {
 }
 
 #[derive(Clone, Debug)]
+pub struct Repetition<'t, A = ()> {
+    tokens: Vec<Token<'t, A>>,
+    lower: usize,
+    step: Option<usize>,
+}
+
+impl<'t, A> Repetition<'t, A> {
+    fn new(tokens: Vec<Token<'t, A>>, bounds: impl RangeBounds<usize>) -> Option<Self> {
+        let lower = match bounds.start_bound() {
+            Bound::Included(lower) => *lower,
+            Bound::Excluded(lower) => *lower + 1,
+            Bound::Unbounded => 0,
+        };
+        let upper = match bounds.end_bound() {
+            Bound::Included(upper) => Some(*upper),
+            Bound::Excluded(upper) => Some(cmp::max(*upper, 1) - 1),
+            Bound::Unbounded => None,
+        };
+        match upper {
+            Some(upper) => (upper >= lower).then(|| Repetition {
+                tokens,
+                lower,
+                step: Some(upper - lower),
+            }),
+            None => Some(Repetition {
+                tokens,
+                lower,
+                step: None,
+            }),
+        }
+    }
+
+    pub fn into_owned(self) -> Repetition<'static, A> {
+        let Repetition {
+            tokens,
+            lower,
+            step,
+        } = self;
+        Repetition {
+            tokens: tokens.into_iter().map(Token::into_owned).collect(),
+            lower,
+            step,
+        }
+    }
+
+    #[cfg(feature = "diagnostics")]
+    pub fn unannotate(self) -> Repetition<'t, ()> {
+        let Repetition {
+            tokens,
+            lower,
+            step,
+        } = self;
+        Repetition {
+            tokens: tokens.into_iter().map(Token::unannotate).collect(),
+            lower,
+            step,
+        }
+    }
+
+    pub fn tokens(&self) -> &Vec<Token<'t, A>> {
+        &self.tokens
+    }
+
+    pub fn bounds(&self) -> (usize, Option<usize>) {
+        (self.lower, self.step.map(|step| self.lower + step))
+    }
+
+    pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
+        self.tokens.iter().any(|token| token.has_token_with(f))
+    }
+
+    pub fn has_preceding_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
+        self.tokens
+            .first()
+            .map(|token| token.has_preceding_token_with(f))
+            .unwrap_or(false)
+    }
+
+    pub fn has_terminating_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
+        self.tokens
+            .last()
+            .map(|token| token.has_terminating_token_with(f))
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum Wildcard {
     One,
     ZeroOrMore(Evaluation),
+    // NOTE: Repetitions can represent tree wildcards as they are more general
+    //       and are allowed to cross component boundaries. However,
+    //       transforming tree wildcards into repetitions would move complex
+    //       logic into the parser and require additional state that is easier
+    //       (and likely less expensive) to manage in compilation (see
+    //       `encode::compile`).
     Tree { is_rooted: bool },
 }
 
@@ -480,6 +587,9 @@ where
     })
 }
 
+// TODO: Repetition tokens are invariant if they have constant bounds (`step` is
+//       zero) and their sub-glob consists of invariant tokens. This should be
+//       considered here.
 pub fn invariant_prefix_path<'t, A, I>(tokens: I) -> Option<PathBuf>
 where
     A: 't,
@@ -631,12 +741,15 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
                 //       etc. For example, to escape `*`, either `\*` or `[*]`
                 //       can be used.
                 bytes::escaped_transform(
-                    no_adjacent_tree(bytes::is_not("/?*$()[]{},\\")),
+                    no_adjacent_tree(bytes::is_not("/?*$:<>()[]{},\\")),
                     '\\',
                     branch::alt((
                         combinator::value("?", bytes::tag("?")),
                         combinator::value("*", bytes::tag("*")),
                         combinator::value("$", bytes::tag("$")),
+                        combinator::value(":", bytes::tag(":")),
+                        combinator::value("<", bytes::tag("<")),
+                        combinator::value(">", bytes::tag(">")),
                         combinator::value("(", bytes::tag("(")),
                         combinator::value(")", bytes::tag(")")),
                         combinator::value("[", bytes::tag("[")),
@@ -683,11 +796,16 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
                                 |(_, right)| right,
                             ),
                             combinator::eof,
-                            // In alternatives, tree tokens may be terminated by
-                            // commas `,` or closing curly braces `}`. These
-                            // delimiting tags must be consumed by their respective
-                            // parsers, so they are peeked.
-                            combinator::peek(branch::alt((bytes::tag(","), bytes::tag("}")))),
+                            // In alternatives and repetitions, tree tokens may
+                            // be terminated by additional tags. These
+                            // delimiting tags must be consumed by their
+                            // respective parsers, so they are peeked.
+                            combinator::peek(branch::alt((
+                                bytes::tag(","),
+                                bytes::tag(":"),
+                                bytes::tag("}"),
+                                bytes::tag(">"),
+                            ))),
                         )),
                     ),
                 )),
@@ -731,6 +849,54 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
                 |_| Wildcard::ZeroOrMore(Evaluation::Lazy).into(),
             ),
         ))(input)
+    }
+
+    fn repetition(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
+        type NParseResult<T> = Result<T, <usize as FromStr>::Err>;
+
+        fn bounds(input: ParserInput) -> IResult<ParserInput, (usize, Option<usize>)> {
+            branch::alt((
+                sequence::preceded(
+                    bytes::tag(":"),
+                    branch::alt((
+                        combinator::map_res(
+                            sequence::separated_pair(
+                                character::digit1,
+                                bytes::tag(","),
+                                combinator::opt(character::digit1),
+                            ),
+                            |(lower, upper): (ParserInput, Option<_>)| -> NParseResult<_> {
+                                let lower = lower.parse::<usize>()?;
+                                let upper =
+                                    upper.map(|upper| upper.parse::<usize>()).transpose()?;
+                                Ok((lower, upper))
+                            },
+                        ),
+                        combinator::map_res(
+                            character::digit1,
+                            |n: ParserInput| -> NParseResult<_> {
+                                let n = n.parse::<usize>()?;
+                                Ok((n, Some(n)))
+                            },
+                        ),
+                        combinator::value((1, None), bytes::tag("")),
+                    )),
+                ),
+                combinator::value((0, None), bytes::tag("")),
+            ))(input)
+        }
+
+        combinator::map_opt(
+            sequence::delimited(
+                bytes::tag("<"),
+                sequence::tuple((glob, bounds)),
+                bytes::tag(">"),
+            ),
+            |(tokens, (lower, upper))| match upper {
+                Some(upper) => Repetition::new(tokens, lower..=upper).map(From::from),
+                None => Repetition::new(tokens, lower..).map(From::from),
+            },
+        )(input)
     }
 
     fn class(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
@@ -806,6 +972,7 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
 
         multi::many1(branch::alt((
             annotate(sequence::preceded(flags_with_state, literal)),
+            annotate(sequence::preceded(flags_with_state, repetition)),
             annotate(sequence::preceded(flags_with_state, alternative)),
             annotate(sequence::preceded(flags_with_state, wildcard)),
             annotate(sequence::preceded(flags_with_state, class)),

@@ -34,7 +34,7 @@ let path = EncodedPath::from("src/main.go");
 let captures = glob.captures(&path).unwrap();
 
 // Prints `main.go`.
-println!("{}", captures.get(2).unwrap().as_str().unwrap());
+println!("{}", captures.get(2).unwrap());
 ```
 
 Match files in a directory tree against a glob:
@@ -52,12 +52,11 @@ See more details below.
 
 ## Construction
 
-Globs are encoded as UTF-8 encoded strings called glob expressions that resemble
-Unix paths consisting of nominal components delimited by separators. Wax exposes
-most of its APIs via the [`Glob`] type, which is constructed from a glob
-expression via inherent functions or standard conversion traits. All data is
-borrowed where possible but can be copied into owned instances using an
-`into_owned` method.
+Globs are encoded as UTF-8 strings called glob expressions that resemble Unix
+paths consisting of nominal components delimited by separators. Wax exposes most
+of its APIs via the [`Glob`] type, which is constructed from a glob expression
+via inherent functions or standard conversion traits. All data is borrowed where
+possible but can be copied into owned instances using an `into_owned` method.
 
 ```rust
 use wax::Glob;
@@ -73,8 +72,8 @@ sequence `\\` is not supported). This means that it is impossible to represent
 `\` in nominal path components, but this character is generally forbidden as
 such and its disuse avoids confusion.
 
-Globs enforce various consistency rules regarding metacharacters, patterns, and
-component boundaries (separators and tree wildcards; see below).
+Globs enforce various consistency rules regarding meta-characters, patterns, and
+component boundaries (separators and [tree wildcards](#wildcards)).
 
 ## Patterns
 
@@ -91,7 +90,7 @@ assert!(glob.is_match("src/lib.rs"));
 
 Globs use a consistent and opinionated format and patterns are **not**
 configurable; the semantics of a particular glob are always the same. For
-example, `*` **never** matches across directory boundaries (see below).
+example, `*` **never** matches across component boundaries.
 
 ### Wildcards
 
@@ -99,15 +98,16 @@ Wildcards match some amount of arbitrary text in paths and are the most
 fundamental pattern provided by globs.
 
 The tree wildcard `**` matches zero or more sub-directories. **This is the only
-way to match across arbitrary directory boundaries**; all other wildcards do
-**not** match across directory boundaries. When a tree wildcard participates in
-a match and does not terminate the pattern, its capture includes a trailing
-forward slash `/`. If a tree wildcard does not participate in a match, then its
-capture is an empty string. Tree wildcards must be delimited by forward slashes
-or a termination (such as the beginning and/or end of a glob or sub-glob). Tree
-wildcards and path separators are distinct and any adjacent forward slashes that
-form a tree wildcard are parsed together. If a glob consists solely of a tree
-wildcard, then it matches all files in the working directory tree.
+wildcard that may match across arbitrary component boundaries**; all other
+wildcards do **not** match across component (directory) boundaries. When a tree
+wildcard participates in a match and does not terminate the pattern, its capture
+includes a trailing forward slash `/`. If a tree wildcard does not participate
+in a match, then its capture is an empty string. Tree wildcards must be
+delimited by forward slashes or a termination (such as the beginning and/or end
+of a glob or sub-glob). Tree wildcards and path separators are distinct and any
+adjacent forward slashes that form a tree wildcard are parsed together. If a
+glob consists solely of a tree wildcard, then it matches all files in the
+working directory tree.
 
 The zero-or-more wildcards `*` and `$` match zero or more of any character
 **except path separators**. Zero-or-more wildcards cannot be adjacent to other
@@ -119,8 +119,8 @@ that literal while `$` stops at the first occurence.
 The exactly-one wildcard `?` matches any single character **except path
 separators**. Exactly-one wildcards do not group automatically, so a pattern of
 contiguous wildcards such as `???` form distinct captures for each `?` wildcard.
-An alternative can be used to group exactly-one wildcards into a single capture,
-such as `{???}` (see [below](#alternatives)).
+[An alternative](#alternatives) can be used to group exactly-one wildcards into
+a single capture, such as `{???}`.
 
 ### Character Classes
 
@@ -138,17 +138,20 @@ Character classes may be negated by including an exclamation mark `!` at the
 beginning of the class pattern. For example, `[!a]` matches any character except
 for `a`. These are the only patterns that support negation.
 
-Note that character classes can also be used to escape metacharacters like `*`,
-`$`, etc., though globs also support escaping via a backslash `\`. To match the
+It is possible to escape metacharacters like `*`, `$`, etc., using character
+classes though globs also support escaping via a backslash `\`. To match the
 control characters `[`, `]`, and `-` within a character class, they must be
 escaped via a backslash, such as `[a\-]` to match `a` or `-`.
+
+Character classes have limited utility on their own, but compose particularly
+well with [repetitions](#repetitions).
 
 ### Alternatives
 
 Alternatives match an arbitrary sequence of comma separated sub-globs delimited
 by curly braces `{...,...}`. For example, `{a?c,x?z,foo}` matches any of the
-sub-globs `a?c`, `x?z`, or `foo`. Alternatives may be arbitrarily nested, such
-as in `{a,{b,{c,d}}}`.
+sub-globs `a?c`, `x?z`, or `foo`. Alternatives may be arbitrarily nested and
+composed with [repetitions](#repetitions).
 
 Alternatives form a single capture group regardless of the contents of their
 sub-globs. This capture is formed from the complete match of the sub-glob, so if
@@ -158,18 +161,47 @@ Alternatives can be used to group capture text using a single sub-glob, such as
 `{*.{go,rs}}` to capture an entire file name with a particular extension or
 `{???}` to group a sequence of exactly-one wildcards.
 
-Sub-globs must consider both neighboring patterns and component boundaries. For
-example, wildcards must respect adjacency rules, so `*{a,b*}` is allowed but
-`*{a,*b}` is not. Furthermore, component boundaries may never be adjacent, so
-`a/{b/,c/**/}d` and `a{/b,/c}` are allowed but `a/{b/,/**/c}/d` and `a/{/b,/c}`
-are not.
+Alternatives must consider adjacency rules and neighboring patterns. For
+example, `*{a,b*}` is allowed but `*{a,*b}` is not. Additionally, they may not
+contain a sub-glob consisting of a singular tree wildcard `**` and cannot root a
+glob expression as this could cause the expression to match or walk overlapping
+trees.
 
-Both path separators and tree wildcards are considered component boundaries and
-tree wildcards are parsed together with their surrounding forward slashes: `**`,
-`/**`, `**/`, and `/**/` are all considered tree wildcards and produce no
-independent path separators. This is typically intuitive, but means that despite
-no adjacent forward slashes, `a/{**/b,c}` and `{a/**,b}/c` are not allowed just
-as `a//**` is not allowed.
+### Repetitions
+
+Repetitions match a sub-glob a specified number of times and more closely
+resemble general purpose regular expressions. Repetitions are delimited by angle
+brackets with a separating colon `<...:...>` where a sub-glob precedes the colon
+and a bounds specification follows it. For example, `<a*/:0,>` matches zero or
+more components beginning with `a`. Along with tree wildcards, **this is the
+only other way to match across arbitrary component boundaries**. Repetitions may
+be arbitrarily nested and composed with [alternatives](#alternatives).
+
+Bound specifications are formed from inclusive lower and upper bounds separated
+by a comma `,`, such as `:1,4` to match between one and four times. The upper
+bound is optional and may be omitted. For example, `:1,` matches one or more
+times (note the presence of a comma `,`). A singular bound is constant, so `:3`
+matches exactly three times. If no lower or upper bound is specified, then the
+sub-glob matches one or more times, so `<a:>` and `<a:1,>` are equivalent.
+Similarly, if the colon `:` is additionally omitted, then the sub-glob matches
+zero or more times, so `<a>` and `<a:0,>` are equivalent.
+
+Repetitions form a singular capture group regardless of the contents of their
+sub-glob. The capture is formed from the complete match of the sub-glob. If the
+repetition `<abc/>` matches `abc/abc/`, then the capture text will be
+`abc/abc/`.
+
+Repetitions compose particularly well with [character
+classes](#character-classes). Most often, a glob expression like `{????}` is
+sufficient, but the more specific expression `<[0-9]:4>` further constrains the
+matched characters to digits, for example. Furthermore, repetitions can form
+tree expressions that further constrain directories, such as `<[!.]*/>[!.]*` to
+match paths that contain no leading dots `.`.
+
+Repetitions must consider adjacency rules and neighboring patterns. For example,
+`a/<b/**:1,>` is allowed but `<a/**:1,>/b` is not. Additionally, they may not
+contain a sub-glob consisting of a singular separator `/`, a singular
+zero-or-more wildcard `*` or `$`, nor a singular tree wildcard `**`.
 
 ## Flags and Case Sensitivity
 
@@ -190,10 +222,9 @@ matches file paths beneath a `photos` directory with a case-sensitive base and a
 case-**in**sensitive extension `jpg` or `jpeg`.
 
 Wax considers literals, their configured case sensitivity, and the case
-sensitivity of the target platform's file system when partitioning glob
-expressions with [`Glob::partitioned`] (see
-[below](#partitioning-and-semantic-literals)). Partitioning is unaffected in
-glob expressions with no flags.
+sensitivity of the target platform's file system [when partitioning glob
+expressions](#partitioning-and-semantic-literals) with [`Glob::partitioned`].
+Partitioning is unaffected in glob expressions with no flags.
 
 ## Errors and Diagnostics
 
@@ -210,7 +241,7 @@ users that provide glob expressions.
 ```
 Error: glob::rule
 
-  x invalid glob expression: adjacent zero-or-more wildcards `*` or `$` in alternative
+  x malformed glob expression: adjacent zero-or-more wildcards `*` or `$`
    ,----
  1 | doc/**/*{.md,.tex,*.txt}
    :        |^^^^^^^^|^^^^^^^
@@ -300,8 +331,7 @@ used for file names and paths on all platforms. Wax uses the [`EncodedPath`]
 type to re-encode native paths via lossy conversions that use Unicode
 replacement codepoints whenever a part of a path cannot be represented as valid
 UTF-8. On some platforms these conversions are always no-ops. In practice, the
-overwhelming majority of paths can be losslessly encoded in UTF-8 and paths that
-cannot rarely match incorrectly due to replacement characters.
+overwhelming majority of paths can be losslessly encoded in UTF-8.
 
 [miette]: https://github.com/zkat/miette
 [nym]: https://github.com/olson-sean-k/nym

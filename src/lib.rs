@@ -798,13 +798,17 @@ pub fn escape(unescaped: &str) -> Cow<str> {
     }
 }
 
+// TODO: Is it possible for `:` and `,` to be contextual meta-characters?
 /// Returns `true` if the given character is a meta-character.
 ///
 /// This function does not return `true` for contextual meta-characters that may
 /// only be escaped in particular contexts, such as hyphens `-` in character
 /// class expressions.
 pub const fn is_meta_character(x: char) -> bool {
-    matches!(x, '?' | '*' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | ',')
+    matches!(
+        x,
+        '?' | '*' | '$' | ':' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ','
+    )
 }
 
 /// Returns `true` if the given character is a contextual meta-character.
@@ -852,7 +856,12 @@ mod tests {
 
     #[test]
     fn escape() {
-        assert_eq!(crate::escape("/usr/local/lib"), "/usr/local/lib",);
+        assert_eq!(crate::escape(""), "");
+        assert_eq!(
+            crate::escape("?*$:<>()[]{},"),
+            "\\?\\*\\$\\:\\<\\>\\(\\)\\[\\]\\{\\}\\,",
+        );
+        assert_eq!(crate::escape("/usr/local/lib"), "/usr/local/lib");
         assert_eq!(
             crate::escape("record[D00,00].txt"),
             "record\\[D00\\,00\\].txt",
@@ -861,8 +870,8 @@ mod tests {
             crate::escape("Do You Remember Love?.mp4"),
             "Do You Remember Love\\?.mp4",
         );
-        assert_eq!(crate::escape("左{}右"), "左\\{\\}右",);
-        assert_eq!(crate::escape("*中*"), "\\*中\\*",);
+        assert_eq!(crate::escape("左{}右"), "左\\{\\}右");
+        assert_eq!(crate::escape("*中*"), "\\*中\\*");
     }
 
     #[test]
@@ -937,6 +946,17 @@ mod tests {
     }
 
     #[test]
+    fn build_glob_with_repetition_tokens() {
+        Glob::new("<a:0,1>").unwrap();
+        Glob::new("<a:0,>").unwrap();
+        Glob::new("<a:2>").unwrap();
+        Glob::new("<a:>").unwrap();
+        Glob::new("<a>").unwrap();
+        Glob::new("<a<b:0,>:0,>").unwrap();
+        Glob::new("<[!.]*/:0,>[!.]*").unwrap();
+    }
+
+    #[test]
     fn build_glob_with_literal_escaped_wildcard_tokens() {
         Glob::new("a/b\\?/c").unwrap();
         Glob::new("a/b\\$/c").unwrap();
@@ -979,6 +999,14 @@ mod tests {
         Glob::new("a/(?-i)b/c").unwrap();
         Glob::new("a/b/(?-i)c").unwrap();
         Glob::new("(?i)a/(?-i)b/(?i)c").unwrap();
+    }
+
+    #[test]
+    fn reject_glob_with_invalid_separator_tokens() {
+        assert!(Glob::new("//a").is_err());
+        assert!(Glob::new("a//b").is_err());
+        assert!(Glob::new("a/b//").is_err());
+        assert!(Glob::new("a//**").is_err());
     }
 
     #[test]
@@ -1045,18 +1073,33 @@ mod tests {
     }
 
     #[test]
-    fn reject_glob_with_invalid_separator_tokens() {
-        assert!(Glob::new("//a").is_err());
-        assert!(Glob::new("a//b").is_err());
-        assert!(Glob::new("a/b//").is_err());
-    }
-
-    #[test]
     fn reject_glob_with_invalid_alternative_separator_tokens() {
         assert!(Glob::new("/slash/{okay,/error}").is_err());
         assert!(Glob::new("{okay,error/}/slash").is_err());
         assert!(Glob::new("slash/{okay,/error/,okay}/slash").is_err());
         assert!(Glob::new("{okay,error/}{okay,/error}").is_err());
+    }
+
+    #[test]
+    fn reject_glob_with_invalid_repetition_zom_tokens() {
+        assert!(Glob::new("<*:0,>").is_err());
+        assert!(Glob::new("<a/*:0,>*").is_err());
+        assert!(Glob::new("*<*a:0,>").is_err());
+    }
+
+    #[test]
+    fn reject_glob_with_invalid_repetition_tree_tokens() {
+        assert!(Glob::new("<**:0,>").is_err());
+        assert!(Glob::new("</**/a/**:0,>").is_err());
+        assert!(Glob::new("<a/**:0,>/").is_err());
+        assert!(Glob::new("/**</a:0,>").is_err());
+    }
+
+    #[test]
+    fn reject_glob_with_invalid_repetition_separator_tokens() {
+        assert!(Glob::new("</:0,>").is_err());
+        assert!(Glob::new("</a/:0,>").is_err());
+        assert!(Glob::new("<a/:0,>/").is_err());
     }
 
     #[test]
@@ -1202,6 +1245,76 @@ mod tests {
         assert!(glob.is_match(Path::new("a/foo/bar/baz/qux")));
 
         assert!(!glob.is_match(Path::new("a/foo/bar/qux")));
+    }
+
+    #[test]
+    fn match_glob_with_alternative_repetition_tokens() {
+        let glob = Glob::new("log-{<[0-9]:3>,<[0-9]:4>-<[0-9]:2>-<[0-9]:2>}.txt").unwrap();
+
+        assert!(glob.is_match(Path::new("log-000.txt")));
+        assert!(glob.is_match(Path::new("log-1970-01-01.txt")));
+
+        assert!(!glob.is_match(Path::new("log-abc.txt")));
+        assert!(!glob.is_match(Path::new("log-nope-no-no.txt")));
+    }
+
+    #[test]
+    fn match_glob_with_repetition_tokens() {
+        let glob = Glob::new("a/<[0-9]:6>/*").unwrap();
+
+        assert!(glob.is_match(Path::new("a/000000/file.ext")));
+        assert!(glob.is_match(Path::new("a/123456/file.ext")));
+
+        assert!(!glob.is_match(Path::new("a/00000/file.ext")));
+        assert!(!glob.is_match(Path::new("a/0000000/file.ext")));
+        assert!(!glob.is_match(Path::new("a/bbbbbb/file.ext")));
+
+        let path = EncodedPath::from(Path::new("a/999999/file.ext"));
+        let captures = glob.captures(&path).unwrap();
+        assert_eq!("999999", captures.get(1).unwrap());
+    }
+
+    #[test]
+    fn match_glob_with_negative_repetition_tokens() {
+        let glob = Glob::new("<[!.]*/>[!.]*").unwrap();
+
+        assert!(glob.is_match(Path::new("a/b/file.ext")));
+
+        assert!(!glob.is_match(Path::new(".a/b/file.ext")));
+        assert!(!glob.is_match(Path::new("a/.b/file.ext")));
+        assert!(!glob.is_match(Path::new("a/b/.file.ext")));
+    }
+
+    #[test]
+    fn match_glob_with_nested_repetition_tokens() {
+        let glob = Glob::new("log<-<[0-9]:3>:1,2>.txt").unwrap();
+
+        assert!(glob.is_match(Path::new("log-000.txt")));
+        assert!(glob.is_match(Path::new("log-123-456.txt")));
+
+        assert!(!glob.is_match(Path::new("log-abc.txt")));
+        assert!(!glob.is_match(Path::new("log-123-456-789.txt")));
+
+        let path = EncodedPath::from(Path::new("log-987-654.txt"));
+        let captures = glob.captures(&path).unwrap();
+        assert_eq!("-987-654", captures.get(1).unwrap());
+    }
+
+    #[test]
+    fn match_glob_with_repeated_alternative_tokens() {
+        let glob = Glob::new("<{a,b}:1,>/**").unwrap();
+
+        assert!(glob.is_match(Path::new("a/file.ext")));
+        assert!(glob.is_match(Path::new("b/file.ext")));
+        assert!(glob.is_match(Path::new("aaa/file.ext")));
+        assert!(glob.is_match(Path::new("bbb/file.ext")));
+
+        assert!(!glob.is_match(Path::new("file.ext")));
+        assert!(!glob.is_match(Path::new("c/file.ext")));
+
+        let path = EncodedPath::from(Path::new("aa/file.ext"));
+        let captures = glob.captures(&path).unwrap();
+        assert_eq!("aa", captures.get(1).unwrap());
     }
 
     #[test]

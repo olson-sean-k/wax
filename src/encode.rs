@@ -103,7 +103,7 @@ where
 
 fn encode<'t, T>(
     grouping: Grouping,
-    subposition: Option<Position<()>>,
+    superposition: Option<Position<()>>,
     pattern: &mut String,
     tokens: impl IntoIterator<Item = T>,
 ) where
@@ -113,7 +113,7 @@ fn encode<'t, T>(
 
     use crate::token::Archetype::{Character, Range};
     use crate::token::Evaluation::{Eager, Lazy};
-    use crate::token::TokenKind::{Alternative, Class, Literal, Separator, Wildcard};
+    use crate::token::TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
     use crate::token::Wildcard::{One, Tree, ZeroOrMore};
 
     fn encode_intermediate_tree(grouping: Grouping, pattern: &mut String) {
@@ -147,7 +147,7 @@ fn encode<'t, T>(
                         pattern.push_str("(?:");
                         encode(
                             Grouping::NonCapture,
-                            subposition.or(Some(position)),
+                            superposition.or(Some(position)),
                             &mut pattern,
                             tokens.iter(),
                         );
@@ -156,6 +156,27 @@ fn encode<'t, T>(
                     })
                     .collect();
                 grouping.push_str(pattern, &encodings.join("|"));
+            }
+            (position, Repetition(repetition)) => {
+                let encoding = {
+                    let (lower, upper) = repetition.bounds();
+                    let mut pattern = String::new();
+                    pattern.push_str("(?:");
+                    encode(
+                        Grouping::NonCapture,
+                        superposition.or(Some(position)),
+                        &mut pattern,
+                        repetition.tokens().iter(),
+                    );
+                    pattern.push_str(&if let Some(upper) = upper {
+                        format!("){{{},{}}}", lower, upper)
+                    }
+                    else {
+                        format!("){{{},}}", lower)
+                    });
+                    pattern
+                };
+                grouping.push_str(pattern, &encoding);
             }
             (
                 _,
@@ -187,7 +208,7 @@ fn encode<'t, T>(
             (_, Wildcard(One)) => grouping.push_str(pattern, nsepexpr!("{0}")),
             (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, nsepexpr!("{0}*")),
             (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, nsepexpr!("{0}*?")),
-            (First(_), Wildcard(Tree { is_rooted })) => match subposition {
+            (First(_), Wildcard(Tree { is_rooted })) => match superposition {
                 Some(Middle(_)) | Some(Last(_)) => {
                     encode_intermediate_tree(grouping, pattern);
                 }
@@ -205,7 +226,7 @@ fn encode<'t, T>(
             (Middle(_), Wildcard(Tree { .. })) => {
                 encode_intermediate_tree(grouping, pattern);
             }
-            (Last(_), Wildcard(Tree { .. })) => match subposition {
+            (Last(_), Wildcard(Tree { .. })) => match superposition {
                 Some(First(_)) | Some(Middle(_)) => {
                     encode_intermediate_tree(grouping, pattern);
                 }
