@@ -779,19 +779,14 @@ pub fn walk(
         .into_owned())
 }
 
-// TODO: Unify the specification of control and escape characters with parsing
-//       (the `token` module).
+/// Escapes text as a literal glob expression.
 pub fn escape(unescaped: &str) -> Cow<str> {
     const ESCAPE: char = '\\';
 
-    fn is_control(x: char) -> bool {
-        matches!(x, '?' | '*' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | ',',)
-    }
-
-    if unescaped.chars().any(is_control) {
+    if unescaped.chars().any(is_meta_character) {
         let mut escaped = String::new();
         for x in unescaped.chars() {
-            if is_control(x) {
+            if is_meta_character(x) {
                 escaped.push(ESCAPE);
             }
             escaped.push(x);
@@ -800,6 +795,23 @@ pub fn escape(unescaped: &str) -> Cow<str> {
     } else {
         unescaped.into()
     }
+}
+
+/// Returns `true` if the given character is a meta-character.
+///
+/// This function does not return `true` for contextual meta-characters that may
+/// only be escaped in particular contexts, such as hyphens `-` in character
+/// class expressions.
+pub const fn is_meta_character(x: char) -> bool {
+    matches!(x, '?' | '*' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | ',')
+}
+
+/// Returns `true` if the given character is a contextual meta-character.
+///
+/// Contextual meta-characters may only be escaped in particular contexts, such
+/// as hyphens `-` in character class expressions.
+pub const fn is_contextual_meta_character(x: char) -> bool {
+    matches!(x, '-')
 }
 
 // TODO: Construct paths from components in tests. In practice, using string
