@@ -7,10 +7,7 @@ use crate::token::Token;
 use crate::PositionExt as _;
 
 #[cfg(windows)]
-const SEPARATOR: SeparatorMatch = SeparatorMatch {
-    expression: "(?:/|\\\\)",
-    class: "/\\\\",
-};
+const SEPARATOR_CLASS_EXPRESSION: &str = "/\\\\";
 // NOTE: Not only is this specific to Unix, but each supported platform must
 //       specify its separator expression, especially when more than one
 //       separator is supported. It is not possible to use `MAIN_SEPARATOR` here
@@ -19,22 +16,17 @@ const SEPARATOR: SeparatorMatch = SeparatorMatch {
 //       does not support hexadecimal formatting with a fixed width and it is
 //       possible that the separator is a control character.
 #[cfg(not(windows))]
-const SEPARATOR: SeparatorMatch = SeparatorMatch {
-    expression: "/",
-    class: "/",
-};
-
-struct SeparatorMatch {
-    expression: &'static str,
-    // Character classes do not support arbitrary sub-expressions, so platforms
-    // with multiple separators typically require a bespoke expression for
-    // subtracting separators from the class of characters.
-    class: &'static str,
-}
+const SEPARATOR_CLASS_EXPRESSION: &str = "/";
 
 macro_rules! sepexpr {
     ($fmt: expr) => {
-        formatcp!($fmt, SEPARATOR.expression)
+        formatcp!($fmt, formatcp!("[{0}]", SEPARATOR_CLASS_EXPRESSION))
+    };
+}
+
+macro_rules! nsepexpr {
+    ($fmt: expr) => {
+        formatcp!($fmt, formatcp!("[^{0}]", SEPARATOR_CLASS_EXPRESSION))
     };
 }
 
@@ -124,7 +116,7 @@ fn encode<'t, T>(
                 }
                 pattern.push_str(&literal.text().escaped());
             }
-            (_, Separator) => pattern.push_str(SEPARATOR.expression),
+            (_, Separator) => pattern.push_str(sepexpr!("{0}")),
             (position, Alternative(alternative)) => {
                 let encodings: Vec<_> = alternative
                     .branches()
@@ -167,13 +159,13 @@ fn encode<'t, T>(
                             }
                         }
                     }
-                    pattern.push_str(formatcp!("&&[^{0}]]", SEPARATOR.class));
+                    pattern.push_str(nsepexpr!("&&{0}]"));
                     pattern.into()
                 });
             }
-            (_, Wildcard(One)) => grouping.push_str(pattern, sepexpr!("[^{0}]")),
-            (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, sepexpr!("[^{0}]*")),
-            (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, sepexpr!("[^{0}]*?")),
+            (_, Wildcard(One)) => grouping.push_str(pattern, nsepexpr!("{0}")),
+            (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, nsepexpr!("{0}*")),
+            (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, nsepexpr!("{0}*?")),
             (First(_), Wildcard(Tree { is_rooted })) => match subposition {
                 Some(Middle(_)) | Some(Last(_)) => {
                     encode_intermediate_tree(grouping, pattern);
