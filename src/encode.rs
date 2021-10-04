@@ -8,15 +8,35 @@ use crate::PositionExt as _;
 
 #[cfg(windows)]
 const SEPARATOR_CLASS_EXPRESSION: &str = "/\\\\";
-// NOTE: Not only is this specific to Unix, but each supported platform must
-//       specify its separator expression, especially when more than one
-//       separator is supported. It is not possible to use `MAIN_SEPARATOR` here
-//       for platforms with only one separator, as it is not possible to
-//       properly escape the separator; at the time of writing, `const_format`
-//       does not support hexadecimal formatting with a fixed width and it is
-//       possible that the separator is a control character.
-#[cfg(not(windows))]
+#[cfg(unix)]
 const SEPARATOR_CLASS_EXPRESSION: &str = "/";
+
+// This only encodes the platform's main separator, so any additional separators
+// will be missed. It may be better to have explicit platform support and invoke
+// `compile_error!` on unsupported platforms, as this could cause very aberrant
+// behavior. Then again, it seems that platforms using more than one separator
+// are rare. GS/OS, OS/2, and Windows are likely the best known examples and of
+// those only Windows is a supported Rust target at the time of writing (and is
+// already supported by Wax).
+#[cfg(not(any(windows, unix)))]
+const SEPARATOR_CLASS_EXPRESSION: &str = main_separator_class_expression();
+
+#[cfg(not(any(windows, unix)))]
+const fn main_separator_class_expression() -> &'static str {
+    use std::path::MAIN_SEPARATOR;
+
+    // TODO: This is based upon `regex_syntax::is_meta_character`, but that
+    //       function is not `const`. Perhaps that can be changed upstream.
+    const fn escape(x: char) -> &'static str {
+        match x {
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+            | '#' | '&' | '-' | '~' => "\\",
+            _ => "",
+        }
+    }
+
+    formatcp!("{0}{1}", escape(MAIN_SEPARATOR), MAIN_SEPARATOR)
+}
 
 macro_rules! sepexpr {
     ($fmt: expr) => {
