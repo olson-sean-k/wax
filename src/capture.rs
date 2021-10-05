@@ -45,7 +45,8 @@ impl OwnedCaptures {
     pub fn get(&self, index: usize) -> Option<&str> {
         if index == 0 {
             Some(self.matched.as_ref())
-        } else {
+        }
+        else {
             self.ranges
                 .get(index - 1)
                 .map(|range| range.map(|range| &self.matched[range.0..range.1]))

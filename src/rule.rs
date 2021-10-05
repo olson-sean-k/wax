@@ -140,7 +140,8 @@ impl SpanGroup {
     pub fn split_some(left: Option<SourceSpan>, right: SourceSpan) -> Self {
         if let Some(left) = left {
             SpanGroup::Split(left, right)
-        } else {
+        }
+        else {
             SpanGroup::Contiguous(right)
         }
     }
@@ -374,7 +375,8 @@ where
             #[cfg_attr(not(feature = "diagnostics"), allow(clippy::unit_arg))]
             ErrorKind::BoundaryAdjacent(annotate(annotations)),
         ))
-    } else {
+    }
+    else {
         Ok(())
     }
 }

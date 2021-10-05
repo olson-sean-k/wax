@@ -370,7 +370,8 @@ impl<'t> LiteralSequence<'t> {
     pub fn text(&self) -> Cow<'t, str> {
         if self.literals().len() == 1 {
             self.literals().first().unwrap().text.clone()
-        } else {
+        }
+        else {
             self.literals()
                 .iter()
                 .map(|literal| &literal.text)
@@ -473,7 +474,8 @@ where
     );
     if prefix.is_empty() {
         None
-    } else {
+    }
+    else {
         Some(prefix.into())
     }
 }

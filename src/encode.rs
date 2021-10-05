@@ -131,7 +131,8 @@ fn encode<'t, T>(
                 // TODO: Should Unicode support also be toggled by casing flags?
                 if literal.is_case_insensitive() {
                     pattern.push_str("(?i)");
-                } else {
+                }
+                else {
                     pattern.push_str("(?-i)");
                 }
                 pattern.push_str(&literal.text().escaped());
@@ -193,7 +194,8 @@ fn encode<'t, T>(
                 _ => {
                     if *is_rooted {
                         grouping.push_str(pattern, sepexpr!("{0}.*{0}?"));
-                    } else {
+                    }
+                    else {
                         pattern.push_str(sepexpr!("(?:{0}?|"));
                         grouping.push_str(pattern, sepexpr!(".*{0}"));
                         pattern.push(')');

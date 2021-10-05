@@ -172,7 +172,8 @@ where
                 } => {
                     if let Some(right) = next {
                         Some(Adjacency::Middle { left, item, right })
-                    } else {
+                    }
+                    else {
                         Some(Adjacency::Last { left, item })
                     }
                 }
@@ -517,10 +518,12 @@ impl<'t> Glob<'t> {
                 // Note that absolute paths replace paths with which they are
                 // joined, so there is no prefix.
                 (PathBuf::new().into(), root)
-            } else {
+            }
+            else {
                 (directory.as_ref().into(), root)
             }
-        } else {
+        }
+        else {
             let root: Cow<'_, Path> = directory.as_ref().into();
             (root.clone(), root)
         };
@@ -723,7 +726,8 @@ impl<'g> Walk<'g> {
                 // Stop at component boundaries, such as tree wildcards or any
                 // boundary within an alternative token.
                 break;
-            } else {
+            }
+            else {
                 regexes.push(Glob::compile(component.tokens().iter().cloned()));
             }
         }
@@ -792,7 +796,8 @@ pub fn escape(unescaped: &str) -> Cow<str> {
             escaped.push(x);
         }
         escaped.into()
-    } else {
+    }
+    else {
         unescaped.into()
     }
 }

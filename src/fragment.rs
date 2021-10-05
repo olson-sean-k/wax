@@ -244,7 +244,8 @@ where
             None => {
                 if self.data.input_len() == 0 {
                     Err(ErrorMode::Error(E::from_error_kind(*self, kind)))
-                } else {
+                }
+                else {
                     Ok(self.take_split(self.input_len()))
                 }
             }
