@@ -383,12 +383,12 @@ impl<'t> Glob<'t> {
         Ok(Glob { tokens, regex })
     }
 
-    /// Partitions a glob expression into a literal `PathBuf` prefix and
-    /// non-literal `Glob` postfix.
+    /// Partitions a glob expression into an invariant `PathBuf` prefix and
+    /// variant `Glob` postfix.
     ///
-    /// A literal prefix is invariant, meaning it contains no glob patterns nor
-    /// other variant components and can be interpretted as a native path. The
-    /// resulting `Glob` is variant and contains the remaining components (in
+    /// The invariant prefix contains no glob patterns nor other variant
+    /// components and therefore can be interpretted as a native path. The
+    /// `Glob` postfix is variant and contains the remaining components (in
     /// particular, patterns) that follow the prefix. For example, the glob
     /// expression `.local/**/*.log` would produce the path `.local` and glob
     /// `**/*.log`. It is possible for either partition to be empty.
@@ -396,22 +396,28 @@ impl<'t> Glob<'t> {
     /// Literal components may be considered variant if they contain characters
     /// with casing and the configured case sensitivity differs from the target
     /// platform's file system. For example, the case-insensitive literal
-    /// `(?i)photos` is considered variant on Unix and invariant on Windows, as
-    /// `photos` resolves differently in Unix file system APIs than `Glob` APIs
-    /// (which respect the configured case-insensitivity).
+    /// expression `(?i)photos` is considered variant on Unix and invariant on
+    /// Windows, because the literal `photos` resolves differently in Unix file
+    /// system APIs than `Glob` APIs (which respect the configured
+    /// case-insensitivity).
     ///
-    /// Partitioning a glob expression allows any literal prefix to be used as a
-    /// native path to establish a working directory or to interpret semantic
+    /// Partitioning a glob expression allows any invariant prefix to be used as
+    /// a native path to establish a working directory or to interpret semantic
     /// components that are not recognized by globs, such as parent directory
     /// `..` components.
     ///
     /// Partitioned `Glob`s are never rooted. If the glob expression has a root
-    /// component, then it is always included in the literal prefix.
+    /// component, then it is always included in the invariant `PathBuf` prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the glob expression cannot be parsed or violates
+    /// glob component rules.
     ///
     /// # Examples
     ///
     /// To match files in a directory tree while respecting semantic components
-    /// like `..` on platforms that support it, the literal path prefix can be
+    /// like `..` on platforms that support it, the invariant prefix can be
     /// applied to a working directory. In the following example, `walk` reads
     /// and therefore resolves the path `./../site/img`, respecting the meaning
     /// of the `.` and `..` components.
@@ -428,9 +434,9 @@ impl<'t> Glob<'t> {
     /// ```
     ///
     /// To match paths against a glob while respecting semantic components, the
-    /// prefix and candidate path can be canonicalized. The following example
-    /// canonicalizes both the working directory joined with the prefix as well
-    /// as the candidate path and then attempts to match the glob if the
+    /// invariant prefix and candidate path can be canonicalized. The following
+    /// example canonicalizes both the working directory joined with the prefix
+    /// as well as the candidate path and then attempts to match the glob if the
     /// candidate path contains the prefix.
     ///
     /// ```rust,no_run
@@ -454,48 +460,17 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     ///
-    /// The above examples illustrate a particular approach, but the literal
-    /// path prefix can be used as needed for a particular application.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the glob expression cannot be parsed or violates
-    /// glob component rules.
+    /// The above examples illustrate particular approaches, but the invariant
+    /// prefix can be used to interact with native paths as needed for a given
+    /// application.
     pub fn partitioned(expression: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
-        use crate::token::TokenKind::{Literal, Separator, Wildcard};
-        use crate::token::Wildcard::Tree;
-
-        pub fn literal_prefix_upper_bound(tokens: &[Token]) -> usize {
-            let mut separator = None;
-            for (n, token) in tokens.iter().map(Token::kind).enumerate() {
-                match token {
-                    Separator => {
-                        separator = Some(n);
-                    }
-                    Literal(literal) if !literal.has_variant_casing() => {
-                        continue;
-                    }
-                    Wildcard(Tree { .. }) => {
-                        return n;
-                    }
-                    _ => {
-                        return match separator {
-                            Some(n) => n + 1,
-                            None => 0,
-                        };
-                    }
-                }
-            }
-            tokens.len()
-        }
-
-        // Get the literal path prefix for the token sequence.
+        // Get the invariant prefix for the token sequence.
         let mut tokens = token::parse(expression)?;
-        let prefix = token::literal_path_prefix(tokens.iter()).unwrap_or_else(PathBuf::new);
+        let prefix = token::invariant_prefix_path(tokens.iter()).unwrap_or_else(PathBuf::new);
 
-        // Drain literal tokens from the beginning of the token sequence. Unroot
-        // any tokens at the beginning of the sequence (tree wildcards)
-        tokens.drain(0..literal_prefix_upper_bound(&tokens));
+        // Drain invariant tokens from the beginning of the token sequence.
+        // Unroot any tokens at the beginning of the sequence (tree wildcards)
+        tokens.drain(0..token::invariant_prefix_upper_bound(&tokens));
         tokens.first_mut().map(Token::unroot);
 
         let regex = Glob::compile(tokens.iter());
@@ -509,7 +484,7 @@ impl<'t> Glob<'t> {
     }
 
     pub fn has_root(&self) -> bool {
-        token::literal_path_prefix(self.tokens.iter())
+        token::invariant_prefix_path(self.tokens.iter())
             .map(|prefix| prefix.has_root())
             .unwrap_or(false)
     }
@@ -539,24 +514,27 @@ impl<'t> Glob<'t> {
     }
 
     pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
-        // The directory tree is traversed from `root`, which may include a path
-        // prefix from the glob pattern. `Walk` patterns are only applied to
-        // path components following the `prefix` in `root`.
-        let (prefix, root) = if let Some(prefix) = token::literal_path_prefix(self.tokens.iter()) {
-            let root: Cow<'_, Path> = directory.as_ref().join(&prefix).into();
-            if prefix.is_absolute() {
-                // Note that absolute paths replace paths with which they are
-                // joined, so there is no prefix.
-                (PathBuf::new().into(), root)
-            }
-            else {
-                (directory.as_ref().into(), root)
-            }
-        }
-        else {
-            let root: Cow<'_, Path> = directory.as_ref().into();
-            (root.clone(), root)
-        };
+        let directory = directory.as_ref();
+        // The directory tree is traversed from `root`, which may include an
+        // invariant prefix from the glob pattern. `Walk` patterns are only
+        // applied to path components following the `prefix` (distinct from the
+        // glob pattern prefix) in `root`.
+        let (prefix, root) = token::invariant_prefix_path(self.tokens.iter())
+            .map(|prefix| {
+                let root = directory.join(&prefix).into();
+                if prefix.is_absolute() {
+                    // Absolute paths replace paths with which they are joined,
+                    // in which case there is no prefix.
+                    (PathBuf::new().into(), root)
+                }
+                else {
+                    (directory.into(), root)
+                }
+            })
+            .unwrap_or_else(|| {
+                let root = Cow::from(directory);
+                (root.clone(), root)
+            });
         let regexes = Walk::compile(self.tokens.iter());
         Walk {
             regex: Cow::Borrowed(&self.regex),

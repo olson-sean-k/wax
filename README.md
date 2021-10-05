@@ -257,8 +257,8 @@ semantic components that precede patterns and would be interpreted as literals
 (namely `..`). [`Glob::partitioned`] partitions a glob expression into an
 invariant [`PathBuf`] prefix and a variant [`Glob`] postfix. Here, invariant
 means that the partition contains no glob patterns and resolves the same literal
-paths on the target platform's file system (has invariant literals and/or case
-sensitivity). The path can be used as needed in combination with the glob.
+paths on the target platform's file system. The prefix can be used as needed in
+combination with the glob.
 
 ```rust
 use std::path::Path;

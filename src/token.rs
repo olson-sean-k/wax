@@ -440,7 +440,7 @@ where
     })
 }
 
-pub fn literal_path_prefix<'t, A, I>(tokens: I) -> Option<PathBuf>
+pub fn invariant_prefix_path<'t, A, I>(tokens: I) -> Option<PathBuf>
 where
     A: 't,
     I: IntoIterator<Item = &'t Token<'t, A>>,
@@ -478,6 +478,33 @@ where
     else {
         Some(prefix.into())
     }
+}
+
+pub fn invariant_prefix_upper_bound(tokens: &[Token]) -> usize {
+    use crate::token::TokenKind::{Literal, Separator, Wildcard};
+    use crate::token::Wildcard::Tree;
+
+    let mut separator = None;
+    for (n, token) in tokens.iter().map(Token::kind).enumerate() {
+        match token {
+            Separator => {
+                separator = Some(n);
+            }
+            Literal(literal) if !literal.has_variant_casing() => {
+                continue;
+            }
+            Wildcard(Tree { .. }) => {
+                return n;
+            }
+            _ => {
+                return match separator {
+                    Some(n) => n + 1,
+                    None => 0,
+                };
+            }
+        }
+    }
+    tokens.len()
 }
 
 // NOTE: Both forward and back slashes are disallowed in non-separator tokens
@@ -774,7 +801,7 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use crate::token::{self, TokenKind};
 
@@ -797,42 +824,28 @@ mod tests {
     }
 
     #[test]
-    fn literal_path_prefix() {
-        assert_eq!(
-            token::literal_path_prefix(token::parse("/a/b").unwrap().iter()).unwrap(),
-            Path::new("/a/b"),
-        );
-        assert_eq!(
-            token::literal_path_prefix(token::parse("a/b").unwrap().iter()).unwrap(),
-            Path::new("a/b"),
-        );
-        assert_eq!(
-            token::literal_path_prefix(token::parse("a/*").unwrap().iter()).unwrap(),
-            Path::new("a/"),
-        );
-        assert_eq!(
-            token::literal_path_prefix(token::parse("a/*b").unwrap().iter()).unwrap(),
-            Path::new("a/"),
-        );
-        assert_eq!(
-            token::literal_path_prefix(token::parse("a/b*").unwrap().iter()).unwrap(),
-            Path::new("a/"),
-        );
-        assert_eq!(
-            token::literal_path_prefix(token::parse("a/b/*/c").unwrap().iter()).unwrap(),
-            Path::new("a/b/"),
-        );
-        let prefix =
-            token::literal_path_prefix(token::parse("../foo/(?i)bar/(?-i)baz").unwrap().iter())
-                .unwrap();
+    fn invariant_prefix_path() {
+        fn invariant_prefix_path(expression: &str) -> Option<PathBuf> {
+            token::invariant_prefix_path(token::parse(expression).unwrap().iter())
+        }
+
+        assert_eq!(invariant_prefix_path("/a/b").unwrap(), Path::new("/a/b"));
+        assert_eq!(invariant_prefix_path("a/b").unwrap(), Path::new("a/b"));
+        assert_eq!(invariant_prefix_path("a/*").unwrap(), Path::new("a/"));
+        assert_eq!(invariant_prefix_path("a/*b").unwrap(), Path::new("a/"));
+        assert_eq!(invariant_prefix_path("a/b*").unwrap(), Path::new("a/"));
+        assert_eq!(invariant_prefix_path("a/b/*/c").unwrap(), Path::new("a/b/"));
+
+        #[cfg_attr(not(any(unix, windows)), allow(unused))]
+        let prefix = invariant_prefix_path("../foo/(?i)bar/(?-i)baz").unwrap();
+        #[cfg(unix)]
+        assert_eq!(prefix, Path::new("../foo"));
         #[cfg(windows)]
         assert_eq!(prefix, Path::new("../foo/bar"));
-        #[cfg(not(windows))]
-        assert_eq!(prefix, Path::new("../foo"));
 
-        assert!(token::literal_path_prefix(token::parse("**").unwrap().iter()).is_none());
-        assert!(token::literal_path_prefix(token::parse("a*").unwrap().iter()).is_none());
-        assert!(token::literal_path_prefix(token::parse("*/b").unwrap().iter()).is_none());
-        assert!(token::literal_path_prefix(token::parse("a?/b").unwrap().iter()).is_none());
+        assert!(invariant_prefix_path("**").is_none());
+        assert!(invariant_prefix_path("a*").is_none());
+        assert!(invariant_prefix_path("*/b").is_none());
+        assert!(invariant_prefix_path("a?/b").is_none());
     }
 }
