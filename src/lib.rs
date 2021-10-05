@@ -420,12 +420,42 @@ impl<'t> Glob<'t> {
     /// use std::path::Path;
     /// use wax::Glob;
     ///
-    /// let path = Path::new("."); // Working directory.
+    /// let directory = Path::new("."); // Working directory.
     /// let (prefix, glob) = Glob::partitioned("../site/img/*.{jpg,png}").unwrap();
-    /// for entry in glob.walk(path.join(prefix), usize::MAX) {
+    /// for entry in glob.walk(directory.join(prefix), usize::MAX) {
     ///     // ...
     /// }
     /// ```
+    ///
+    /// To match paths against a glob while respecting semantic components, the
+    /// prefix and candidate path can be canonicalized. The following example
+    /// canonicalizes both the working directory joined with the prefix as well
+    /// as the candidate path and then attempts to match the glob if the
+    /// candidate path contains the prefix.
+    ///
+    /// ```rust,no_run
+    /// use dunce; // Avoids UNC paths on Windows.
+    /// use std::path::Path;
+    /// use wax::Glob;
+    ///
+    /// let path: &Path = /* ... */ // Candidate path.
+    /// # Path::new("");
+    ///
+    /// let directory = Path::new("."); // Working directory.
+    /// let (prefix, glob) = Glob::partitioned("../../src/**").unwrap();
+    /// let prefix = dunce::canonicalize(directory.join(&prefix)).unwrap();
+    /// if dunce::canonicalize(path)
+    ///     .unwrap()
+    ///     .strip_prefix(&prefix)
+    ///     .map(|path| glob.is_match(path))
+    ///     .unwrap_or(false)
+    /// {
+    ///     // ...
+    /// }
+    /// ```
+    ///
+    /// The above examples illustrate a particular approach, but the literal
+    /// path prefix can be used as needed for a particular application.
     ///
     /// # Errors
     ///

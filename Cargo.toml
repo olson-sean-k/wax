@@ -45,4 +45,5 @@ features = [
 
 [dev-dependencies]
 build-fs-tree = "^0.3.0"
+dunce = "^1.0.0"
 tempfile = "^3.2.0"
