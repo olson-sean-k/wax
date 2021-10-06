@@ -9,12 +9,13 @@ mod capture;
 mod encode;
 mod fragment;
 mod rule;
+mod span;
 mod token;
 
 use bstr::ByteVec;
 use itertools::{Itertools as _, Position};
 #[cfg(feature = "diagnostics")]
-use miette::{Diagnostic, SourceSpan};
+use miette::Diagnostic;
 use regex::Regex;
 use std::borrow::{Borrow, Cow};
 use std::cmp;
@@ -51,20 +52,6 @@ where
 {
     fn expect_encoding(self) -> T {
         self.expect("unexpected encoding")
-    }
-}
-
-#[cfg(feature = "diagnostics")]
-trait SourceSpanExt {
-    fn union(&self, other: &SourceSpan) -> SourceSpan;
-}
-
-#[cfg(feature = "diagnostics")]
-impl SourceSpanExt for SourceSpan {
-    fn union(&self, other: &SourceSpan) -> SourceSpan {
-        let start = cmp::min(self.offset(), other.offset());
-        let end = cmp::max(self.offset() + self.len(), other.offset() + other.len());
-        (start, end - start).into()
     }
 }
 
