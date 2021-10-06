@@ -31,7 +31,7 @@ use walkdir::{self, DirEntry, WalkDir};
 
 pub use walkdir::Error as WalkError;
 
-use crate::token::{Token, TokenKind};
+use crate::token::Token;
 
 pub use crate::capture::Captures;
 pub use crate::rule::RuleError;
@@ -714,10 +714,11 @@ impl<'g> Walk<'g> {
     {
         let mut regexes = Vec::new();
         for component in token::components(tokens) {
-            if component.tokens().iter().any(|token| match token.kind() {
-                TokenKind::Alternative(ref alternative) => alternative.has_component_boundary(),
-                token => token.is_component_boundary(),
-            }) {
+            if component
+                .tokens()
+                .iter()
+                .any(|token| token.has_component_boundary())
+            {
                 // Stop at component boundaries, such as tree wildcards or any
                 // boundary within an alternative token.
                 break;
@@ -1027,6 +1028,8 @@ mod tests {
         assert!(Glob::new("{okay,*}*").is_err());
         assert!(Glob::new("${okay,*error}").is_err());
         assert!(Glob::new("{okay,error*}$").is_err());
+        assert!(Glob::new("{*,okay}{okay,*}").is_err());
+        assert!(Glob::new("{okay,error*}{okay,*error}").is_err());
     }
 
     #[test]
@@ -1038,6 +1041,7 @@ mod tests {
         assert!(Glob::new("{**/okay,error/**}/slash").is_err());
         assert!(Glob::new("{**/okay,prefix{error/**}}/slash").is_err());
         assert!(Glob::new("{**/okay,slash/{**/error}}postfix").is_err());
+        assert!(Glob::new("{error/**}{okay,**/error").is_err());
     }
 
     #[test]
@@ -1052,6 +1056,7 @@ mod tests {
         assert!(Glob::new("/slash/{okay,/error}").is_err());
         assert!(Glob::new("{okay,error/}/slash").is_err());
         assert!(Glob::new("slash/{okay,/error/,okay}/slash").is_err());
+        assert!(Glob::new("{okay,error/}{okay,/error}").is_err());
     }
 
     #[test]

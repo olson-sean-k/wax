@@ -144,6 +144,31 @@ impl<'t, A> Token<'t, A> {
     pub fn annotation(&self) -> &A {
         self.as_ref()
     }
+
+    pub fn has_component_boundary(&self) -> bool {
+        self.has_token_with(&mut |token| token.is_component_boundary())
+    }
+
+    pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
+        match self.kind() {
+            TokenKind::Alternative(ref alternative) => alternative.has_token_with(f),
+            _ => f(self),
+        }
+    }
+
+    pub fn has_preceding_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
+        match self.kind() {
+            TokenKind::Alternative(ref alternative) => alternative.has_preceding_token_with(f),
+            _ => f(self),
+        }
+    }
+
+    pub fn has_terminating_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
+        match self.kind() {
+            TokenKind::Alternative(ref alternative) => alternative.has_terminating_token_with(f),
+            _ => f(self),
+        }
+    }
 }
 
 impl<'t, A> AsRef<TokenKind<'t, A>> for Token<'t, A> {
@@ -289,12 +314,27 @@ impl<'t, A> Alternative<'t, A> {
         &self.0
     }
 
-    pub fn has_component_boundary(&self) -> bool {
+    pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
+        self.0
+            .iter()
+            .any(|tokens| tokens.iter().any(|token| token.has_token_with(f)))
+    }
+
+    pub fn has_preceding_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
         self.0.iter().any(|tokens| {
-            tokens.iter().any(|token| match token.kind() {
-                TokenKind::Alternative(ref alternative) => alternative.has_component_boundary(),
-                _ => token.is_component_boundary(),
-            })
+            tokens
+                .first()
+                .map(|token| token.has_preceding_token_with(f))
+                .unwrap_or(false)
+        })
+    }
+
+    pub fn has_terminating_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
+        self.0.iter().any(|tokens| {
+            tokens
+                .last()
+                .map(|token| token.has_terminating_token_with(f))
+                .unwrap_or(false)
         })
     }
 }

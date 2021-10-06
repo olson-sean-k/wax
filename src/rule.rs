@@ -145,16 +145,48 @@ where
         right: Option<&'i Token<'t, Annotation>>,
     }
 
-    fn is_component_boundary<'t>(adjacent: Option<&'t Token<'t, Annotation>>) -> bool {
-        adjacent
-            .map(|token| token.is_component_boundary())
+    fn has_preceding_component_boundary<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+        token
+            .map(|token| token.has_preceding_token_with(&mut |token| token.is_component_boundary()))
             .unwrap_or(false)
     }
 
-    fn is_component_boundary_or_terminal<'t>(adjacent: Option<&'t Token<'t, Annotation>>) -> bool {
-        adjacent
-            .map(|token| token.is_component_boundary())
+    fn has_terminating_component_boundary<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+        token
+            .map(|token| {
+                token.has_terminating_token_with(&mut |token| token.is_component_boundary())
+            })
+            .unwrap_or(false)
+    }
+
+    fn has_terminating_component_boundary_or_terminal<'t>(
+        token: Option<&'t Token<'t, Annotation>>,
+    ) -> bool {
+        token
+            .map(|token| {
+                token.has_terminating_token_with(&mut |token| token.is_component_boundary())
+            })
             .unwrap_or(true)
+    }
+
+    fn has_preceding_zom_token<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+        token
+            .map(|token| {
+                token.has_preceding_token_with(&mut |token| {
+                    matches!(token.kind(), Wildcard(ZeroOrMore(_)))
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    fn has_terminating_zom_token<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+        token
+            .map(|token| {
+                token.has_terminating_token_with(&mut |token| {
+                    matches!(token.kind(), Wildcard(ZeroOrMore(_)))
+                })
+            })
+            .unwrap_or(false)
     }
 
     fn recurse<'t, 'i, I>(
@@ -217,7 +249,7 @@ where
 
         let Outer { left, right } = outer;
         match terminals.map(|token| (token, token.kind())) {
-            Only((inner, Separator)) if is_component_boundary_or_terminal(left) => {
+            Only((inner, Separator)) if has_terminating_component_boundary_or_terminal(left) => {
                 // The alternative is preceded by component boundaries or
                 // terminations; disallow singular separators and rooted
                 // sub-globs.
@@ -225,14 +257,16 @@ where
                 // For example, `foo/{bar,/}` or `{/,foo}`.
                 Err(CheckError::new(AlternativeBoundary, left, inner))
             }
-            Only((inner, Separator)) if is_component_boundary(right) => {
+            Only((inner, Separator)) if has_preceding_component_boundary(right) => {
                 // The alternative is followed by component boundaries; disallow
                 // singular separators and rooted sub-globs.
                 //
                 // For example, `foo/{bar,/}` or `{/,foo}`.
                 Err(CheckError::new(AlternativeBoundary, right, inner))
             }
-            StartEnd((inner, Separator), _) if is_component_boundary_or_terminal(left) => {
+            StartEnd((inner, Separator), _)
+                if has_terminating_component_boundary_or_terminal(left) =>
+            {
                 // The alternative is preceded by component boundaries or
                 // terminations; disallow leading separators and rooted
                 // sub-globs.
@@ -240,7 +274,7 @@ where
                 // For example, `foo/{bar,/baz}` or `{bar,/baz}`.
                 Err(CheckError::new(AlternativeBoundary, left, inner))
             }
-            StartEnd(_, (inner, Separator)) if is_component_boundary(right) => {
+            StartEnd(_, (inner, Separator)) if has_preceding_component_boundary(right) => {
                 // The alternative is followed by component boundaries; disallow
                 // trailing separators.
                 //
@@ -266,50 +300,46 @@ where
                 // For example, `{/**/foo,bar}`.
                 Err(CheckError::new(AlternativeBoundary, None, inner))
             }
-            StartEnd((inner, Wildcard(Tree { .. })), _) if is_component_boundary(left) => {
+            StartEnd((inner, Wildcard(Tree { .. })), _)
+                if has_terminating_component_boundary(left) =>
+            {
                 // The alternative is preceded by component boundaries; disallow
                 // leading tree tokens.
                 //
                 // For example, `foo/{bar,**/baz}`.
                 Err(CheckError::new(AlternativeBoundary, left, inner))
             }
-            StartEnd(_, (inner, Wildcard(Tree { .. }))) if is_component_boundary(right) => {
+            StartEnd(_, (inner, Wildcard(Tree { .. })))
+                if has_preceding_component_boundary(right) =>
+            {
                 // The alternative is followed by component boundaries; disallow
                 // trailing tree tokens.
                 //
                 // For example, `{foo,bar/**}/baz`.
                 Err(CheckError::new(AlternativeBoundary, right, inner))
             }
-            Only((inner, Wildcard(ZeroOrMore(_))))
-                if matches!(left.map(Token::kind), Some(Wildcard(ZeroOrMore(_)))) =>
-            {
+            Only((inner, Wildcard(ZeroOrMore(_)))) if has_terminating_zom_token(left) => {
                 // The alternative is prefixed by a zero-or-more token; disallow
                 // singular zero-or-more tokens.
                 //
                 // For example, `foo*{bar,*,baz}`.
                 Err(CheckError::new(AlternativeZeroOrMore, left, inner))
             }
-            Only((inner, Wildcard(ZeroOrMore(_))))
-                if matches!(right.map(Token::kind), Some(Wildcard(ZeroOrMore(_)))) =>
-            {
+            Only((inner, Wildcard(ZeroOrMore(_)))) if has_preceding_zom_token(right) => {
                 // The alternative is followed by a zero-or-more token; disallow
                 // singular zero-or-more tokens.
                 //
                 // For example, `foo*{bar,*,baz}`.
                 Err(CheckError::new(AlternativeZeroOrMore, right, inner))
             }
-            StartEnd((inner, Wildcard(ZeroOrMore(_))), _)
-                if matches!(left.map(Token::kind), Some(Wildcard(ZeroOrMore(_)))) =>
-            {
+            StartEnd((inner, Wildcard(ZeroOrMore(_))), _) if has_terminating_zom_token(left) => {
                 // The alternative is prefixed by a zero-or-more token; disallow
                 // leading zero-or-more tokens.
                 //
                 // For example, `foo*{bar,*baz}`.
                 Err(CheckError::new(AlternativeZeroOrMore, left, inner))
             }
-            StartEnd(_, (inner, Wildcard(ZeroOrMore(_))))
-                if matches!(right.map(Token::kind), Some(Wildcard(ZeroOrMore(_)))) =>
-            {
+            StartEnd(_, (inner, Wildcard(ZeroOrMore(_)))) if has_preceding_zom_token(right) => {
                 // The alternative is postfixed by a zero-or-more token;
                 // disallow trailing zero-or-more tokens.
                 //
