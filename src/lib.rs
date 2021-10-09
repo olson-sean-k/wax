@@ -768,6 +768,11 @@ impl<'g> Iterator for Walk<'g> {
     }
 }
 
+pub fn is_match<'p>(expression: &str, path: impl Into<EncodedPath<'p>>) -> Result<bool, GlobError> {
+    let glob = Glob::new(expression)?;
+    Ok(glob.is_match(path))
+}
+
 pub fn walk(
     expression: &str,
     directory: impl AsRef<Path>,
