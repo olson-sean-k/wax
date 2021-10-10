@@ -471,8 +471,9 @@ impl<'t> Glob<'t> {
     }
 
     pub fn has_root(&self) -> bool {
-        token::invariant_prefix_path(self.tokens.iter())
-            .map(|prefix| prefix.has_root())
+        self.tokens
+            .first()
+            .map(|token| token.is_rooted())
             .unwrap_or(false)
     }
 
@@ -1086,6 +1087,12 @@ mod tests {
     }
 
     #[test]
+    fn reject_glob_with_rooted_alternative_tokens() {
+        assert!(Glob::new("{okay,/}").is_err());
+        assert!(Glob::new("{okay,/error}").is_err());
+    }
+
+    #[test]
     fn reject_glob_with_invalid_repetition_zom_tokens() {
         assert!(Glob::new("<*:0,>").is_err());
         assert!(Glob::new("<a/*:0,>*").is_err());
@@ -1214,6 +1221,17 @@ mod tests {
         let path = EncodedPath::from(Path::new("a/[/file.ext"));
         let captures = glob.captures(&path).unwrap();
         assert_eq!("[", captures.get(1).unwrap());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn match_glob_with_empty_class_tokens() {
+        // A character class is "empty" if it only matches separators on the
+        // target platform. Such a character class only matches `NUL` and so
+        // effectively matches nothing.
+        let glob = Glob::new("a[/]b").unwrap();
+
+        assert!(!glob.is_match(Path::new("a/b")));
     }
 
     #[test]
@@ -1425,5 +1443,35 @@ mod tests {
 
         assert!(glob.is_match(Path::new("file.ext")));
         assert!(glob.is_match(Path::new("/root/file.ext").strip_prefix(prefix).unwrap()));
+    }
+
+    #[test]
+    fn query_glob_has_root() {
+        assert!(Glob::new("/root").unwrap().has_root());
+        assert!(Glob::new("/**").unwrap().has_root());
+        // Such a repetition is considered rooted. This works even for
+        // repetitions with bounds of zero or more, because subsequent
+        // components must be rooted themselves. Note that this expression
+        // either matches the rooted sub-glob `/root` or matches nothing (empty
+        // paths), which is not technically rooted but is a reasonable
+        // interpretation.
+        assert!(Glob::new("</root:0,>").unwrap().has_root());
+
+        // This is not rooted, because character classes may not match
+        // separators. This example compiles an "empty" character class, which
+        // attempts to match `NUL` and so effectively matches nothing.
+        #[cfg(any(unix, windows))]
+        assert!(!Glob::new("[/]root").unwrap().has_root());
+        // The leading forward slash in tree tokens is meaningful. When omitted,
+        // at the beginning of an expression, the resulting glob is not rooted.
+        assert!(!Glob::new("**/").unwrap().has_root());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn query_glob_has_semantic_literals() {
+        assert!(Glob::new("../src/**").unwrap().has_semantic_literals());
+        assert!(Glob::new("*/a/../b.*").unwrap().has_semantic_literals());
+        assert!(Glob::new("./*.txt").unwrap().has_semantic_literals());
     }
 }

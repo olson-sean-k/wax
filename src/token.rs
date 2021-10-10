@@ -147,6 +147,15 @@ impl<'t, A> Token<'t, A> {
         self.as_ref()
     }
 
+    pub fn is_rooted(&self) -> bool {
+        self.has_preceding_token_with(&mut |token| {
+            matches!(
+                token.kind(),
+                TokenKind::Separator | TokenKind::Wildcard(Wildcard::Tree { is_rooted: true })
+            )
+        })
+    }
+
     pub fn has_component_boundary(&self) -> bool {
         self.has_token_with(&mut |token| token.is_component_boundary())
     }
@@ -887,11 +896,11 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
         }
 
         combinator::map_opt(
-            sequence::delimited(
+            no_adjacent_tree(sequence::delimited(
                 bytes::tag("<"),
                 sequence::tuple((glob, bounds)),
                 bytes::tag(">"),
-            ),
+            )),
             |(tokens, (lower, upper))| match upper {
                 Some(upper) => Repetition::new(tokens, lower..=upper).map(From::from),
                 None => Repetition::new(tokens, lower..).map(From::from),
@@ -922,11 +931,11 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
         }
 
         combinator::map(
-            sequence::delimited(
+            no_adjacent_tree(sequence::delimited(
                 bytes::tag("["),
                 sequence::tuple((combinator::opt(bytes::tag("!")), archetypes)),
                 bytes::tag("]"),
-            ),
+            )),
             |(negation, archetypes)| TokenKind::Class {
                 is_negated: negation.is_some(),
                 archetypes,
@@ -935,14 +944,14 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
     }
 
     fn alternative(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
-        sequence::delimited(
+        no_adjacent_tree(sequence::delimited(
             bytes::tag("{"),
             combinator::map(
                 multi::separated_list1(bytes::tag(","), glob),
                 |alternatives| Alternative::from(alternatives).into(),
             ),
             bytes::tag("}"),
-        )(input)
+        ))(input)
     }
 
     fn glob(input: ParserInput) -> IResult<ParserInput, Vec<Token<Annotation>>> {

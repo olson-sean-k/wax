@@ -116,6 +116,9 @@ fn encode<'t, T>(
     use crate::token::TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
     use crate::token::Wildcard::{One, Tree, ZeroOrMore};
 
+    // This assumes that `NUL` is not allowed in paths and matches nothing.
+    const NULL_CHARACTER_CLASS: &str = nsepexpr!("[\\x00&&{0}]");
+
     fn encode_intermediate_tree(grouping: Grouping, pattern: &mut String) {
         pattern.push_str(sepexpr!("(?:{0}|{0}"));
         grouping.push_str(pattern, sepexpr!(".*{0}"));
@@ -202,7 +205,19 @@ fn encode<'t, T>(
                         }
                     }
                     pattern.push_str(nsepexpr!("&&{0}]"));
-                    pattern.into()
+                    // Compile the character class sub-expression. This may fail
+                    // if the subtraction of the separator pattern yields an
+                    // empty character class (meaning that the glob expression
+                    // matches only separator characters on the target
+                    // platform). If compilation fails, then use the null
+                    // character class, which matches nothing on supported
+                    // platforms.
+                    if Regex::new(&pattern).is_ok() {
+                        pattern.into()
+                    }
+                    else {
+                        NULL_CHARACTER_CLASS.into()
+                    }
                 });
             }
             (_, Wildcard(One)) => grouping.push_str(pattern, nsepexpr!("{0}")),

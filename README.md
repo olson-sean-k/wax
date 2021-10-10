@@ -138,10 +138,19 @@ Character classes may be negated by including an exclamation mark `!` at the
 beginning of the class pattern. For example, `[!a]` matches any character except
 for `a`. These are the only patterns that support negation.
 
-It is possible to escape metacharacters like `*`, `$`, etc., using character
+It is possible to escape meta-characters like `*`, `$`, etc., using character
 classes though globs also support escaping via a backslash `\`. To match the
 control characters `[`, `]`, and `-` within a character class, they must be
 escaped via a backslash, such as `[a\-]` to match `a` or `-`.
+
+Character classes have notable platform-specific behavior, because they support
+arbitrary characters but never match path separators. This means that if a
+character class **only** matches path separators on a given platform, then the
+character class is considered empty and matches nothing. For example, in the
+expression `a[/]b` the character class `[/]` matches nothing on Unix and
+Windows. Such character classes are not rejected, because the role of arbitrary
+characters depends on the platform. In practice, this is rarely a concern, but
+such patterns should be avoided.
 
 Character classes have limited utility on their own, but compose particularly
 well with [repetitions](#repetitions).
