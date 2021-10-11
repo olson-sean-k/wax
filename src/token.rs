@@ -15,7 +15,7 @@ use crate::fragment::Stateful;
 #[cfg(feature = "diagnostics")]
 use crate::fragment::{self, Locate};
 use crate::rule;
-use crate::{GlobError, StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
+use crate::{GlobError, SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
 
 #[cfg(feature = "diagnostics")]
 pub type Annotation = SourceSpan;
@@ -147,6 +147,7 @@ impl<'t, A> Token<'t, A> {
         self.as_ref()
     }
 
+    // TODO: This must consider repetitions with a lower bound of zero.
     pub fn is_rooted(&self) -> bool {
         self.has_preceding_token_with(&mut |token| {
             matches!(
@@ -217,10 +218,7 @@ impl<'t> From<TokenKind<'t, ()>> for Token<'t, ()> {
 #[derive(Clone, Debug)]
 pub enum TokenKind<'t, A = ()> {
     Alternative(Alternative<'t, A>),
-    Class {
-        is_negated: bool,
-        archetypes: Vec<Archetype>,
-    },
+    Class(Class),
     Literal(Literal<'t>),
     Repetition(Repetition<'t, A>),
     Separator,
@@ -231,13 +229,7 @@ impl<'t, A> TokenKind<'t, A> {
     pub fn into_owned(self) -> TokenKind<'static, A> {
         match self {
             TokenKind::Alternative(alternative) => alternative.into_owned().into(),
-            TokenKind::Class {
-                is_negated,
-                archetypes,
-            } => TokenKind::Class {
-                is_negated,
-                archetypes,
-            },
+            TokenKind::Class(class) => TokenKind::Class(class),
             TokenKind::Literal(Literal {
                 text,
                 is_case_insensitive,
@@ -255,13 +247,7 @@ impl<'t, A> TokenKind<'t, A> {
     pub fn unannotate(self) -> TokenKind<'t, ()> {
         match self {
             TokenKind::Alternative(alternative) => alternative.unannotate().into(),
-            TokenKind::Class {
-                is_negated,
-                archetypes,
-            } => TokenKind::Class {
-                is_negated,
-                archetypes,
-            },
+            TokenKind::Class(class) => TokenKind::Class(class),
             TokenKind::Literal(Literal {
                 text,
                 is_case_insensitive,
@@ -284,6 +270,23 @@ impl<'t, A> TokenKind<'t, A> {
         }
     }
 
+    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
+        match self {
+            TokenKind::Alternative(ref alternative) => alternative.to_invariant_string(),
+            TokenKind::Class(ref class) => class.to_invariant_string(),
+            TokenKind::Literal(ref literal) => literal.to_invariant_string(),
+            TokenKind::Repetition(ref repetition) => repetition.to_invariant_string(),
+            // TODO:
+            TokenKind::Separator => Some(MAIN_SEPARATOR.to_string().into()),
+            TokenKind::Wildcard(_) => None,
+        }
+    }
+
+    pub fn has_sub_tokens(&self) -> bool {
+        // It is not necessary to detect empty branches or sub-expressions.
+        matches!(self, TokenKind::Alternative(_) | TokenKind::Repetition(_))
+    }
+
     pub fn is_component_boundary(&self) -> bool {
         matches!(
             self,
@@ -295,6 +298,12 @@ impl<'t, A> TokenKind<'t, A> {
 impl<'t, A> From<Alternative<'t, A>> for TokenKind<'t, A> {
     fn from(alternative: Alternative<'t, A>) -> Self {
         TokenKind::Alternative(alternative)
+    }
+}
+
+impl<'t, A> From<Class> for TokenKind<'t, A> {
+    fn from(class: Class) -> Self {
+        TokenKind::Class(class)
     }
 }
 
@@ -337,6 +346,14 @@ impl<'t, A> Alternative<'t, A> {
         &self.0
     }
 
+    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
+        match self.0.terminals() {
+            Some(Terminals::Only(tokens)) => fold_invariant_strings(tokens.iter()),
+            None => Some("".into()),
+            _ => None,
+        }
+    }
+
     pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
         self.0
             .iter()
@@ -374,6 +391,20 @@ pub enum Archetype {
     Range(char, char),
 }
 
+impl Archetype {
+    // Using a `&self` receiver interacts better with `Cow` and is more
+    // consistent with this method on other token types.
+    #[allow(clippy::wrong_self_convention)]
+    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
+        match self {
+            Archetype::Character(x) => (!PATHS_ARE_CASE_INSENSITIVE).then(|| x.to_string().into()),
+            Archetype::Range(a, b) => {
+                ((a == b) && !PATHS_ARE_CASE_INSENSITIVE).then(|| a.to_string().into())
+            }
+        }
+    }
+}
+
 impl From<char> for Archetype {
     fn from(literal: char) -> Archetype {
         Archetype::Character(literal)
@@ -383,6 +414,32 @@ impl From<char> for Archetype {
 impl From<(char, char)> for Archetype {
     fn from(range: (char, char)) -> Archetype {
         Archetype::Range(range.0, range.1)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Class {
+    is_negated: bool,
+    archetypes: Vec<Archetype>,
+}
+
+impl Class {
+    pub fn archetypes(&self) -> &[Archetype] {
+        &self.archetypes
+    }
+
+    pub fn is_negated(&self) -> bool {
+        self.is_negated
+    }
+
+    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
+        (!self.is_negated)
+            .then(|| match self.archetypes.terminals() {
+                Some(Terminals::Only(archetype)) => archetype.to_invariant_string(),
+                None => Some("".into()),
+                _ => None,
+            })
+            .flatten()
     }
 }
 
@@ -401,6 +458,10 @@ pub struct Literal<'t> {
 impl<'t> Literal<'t> {
     pub fn text(&self) -> &str {
         self.text.as_ref()
+    }
+
+    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
+        (!self.has_variant_casing()).then(|| self.text.clone())
     }
 
     pub fn is_case_insensitive(&self) -> bool {
@@ -483,6 +544,15 @@ impl<'t, A> Repetition<'t, A> {
         (self.lower, self.step.map(|step| self.lower + step))
     }
 
+    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
+        matches!(self.step, Some(0))
+            .then(|| {
+                fold_invariant_strings(self.tokens.iter())
+                    .map(|string| string.repeat(self.lower).into())
+            })
+            .flatten()
+    }
+
     pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
         self.tokens.iter().any(|token| token.has_token_with(f))
     }
@@ -535,12 +605,6 @@ impl<'t> LiteralSequence<'t> {
                 .into()
         }
     }
-
-    pub fn has_variant_casing(&self) -> bool {
-        self.literals()
-            .iter()
-            .any(|literal| literal.has_variant_casing())
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -571,6 +635,10 @@ impl<'t, A> Component<'t, A> {
             )
         })
     }
+
+    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
+        fold_invariant_strings(self.0.iter().cloned())
+    }
 }
 
 pub fn components<'t, A, I>(tokens: I) -> impl Iterator<Item = Component<'t, A>>
@@ -596,22 +664,18 @@ where
     })
 }
 
-// TODO: Repetition tokens are invariant if they have constant bounds (`step` is
-//       zero) and their sub-glob consists of invariant tokens. This should be
-//       considered here.
 pub fn invariant_prefix_path<'t, A, I>(tokens: I) -> Option<PathBuf>
 where
     A: 't,
     I: IntoIterator<Item = &'t Token<'t, A>>,
     I::IntoIter: Clone,
 {
-    use crate::token::TokenKind::{Separator, Wildcard};
-    use crate::token::Wildcard::Tree;
-
     let mut tokens = tokens.into_iter().peekable();
     let mut prefix = String::new();
-    if let Some(Separator | Wildcard(Tree { is_rooted: true })) =
-        tokens.peek().map(|token| token.kind())
+    if tokens
+        .peek()
+        .map(|token| !token.has_sub_tokens() && token.is_rooted())
+        .unwrap_or(false)
     {
         // Include any rooting component boundary at the beginning of the token
         // sequence.
@@ -621,14 +685,9 @@ where
     //       when it stabilizes.
     prefix.push_str(
         &components(tokens)
-            .map(|component| {
-                component
-                    .literal()
-                    .filter(|literal| !literal.has_variant_casing())
-            })
-            .take_while(|literal| literal.is_some())
+            .map(|component| component.to_invariant_string().map(Cow::into_owned))
+            .take_while(|string| string.is_some())
             .flatten()
-            .map(|literal| literal.text())
             .join(&MAIN_SEPARATOR.to_string()),
     );
     if prefix.is_empty() {
@@ -640,7 +699,7 @@ where
 }
 
 pub fn invariant_prefix_upper_bound(tokens: &[Token]) -> usize {
-    use crate::token::TokenKind::{Literal, Separator, Wildcard};
+    use crate::token::TokenKind::{Separator, Wildcard};
     use crate::token::Wildcard::Tree;
 
     let mut separator = None;
@@ -649,27 +708,26 @@ pub fn invariant_prefix_upper_bound(tokens: &[Token]) -> usize {
             Separator => {
                 separator = Some(n);
             }
-            Literal(literal) if !literal.has_variant_casing() => {
-                continue;
-            }
             Wildcard(Tree { .. }) => {
                 return n;
             }
             _ => {
-                return match separator {
-                    Some(n) => n + 1,
-                    None => 0,
-                };
+                // TODO: This may be expensive.
+                if token.to_invariant_string().is_some() {
+                    continue;
+                }
+                else {
+                    return match separator {
+                        Some(n) => n + 1,
+                        None => 0,
+                    };
+                }
             }
         }
     }
     tokens.len()
 }
 
-// NOTE: Both forward and back slashes are disallowed in non-separator tokens
-//       like literals and character classes. This means escaping back slashes
-//       is not possible (despite common conventions). This avoids non-separator
-//       tokens parsing over directory boundaries (in particular on Windows).
 pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
     use nom::bytes::complete as bytes;
     use nom::character::complete as character;
@@ -936,9 +994,12 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
                 sequence::tuple((combinator::opt(bytes::tag("!")), archetypes)),
                 bytes::tag("]"),
             )),
-            |(negation, archetypes)| TokenKind::Class {
-                is_negated: negation.is_some(),
-                archetypes,
+            |(negation, archetypes)| {
+                Class {
+                    is_negated: negation.is_some(),
+                    archetypes,
+                }
+                .into()
             },
         )(input)
     }
@@ -1012,6 +1073,27 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
     #[cfg(not(feature = "diagnostics"))]
     {
         Ok(tokens)
+    }
+}
+
+fn fold_invariant_strings<'t, A, I>(tokens: I) -> Option<Cow<'t, str>>
+where
+    A: 't,
+    I: IntoIterator<Item = &'t Token<'t, A>>,
+    I::IntoIter: Clone,
+{
+    match tokens.into_iter().exactly_one() {
+        Ok(token) => token.to_invariant_string(),
+        Err(tokens) => tokens
+            .fold(Some(String::new()), |output, token| {
+                output.and_then(|mut output| {
+                    token.to_invariant_string().map(move |string| {
+                        output.push_str(string.as_ref());
+                        output
+                    })
+                })
+            })
+            .map(From::from),
     }
 }
 

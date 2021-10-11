@@ -470,6 +470,13 @@ impl<'t> Glob<'t> {
         Glob { tokens, regex }
     }
 
+    pub fn is_invariant(&self) -> bool {
+        // TODO: This may be expensive.
+        self.tokens
+            .iter()
+            .all(|token| token.to_invariant_string().is_some())
+    }
+
     pub fn has_root(&self) -> bool {
         self.tokens
             .first()
@@ -1373,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn partition_glob_with_literal_and_non_literal_parts() {
+    fn partition_glob_with_variant_and_invariant_parts() {
         let (prefix, glob) = Glob::partitioned("a/b/x?z/*.ext").unwrap();
 
         assert_eq!(prefix, Path::new("a/b"));
@@ -1383,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    fn partition_glob_with_only_non_literal_parts() {
+    fn partition_glob_with_only_variant_wildcard_parts() {
         let (prefix, glob) = Glob::partitioned("x?z/*.ext").unwrap();
 
         assert_eq!(prefix, Path::new(""));
@@ -1393,13 +1400,43 @@ mod tests {
     }
 
     #[test]
-    fn partition_glob_with_only_literal_parts() {
+    fn partition_glob_with_only_invariant_literal_parts() {
         let (prefix, glob) = Glob::partitioned("a/b").unwrap();
 
         assert_eq!(prefix, Path::new("a/b"));
 
         assert!(glob.is_match(Path::new("")));
         assert!(glob.is_match(Path::new("a/b").strip_prefix(prefix).unwrap()));
+    }
+
+    #[test]
+    fn partition_glob_with_variant_alternative_parts() {
+        let (prefix, glob) = Glob::partitioned("{x,z}/*.ext").unwrap();
+
+        assert_eq!(prefix, Path::new(""));
+
+        assert!(glob.is_match(Path::new("x/file.ext")));
+        assert!(glob.is_match(Path::new("z/file.ext").strip_prefix(prefix).unwrap()));
+    }
+
+    #[test]
+    fn partition_glob_with_invariant_alternative_parts() {
+        let (prefix, glob) = Glob::partitioned("{a/b}/c").unwrap();
+
+        assert_eq!(prefix, Path::new("a/b/c"));
+
+        assert!(glob.is_match(Path::new("")));
+        assert!(glob.is_match(Path::new("a/b/c").strip_prefix(prefix).unwrap()));
+    }
+
+    #[test]
+    fn partition_glob_with_invariant_repetition_parts() {
+        let (prefix, glob) = Glob::partitioned("</a/b:3>/c").unwrap();
+
+        assert_eq!(prefix, Path::new("/a/b/a/b/a/b/c"));
+
+        assert!(glob.is_match(Path::new("")));
+        assert!(glob.is_match(Path::new("/a/b/a/b/a/b/c").strip_prefix(prefix).unwrap()));
     }
 
     #[test]
@@ -1446,17 +1483,39 @@ mod tests {
     }
 
     #[test]
+    fn query_glob_is_invariant() {
+        assert!(Glob::new("/a/file.ext").unwrap().is_invariant());
+        assert!(Glob::new("/a/{file.ext}").unwrap().is_invariant());
+        assert!(Glob::new("{a/b/file.ext}").unwrap().is_invariant());
+        assert!(Glob::new("<a/b:2>").unwrap().is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a]/file.ext").unwrap().is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a-a]/file.ext").unwrap().is_invariant());
+
+        assert!(!Glob::new("/a/{b,c}").unwrap().is_invariant());
+        assert!(!Glob::new("<a/b:1,>").unwrap().is_invariant());
+        assert!(!Glob::new("/[ab]/file.ext").unwrap().is_invariant());
+        assert!(!Glob::new("**").unwrap().is_invariant());
+        assert!(!Glob::new("/a/*.ext").unwrap().is_invariant());
+        assert!(!Glob::new("/a/b*").unwrap().is_invariant());
+        #[cfg(unix)]
+        assert!(!Glob::new("/a/(?i)file.ext").unwrap().is_invariant());
+        #[cfg(windows)]
+        assert!(!Glob::new("/a/(?-i)file.ext").unwrap().is_invariant());
+    }
+
+    #[test]
     fn query_glob_has_root() {
         assert!(Glob::new("/root").unwrap().has_root());
         assert!(Glob::new("/**").unwrap().has_root());
-        // Such a repetition is considered rooted. This works even for
-        // repetitions with bounds of zero or more, because subsequent
-        // components must be rooted themselves. Note that this expression
-        // either matches the rooted sub-glob `/root` or matches nothing (empty
-        // paths), which is not technically rooted but is a reasonable
-        // interpretation.
-        assert!(Glob::new("</root:0,>").unwrap().has_root());
+        assert!(Glob::new("</root:1,>").unwrap().has_root());
 
+        // TODO: Such a repetition should not be considered rooted. It is
+        //       possible for this glob to match the unrooted path `maybe` and
+        //       any possibility of an unrooted match should result in
+        //       `has_root` returning `false`.
+        //assert!(!Glob::new("</root:0,>maybe").unwrap().has_root());
         // This is not rooted, because character classes may not match
         // separators. This example compiles an "empty" character class, which
         // attempts to match `NUL` and so effectively matches nothing.

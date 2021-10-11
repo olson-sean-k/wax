@@ -181,20 +181,14 @@ fn encode<'t, T>(
                 };
                 grouping.push_str(pattern, &encoding);
             }
-            (
-                _,
-                Class {
-                    is_negated,
-                    archetypes,
-                },
-            ) => {
+            (_, Class(class)) => {
                 grouping.push_with(pattern, || {
                     let mut pattern = String::new();
                     pattern.push('[');
-                    if *is_negated {
+                    if class.is_negated() {
                         pattern.push('^');
                     }
-                    for archetype in archetypes {
+                    for archetype in class.archetypes() {
                         match archetype {
                             Character(literal) => pattern.push_str(&literal.escaped()),
                             Range(left, right) => {
