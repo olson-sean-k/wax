@@ -456,7 +456,7 @@ impl<'t> Glob<'t> {
         let prefix = token::invariant_prefix_path(tokens.iter()).unwrap_or_else(PathBuf::new);
 
         // Drain invariant tokens from the beginning of the token sequence.
-        // Unroot any tokens at the beginning of the sequence (tree wildcards)
+        // Unroot any tokens at the beginning of the sequence (tree wildcards).
         tokens.drain(0..token::invariant_prefix_upper_bound(&tokens));
         tokens.first_mut().map(Token::unroot);
 
@@ -1159,6 +1159,15 @@ mod tests {
     }
 
     #[test]
+    fn match_glob_with_empty_expression() {
+        let glob = Glob::new("").unwrap();
+
+        assert!(glob.is_match(Path::new("")));
+
+        assert!(!glob.is_match(Path::new("abc")));
+    }
+
+    #[test]
     fn match_glob_with_only_invariant_tokens() {
         let glob = Glob::new("a/b").unwrap();
 
@@ -1524,6 +1533,7 @@ mod tests {
 
     #[test]
     fn query_glob_is_invariant() {
+        assert!(Glob::new("").unwrap().is_invariant());
         assert!(Glob::new("/a/file.ext").unwrap().is_invariant());
         assert!(Glob::new("/a/{file.ext}").unwrap().is_invariant());
         assert!(Glob::new("{a/b/file.ext}").unwrap().is_invariant());
@@ -1551,6 +1561,7 @@ mod tests {
         assert!(Glob::new("/**").unwrap().has_root());
         assert!(Glob::new("</root:1,>").unwrap().has_root());
 
+        assert!(!Glob::new("").unwrap().has_root());
         // This is not rooted, because character classes may not match
         // separators. This example compiles an "empty" character class, which
         // attempts to match `NUL` and so effectively matches nothing.

@@ -1049,29 +1049,34 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
         )))(input)
     }
 
-    #[cfg_attr(not(feature = "diagnostics"), allow(clippy::useless_conversion))]
-    let input = ParserInput::new(Expression::from(expression), FlagState::default());
-    let mut tokens = combinator::all_consuming(glob)(input)
-        .map(|(_, tokens)| tokens)
-        .map_err(|error| crate::token::ParseError::new(expression, error))
-        .map_err(GlobError::from)?;
-    rule::check(expression, tokens.iter())?;
-    // Remove any trailing separator tokens. Such separators are meaningless and
-    // are typically normalized in paths by removing them or ignoring them in
-    // nominal comparisons.
-    while let Some(TokenKind::Separator) = tokens.last().map(Token::kind) {
-        tokens.pop();
+    if expression.is_empty() {
+        Ok(vec![])
     }
-    #[cfg(feature = "diagnostics")]
-    {
-        // TODO: Token sequences tend to be small (tens of tokens). It may not
-        //       be worth the additional allocation and moves to drop
-        //       annotations.
-        Ok(tokens.into_iter().map(Token::unannotate).collect())
-    }
-    #[cfg(not(feature = "diagnostics"))]
-    {
-        Ok(tokens)
+    else {
+        #[cfg_attr(not(feature = "diagnostics"), allow(clippy::useless_conversion))]
+        let input = ParserInput::new(Expression::from(expression), FlagState::default());
+        let mut tokens = combinator::all_consuming(glob)(input)
+            .map(|(_, tokens)| tokens)
+            .map_err(|error| crate::token::ParseError::new(expression, error))
+            .map_err(GlobError::from)?;
+        rule::check(expression, tokens.iter())?;
+        // Remove any trailing separator tokens. Such separators are meaningless
+        // and are typically normalized in paths by removing them or ignoring
+        // them in nominal comparisons.
+        while let Some(TokenKind::Separator) = tokens.last().map(Token::kind) {
+            tokens.pop();
+        }
+        #[cfg(feature = "diagnostics")]
+        {
+            // TODO: Token sequences tend to be small (tens of tokens). It may
+            //       not be worth the additional allocation and moves to drop
+            //       annotations.
+            Ok(tokens.into_iter().map(Token::unannotate).collect())
+        }
+        #[cfg(not(feature = "diagnostics"))]
+        {
+            Ok(tokens)
+        }
     }
 }
 
