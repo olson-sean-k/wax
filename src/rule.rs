@@ -272,7 +272,8 @@ where
                     let tokens = repetition.tokens();
                     if let Some(terminals) = tokens.terminals() {
                         check_group(terminals, outer).map_err(diagnose)?;
-                        check_group_repetition(terminals).map_err(diagnose)?;
+                        check_group_repetition(terminals, outer, repetition.bounds())
+                            .map_err(diagnose)?;
                     }
                     recurse(expression, tokens.iter(), outer)?;
                 }
@@ -282,9 +283,9 @@ where
         Ok(())
     }
 
-    fn check_group<'t, 'i>(
-        terminals: Terminals<&'i Token<'t, Annotation>>,
-        outer: Outer<'t, 'i>,
+    fn check_group<'t>(
+        terminals: Terminals<&Token<Annotation>>,
+        outer: Outer<'t, 't>,
     ) -> Result<(), CorrelatedError> {
         let Outer { left, right } = outer;
         match terminals.map(|token| (token, token.kind())) {
@@ -378,9 +379,9 @@ where
         }
     }
 
-    fn check_group_alternative<'t, 'i>(
-        terminals: Terminals<&'i Token<'t, Annotation>>,
-        outer: Outer<'t, 'i>,
+    fn check_group_alternative<'t>(
+        terminals: Terminals<&Token<Annotation>>,
+        outer: Outer<'t, 't>,
     ) -> Result<(), CorrelatedError> {
         let Outer { left, .. } = outer;
         match terminals.map(|token| (token, token.kind())) {
@@ -391,23 +392,47 @@ where
             Only((inner, Separator)) | StartEnd((inner, Separator), _) if left.is_none() => {
                 Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
             }
-            // NOTE: `is_rooted` is not considered when a group is prefixed.
-            //       Disallow rooted sub-globs.
             // The alternative is preceded by a termination; disallow rooted
             // sub-globs.
             //
             // For example, `{/**/foo,bar}`.
-            StartEnd((inner, Wildcard(Tree { is_rooted: true })), _) if left.is_none() => {
-                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, None, inner))
+            Only((inner, Wildcard(Tree { is_rooted: true })))
+            | StartEnd((inner, Wildcard(Tree { is_rooted: true })), _)
+                if left.is_none() =>
+            {
+                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
             }
             _ => Ok(()),
         }
     }
 
-    fn check_group_repetition(
+    fn check_group_repetition<'t>(
         terminals: Terminals<&Token<Annotation>>,
+        outer: Outer<'t, 't>,
+        bounds: (usize, Option<usize>),
     ) -> Result<(), CorrelatedError> {
+        let Outer { left, .. } = outer;
+        let (lower, _) = bounds;
         match terminals.map(|token| (token, token.kind())) {
+            // The repetition is preceded by a termination; disallow rooted
+            // sub-globs with a zero lower bound.
+            //
+            // For example, `</foo:0,>`.
+            Only((inner, Separator)) | StartEnd((inner, Separator), _)
+                if left.is_none() && lower == 0 =>
+            {
+                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
+            }
+            // The repetition is preceded by a termination; disallow rooted
+            // sub-globs with a zero lower bound.
+            //
+            // For example, `</**/foo>`.
+            Only((inner, Wildcard(Tree { is_rooted: true })))
+            | StartEnd((inner, Wildcard(Tree { is_rooted: true })), _)
+                if left.is_none() && lower == 0 =>
+            {
+                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
+            }
             // The repetition begins and ends with a separator.
             //
             // For example, `</foo/bar/:1,>`.

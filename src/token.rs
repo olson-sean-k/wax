@@ -147,7 +147,6 @@ impl<'t, A> Token<'t, A> {
         self.as_ref()
     }
 
-    // TODO: This must consider repetitions with a lower bound of zero.
     pub fn is_rooted(&self) -> bool {
         self.has_preceding_token_with(&mut |token| {
             matches!(

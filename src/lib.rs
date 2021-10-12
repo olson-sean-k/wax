@@ -974,6 +974,8 @@ mod tests {
         Glob::new("<a:>").unwrap();
         Glob::new("<a>").unwrap();
         Glob::new("<a<b:0,>:0,>").unwrap();
+        // Rooted repetitions are accepted if the lower bound is one or greater.
+        Glob::new("</root:1,>").unwrap();
         Glob::new("<[!.]*/:0,>[!.]*").unwrap();
     }
 
@@ -1104,7 +1106,9 @@ mod tests {
     #[test]
     fn reject_glob_with_rooted_alternative_tokens() {
         assert!(Glob::new("{okay,/}").is_err());
+        assert!(Glob::new("{okay,/**}").is_err());
         assert!(Glob::new("{okay,/error}").is_err());
+        assert!(Glob::new("{okay,/**/error}").is_err());
     }
 
     #[test]
@@ -1127,6 +1131,14 @@ mod tests {
         assert!(Glob::new("</:0,>").is_err());
         assert!(Glob::new("</a/:0,>").is_err());
         assert!(Glob::new("<a/:0,>/").is_err());
+    }
+
+    // Rooted repetitions are rejected if their lower bound is zero; any other
+    // lower bound is accepted.
+    #[test]
+    fn reject_glob_with_rooted_repetition_tokens() {
+        assert!(Glob::new("</root:0,>maybe").is_err());
+        assert!(Glob::new("</root>").is_err());
     }
 
     #[test]
@@ -1539,11 +1551,6 @@ mod tests {
         assert!(Glob::new("/**").unwrap().has_root());
         assert!(Glob::new("</root:1,>").unwrap().has_root());
 
-        // TODO: Such a repetition should not be considered rooted. It is
-        //       possible for this glob to match the unrooted path `maybe` and
-        //       any possibility of an unrooted match should result in
-        //       `has_root` returning `false`.
-        //assert!(!Glob::new("</root:0,>maybe").unwrap().has_root());
         // This is not rooted, because character classes may not match
         // separators. This example compiles an "empty" character class, which
         // attempts to match `NUL` and so effectively matches nothing.
