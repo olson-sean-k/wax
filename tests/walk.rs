@@ -32,7 +32,7 @@ fn temptree() -> (TempDir, PathBuf) {
 }
 
 #[test]
-fn walk_glob_tree() {
+fn walk_with_tree() {
     let (_root, path) = temptree();
 
     let glob = Glob::new("**").unwrap();
@@ -58,7 +58,7 @@ fn walk_glob_tree() {
 }
 
 #[test]
-fn walk_glob_tree_with_extension() {
+fn walk_with_invariant_terminating_component() {
     let (_root, path) = temptree();
 
     let glob = Glob::new("**/*.md").unwrap();
@@ -74,7 +74,7 @@ fn walk_glob_tree_with_extension() {
 }
 
 #[test]
-fn walk_glob_tree_with_intermediate_component() {
+fn walk_with_invariant_intermediate_component() {
     let (_root, path) = temptree();
 
     let glob = Glob::new("**/src/**/*.rs").unwrap();
@@ -88,3 +88,33 @@ fn walk_glob_tree_with_intermediate_component() {
         IntoIterator::into_iter([path.join("src/glob.rs"), path.join("src/lib.rs"),]).collect(),
     );
 }
+
+#[test]
+fn walk_with_invariant_glob() {
+    let (_root, path) = temptree();
+
+    let glob = Glob::new("src/lib.rs").unwrap();
+    let paths: HashSet<_> = glob
+        .walk(&path, usize::MAX)
+        .flatten()
+        .map(|entry| entry.into_path())
+        .collect();
+    assert_eq!(
+        paths,
+        IntoIterator::into_iter([path.join("src/lib.rs"),]).collect(),
+    );
+}
+
+// TODO: See `Glob::walk`.
+//#[test]
+//fn walk_with_exhausted_depth() {
+//    let (_root, path) = temptree();
+//
+//    let glob = Glob::new("src/lib.rs").unwrap();
+//    let paths: HashSet<_> = glob
+//        .walk(&path, 1)
+//        .flatten()
+//        .map(|entry| entry.into_path())
+//        .collect();
+//    assert!(paths.is_empty());
+//}

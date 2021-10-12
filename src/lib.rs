@@ -514,21 +514,29 @@ impl<'t> Glob<'t> {
         // invariant prefix from the glob pattern. `Walk` patterns are only
         // applied to path components following the `prefix` (distinct from the
         // glob pattern prefix) in `root`.
-        let (prefix, root) = token::invariant_prefix_path(self.tokens.iter())
+        let (root, prefix, depth) = token::invariant_prefix_path(self.tokens.iter())
             .map(|prefix| {
                 let root = directory.join(&prefix).into();
                 if prefix.is_absolute() {
                     // Absolute paths replace paths with which they are joined,
                     // in which case there is no prefix.
-                    (PathBuf::new().into(), root)
+                    (root, PathBuf::new().into(), depth)
                 }
                 else {
-                    (directory.into(), root)
+                    // TODO: If the depth is exhausted by an invariant prefix
+                    //       path, then `Walk` should yield no entries. This
+                    //       computes a depth of zero when this occurs, so
+                    //       entries may still be yielded.
+                    // `depth` is relative to the input `directory`, so count
+                    // any components added by an invariant prefix path from the
+                    // glob.
+                    let depth = depth - cmp::min(depth, prefix.components().count());
+                    (root, directory.into(), depth)
                 }
             })
             .unwrap_or_else(|| {
                 let root = Cow::from(directory);
-                (root.clone(), root)
+                (root.clone(), root, depth)
             });
         let regexes = Walk::compile(self.tokens.iter());
         Walk {
@@ -537,7 +545,6 @@ impl<'t> Glob<'t> {
             prefix: prefix.into_owned(),
             walk: WalkDir::new(root)
                 .follow_links(false)
-                .min_depth(1)
                 .max_depth(depth)
                 .into_iter(),
         }
@@ -707,6 +714,7 @@ impl<'e> WalkEntry<'e> {
 }
 
 /// Iterator over files matching a `Glob` in a directory tree.
+#[derive(Debug)]
 pub struct Walk<'g> {
     regex: Cow<'g, Regex>,
     regexes: Vec<Regex>,
@@ -1136,6 +1144,26 @@ mod tests {
         assert!(Glob::new("**(?i)?").is_err());
         assert!(Glob::new("a(?i)**").is_err());
         assert!(Glob::new("**(?i)a").is_err());
+    }
+
+    #[test]
+    fn match_glob_with_only_invariant_tokens() {
+        let glob = Glob::new("a/b").unwrap();
+
+        assert!(glob.is_match(Path::new("a/b")));
+
+        assert!(!glob.is_match(Path::new("aa/b")));
+        assert!(!glob.is_match(Path::new("a/bb")));
+        assert!(!glob.is_match(Path::new("a/b/c")));
+
+        // There are no variant tokens with which to capture, but the matched
+        // text should always be available.
+        assert_eq!(
+            "a/b",
+            glob.captures(&EncodedPath::from(Path::new("a/b")))
+                .unwrap()
+                .matched(),
+        );
     }
 
     #[test]
