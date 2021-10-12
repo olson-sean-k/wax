@@ -4,7 +4,9 @@
 <br/>
 
 **Wax** is a Rust library that provides opinionated and portable globs that can
-be matched against file paths and directory trees.
+be matched against file paths and directory trees. Globs use a familiar syntax
+and support expressive features with semantics that emphasize component
+boundaries.
 
 [![GitHub](https://img.shields.io/badge/GitHub-olson--sean--k/wax-8da0cb?logo=github&style=for-the-badge)](https://github.com/olson-sean-k/wax)
 [![docs.rs](https://img.shields.io/badge/docs.rs-wax-66c2a5?logo=rust&style=for-the-badge)](https://docs.rs/wax)
@@ -56,7 +58,8 @@ Globs are encoded as UTF-8 strings called glob expressions that resemble Unix
 paths consisting of nominal components delimited by separators. Wax exposes most
 of its APIs via the [`Glob`] type, which is constructed from a glob expression
 via inherent functions or standard conversion traits. All data is borrowed where
-possible but can be copied into owned instances using an `into_owned` method.
+possible but can be copied into owned instances using an `into_owned` method
+with most types.
 
 ```rust
 use wax::Glob;
@@ -72,14 +75,16 @@ sequence `\\` is not supported). This means that it is impossible to represent
 `\` in nominal path components, but this character is generally forbidden as
 such and its disuse avoids confusion.
 
-Globs enforce various consistency rules regarding meta-characters, patterns, and
-component boundaries (separators and [tree wildcards](#wildcards)).
+Globs enforce various rules regarding meta-characters, patterns, and component
+boundaries (separators and [tree wildcards](#wildcards)) that reject [nonsense
+expressions](#errors-and-diagnostics).
 
 ## Patterns
 
 Globs resemble Unix paths, but additionally support patterns that can be matched
 against paths and directory trees. Patterns use a syntax that resembles globbing
-in Unix shells and similar tools.
+in Unix shells and tools like `git`, though there are some important
+differences.
 
 ```rust
 use wax::Glob;
@@ -95,19 +100,7 @@ example, `*` **never** matches across component boundaries.
 ### Wildcards
 
 Wildcards match some amount of arbitrary text in paths and are the most
-fundamental pattern provided by globs.
-
-The tree wildcard `**` matches zero or more sub-directories. **This is the only
-wildcard that may match across arbitrary component boundaries**; all other
-wildcards do **not** match across component (directory) boundaries. When a tree
-wildcard participates in a match and does not terminate the pattern, its capture
-includes a trailing forward slash `/`. If a tree wildcard does not participate
-in a match, then its capture is an empty string. Tree wildcards must be
-delimited by forward slashes or a termination (such as the beginning and/or end
-of a glob or sub-glob). Tree wildcards and path separators are distinct and any
-adjacent forward slashes that form a tree wildcard are parsed together. If a
-glob consists solely of a tree wildcard, then it matches all files in the
-working directory tree.
+fundamental pattern provided by globs (and likely the most familiar).
 
 The zero-or-more wildcards `*` and `$` match zero or more of any character
 **except path separators**. Zero-or-more wildcards cannot be adjacent to other
@@ -122,13 +115,27 @@ contiguous wildcards such as `???` form distinct captures for each `?` wildcard.
 [An alternative](#alternatives) can be used to group exactly-one wildcards into
 a single capture, such as `{???}`.
 
+The tree wildcard `**` matches zero or more sub-directories. **This is the only
+wildcard that may match across arbitrary component boundaries**; all other
+wildcards do **not** match across component (directory) boundaries. When a tree
+wildcard participates in a match and does not terminate the pattern, its capture
+includes a trailing forward slash `/`. If a tree wildcard does not participate
+in a match, then its capture is an empty string. Tree wildcards must be
+delimited by forward slashes or terminations (such as the beginning and/or end
+of a glob or sub-glob). Tree wildcards and path separators are distinct and any
+adjacent forward slashes that form a tree wildcard are parsed together. If a
+glob expression consists solely of a tree wildcard, then it matches any and all
+files in the working directory tree.
+
 ### Character Classes
 
 Character classes match any single character from a group of literals and ranges
 **except path separators**. Classes are delimited by square brackets `[...]`.
 Individual character literals are specified as is, such as `[ab]` to match
 either `a` or `b`. Character ranges are formed from two characters separated by
-a hyphen, such as `[x-z]` to match `x`, `y`, or `z`.
+a hyphen, such as `[x-z]` to match `x`, `y`, or `z`. Note that character classes
+match exact characters and are always case-sensitive, so the expressions `[ab]`
+and `{a,b}` are not necessarily the same.
 
 Any number of character literals and ranges can be used within a single
 character class. For example, `[qa-cX-Z]` matches any of `q`, `a`, `b`, `c`,
@@ -143,11 +150,11 @@ classes though globs also support escaping via a backslash `\`. To match the
 control characters `[`, `]`, and `-` within a character class, they must be
 escaped via a backslash, such as `[a\-]` to match `a` or `-`.
 
-Character classes have notable platform-specific behavior, because they support
-arbitrary characters but never match path separators. This means that if a
-character class **only** matches path separators on a given platform, then the
-character class is considered empty and matches nothing. For example, in the
-expression `a[/]b` the character class `[/]` matches nothing on Unix and
+Character classes have notable platform-specific behavior, because they match
+arbitrary characters in native paths but never match path separators. This means
+that if a character class **only** matches path separators on a given platform,
+then the character class is considered empty and matches nothing. For example,
+in the expression `a[/]b` the character class `[/]` matches nothing on Unix and
 Windows. Such character classes are not rejected, because the role of arbitrary
 characters depends on the platform. In practice, this is rarely a concern, but
 such patterns should be avoided.
@@ -210,25 +217,28 @@ match paths that contain no leading dots `.`.
 Repetitions must consider adjacency rules and neighboring patterns. For example,
 `a/<b/**:1,>` is allowed but `<a/**:1,>/b` is not. Additionally, they may not
 contain a sub-glob consisting of a singular separator `/`, a singular
-zero-or-more wildcard `*` or `$`, nor a singular tree wildcard `**`.
+zero-or-more wildcard `*` or `$`, nor a singular tree wildcard `**`. Repetitions
+with a lower bound of zero may not root a glob expression, as this could cause
+the expression to match or walk overlapping trees.
 
 ## Flags and Case Sensitivity
 
 Flags toggle the matching behavior of globs. Importantly, flags are a part of a
-glob expression rather than a separate API. Behaviors are toggled immediately
-following flags in the order in which they appear in glob expressions. Flags are
-delimited by parenthesis with a leading question mark `(?...)` and may appear
-anywhere within a glob expression so long as they do not split tree wildcards
-(for example, `a/*(?i)*`). Each flag is represented by a single character and
-can be negated by preceding the corresponding character with a dash `-`. Flags
-are toggled in the order in which they appear within `(?...)`.
+glob expression rather than an API. Behaviors are toggled immediately following
+flags in the order in which they appear in glob expressions. Flags are delimited
+by parenthesis with a leading question mark `(?...)` and may appear anywhere
+within a glob expression so long as they do not split tree wildcards (for
+example, `a/*(?i)*`). Each flag is represented by a single character and can be
+negated by preceding the corresponding character with a dash `-`. Flags are
+toggled in the order in which they appear within `(?...)`.
 
 The only supported flag is the case-insensitivty flag `i`. By default, glob
 expressions use the same case sensitivity as the target platforms's file system
-(case-sensitive on Unix and case-insensitive on Windows), but `i` can be used to
-toggle this explicitly as needed. For example, `(?-i)photos/**/*.(?i){jpg,jpeg}`
-matches file paths beneath a `photos` directory with a case-sensitive base and a
-case-**in**sensitive extension `jpg` or `jpeg`.
+APIs (case-sensitive on Unix and case-insensitive on Windows), but `i` can be
+used to toggle this explicitly as needed. For example,
+`(?-i)photos/**/*.(?i){jpg,jpeg}` matches file paths beneath a `photos`
+directory with a case-sensitive base and a case-**in**sensitive extension `jpg`
+or `jpeg`.
 
 Wax considers literals, their configured case sensitivity, and the case
 sensitivity of the target platform's file system [when partitioning glob
@@ -341,6 +351,12 @@ type to re-encode native paths via lossy conversions that use Unicode
 replacement codepoints whenever a part of a path cannot be represented as valid
 UTF-8. On some platforms these conversions are always no-ops. In practice, the
 overwhelming majority of paths can be losslessly encoded in UTF-8.
+
+## Stability
+
+At the time of writing, Wax is experimental and unstable. It is possible that
+glob expression syntax and semantics may change between versions in the `0.y.z`
+series without warning.
 
 [miette]: https://github.com/zkat/miette
 [nym]: https://github.com/olson-sean-k/nym

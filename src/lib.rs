@@ -1,3 +1,7 @@
+//! Wax provides opinionated and portable globs that can be matched against file
+//! paths and directory trees. Globs use a familiar syntax and support
+//! expressive features with semantics that emphasize component boundaries.
+
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/olson-sean-k/wax/master/doc/wax-favicon.svg?sanitize=true"
 )]
