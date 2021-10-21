@@ -437,7 +437,7 @@ impl<'t> Glob<'t> {
     ///
     /// let path: &Path = /* ... */ // Candidate path.
     /// # Path::new("");
-    ///
+    ///     
     /// let directory = Path::new("."); // Working directory.
     /// let (prefix, glob) = Glob::partitioned("../../src/**").unwrap();
     /// let prefix = dunce::canonicalize(directory.join(&prefix)).unwrap();
