@@ -4,6 +4,7 @@ use nom::{
     InputTake, InputTakeAtPosition, Needed, Offset, Parser, Slice,
 };
 use std::borrow::{Cow, ToOwned};
+use std::fmt::{self, Display, Formatter};
 use std::ops::{Deref, RangeFrom, RangeTo};
 
 // TODO: Move this into its own crate.
@@ -70,18 +71,18 @@ where
     }
 }
 
-impl<'i, T, U> Compare<&'i U> for Locate<'i, T>
+impl<'i, 'u, T, U> Compare<&'u U> for Locate<'i, T>
 where
     T: ?Sized,
     U: ?Sized,
-    &'i T: Compare<&'i U>,
-    &'i U: Into<Locate<'i, U>>,
+    &'i T: Compare<&'u U>,
+    &'u U: Into<Locate<'u, U>>,
 {
-    fn compare(&self, other: &'i U) -> CompareResult {
+    fn compare(&self, other: &'u U) -> CompareResult {
         self.data.compare(other.into().data)
     }
 
-    fn compare_no_case(&self, other: &'i U) -> CompareResult {
+    fn compare_no_case(&self, other: &'u U) -> CompareResult {
         self.data.compare_no_case(other.into().data)
     }
 }
@@ -96,6 +97,15 @@ where
 
     fn deref(&self) -> &Self::Target {
         self.as_ref()
+    }
+}
+
+impl<'i, T> Display for Locate<'i, T>
+where
+    T: Display + ?Sized,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(self.data, f)
     }
 }
 
@@ -372,6 +382,15 @@ impl<I, T> Deref for Stateful<I, T> {
     }
 }
 
+impl<I, T> Display for Stateful<I, T>
+where
+    I: Display,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.data, f)
+    }
+}
+
 impl<I, T> ExtendInto for Stateful<I, T>
 where
     I: ExtendInto,
@@ -513,6 +532,23 @@ where
             data,
             state: self.state.clone(),
         }
+    }
+}
+
+// This function should be provided if/when this module is refactored into its
+// own crate.
+#[allow(unused)]
+pub fn bof<'i, T, I, E>(input: I) -> IResult<I, I, E>
+where
+    T: 'i + ?Sized,
+    I: AsRef<Locate<'i, T>> + Clone,
+    E: ParseError<I>,
+{
+    if input.as_ref().offset() == 0 {
+        Ok((input.clone(), input))
+    }
+    else {
+        Err(ErrorMode::Error(E::from_error_kind(input, ErrorKind::Eof)))
     }
 }
 

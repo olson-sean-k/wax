@@ -948,6 +948,10 @@ mod tests {
         Glob::new("**/a").unwrap();
         Glob::new("a/**").unwrap();
         Glob::new("**/a/**/b/**").unwrap();
+        Glob::new("{**/a,b/c}").unwrap();
+        Glob::new("{a/b,c/**}").unwrap();
+        Glob::new("<**/a>").unwrap();
+        Glob::new("<a/**>").unwrap();
     }
 
     #[test]
@@ -1041,6 +1045,7 @@ mod tests {
         assert!(Glob::new("***").is_err());
         assert!(Glob::new("****").is_err());
         assert!(Glob::new("**/**").is_err());
+        assert!(Glob::new("a{**/**,/b}").is_err());
         assert!(Glob::new("**/*/***").is_err());
         assert!(Glob::new("**$").is_err());
         assert!(Glob::new("**/$**").is_err());

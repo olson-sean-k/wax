@@ -1,19 +1,35 @@
+mod supreme {
+    //! Re-exported items from `nom_supreme`.
+    //!
+    //! This module collapses `nom_supreme` and exposes its items using similar
+    //! names to `nom`. Parsers are used via this module such that they resemble
+    //! the use of `nom` parsers. See the `parse` function.
+
+    pub use nom_supreme::error::{BaseErrorKind, ErrorTree, Expectation, StackContext};
+    pub use nom_supreme::multi::{
+        collect_separated_terminated as many1, parse_separated_terminated as fold1,
+    };
+    pub use nom_supreme::parser_ext::ParserExt;
+    pub use nom_supreme::tag::complete::tag;
+}
+
 use itertools::Itertools as _;
 #[cfg(feature = "diagnostics")]
-use miette::{self, Diagnostic, SourceSpan};
-use nom::error::ErrorKind;
+use miette::{self, Diagnostic, LabeledSpan, SourceCode, SourceSpan};
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
 use std::cmp;
+use std::fmt::{self, Display, Formatter};
 use std::mem;
 use std::ops::{Bound, Deref, RangeBounds};
 use std::path::{PathBuf, MAIN_SEPARATOR};
 use std::str::FromStr;
+use supreme::{BaseErrorKind, StackContext};
 use thiserror::Error;
 
-use crate::fragment::Stateful;
 #[cfg(feature = "diagnostics")]
-use crate::fragment::{self, Locate};
+use crate::fragment;
+use crate::fragment::{Locate, Stateful};
 use crate::rule;
 use crate::{GlobError, SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
 
@@ -22,71 +38,224 @@ pub type Annotation = SourceSpan;
 #[cfg(not(feature = "diagnostics"))]
 pub type Annotation = ();
 
-#[cfg(feature = "diagnostics")]
 type Expression<'i> = Locate<'i, str>;
-#[cfg(not(feature = "diagnostics"))]
-type Expression<'i> = &'i str;
+type Input<'i> = Stateful<Expression<'i>, ParserState>;
+type ErrorTree<'i> = supreme::ErrorTree<Input<'i>>;
+type ErrorMode<'t> = nom::Err<ErrorTree<'t>>;
 
-type ParserInput<'i> = Stateful<Expression<'i>, FlagState>;
+#[derive(Clone, Debug)]
+struct ErrorLocation {
+    offset: usize,
+    context: String,
+}
 
-type NomError<'t> = nom::Err<nom::error::Error<ParserInput<'t>>>;
+impl<'e, 'i> From<TreeEntry<'e, Input<'i>>> for ErrorLocation {
+    fn from(entry: TreeEntry<'e, Input<'i>>) -> Self {
+        ErrorLocation {
+            offset: entry.input.offset(),
+            context: entry.context.to_string(),
+        }
+    }
+}
 
-#[derive(Debug, Error)]
-#[error("failed to parse glob expression: {kind:?}")]
-#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
-#[cfg_attr(feature = "diagnostics", diagnostic(code = "glob::parse"))]
+#[cfg(feature = "diagnostics")]
+impl From<ErrorLocation> for LabeledSpan {
+    fn from(location: ErrorLocation) -> Self {
+        let ErrorLocation { offset, context } = location;
+        LabeledSpan::new(Some(context), offset, 1)
+    }
+}
+
+impl Display for ErrorLocation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "at offset {}: {}", self.offset, self.context)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TreeEntry<'e, I> {
+    depth: usize,
+    input: &'e I,
+    context: TreeContext<'e>,
+}
+
+#[derive(Clone, Debug)]
+enum TreeContext<'e> {
+    Kind(&'e BaseErrorKind),
+    Stack(&'e StackContext),
+}
+
+impl<'e> Display for TreeContext<'e> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            TreeContext::Kind(kind) => match kind {
+                BaseErrorKind::Expected(_) | BaseErrorKind::Kind(_) => write!(f, "{}", kind),
+                // Omit any "external error" prefix as seen in the `Display`
+                // implementation of `BaseErrorKind`.
+                BaseErrorKind::External(error) => write!(f, "{}", error),
+            },
+            TreeContext::Stack(stack) => write!(f, "{}", stack),
+        }
+    }
+}
+
+trait ErrorTreeExt<I> {
+    fn for_each<F>(&self, f: F)
+    where
+        F: FnMut(TreeEntry<I>);
+
+    fn bounding_error_locations(&self) -> (Vec<ErrorLocation>, Vec<ErrorLocation>);
+}
+
+impl<'i> ErrorTreeExt<Input<'i>> for ErrorTree<'i> {
+    fn for_each<F>(&self, mut f: F)
+    where
+        F: FnMut(TreeEntry<Input<'i>>),
+    {
+        fn recurse<'i, F>(tree: &'_ ErrorTree<'i>, depth: usize, f: &mut F)
+        where
+            F: FnMut(TreeEntry<Input<'i>>),
+        {
+            match tree {
+                ErrorTree::Base {
+                    ref location,
+                    ref kind,
+                } => f(TreeEntry {
+                    depth,
+                    input: location,
+                    context: TreeContext::Kind(kind),
+                }),
+                ErrorTree::Stack {
+                    ref base,
+                    ref contexts,
+                } => {
+                    for (location, context) in contexts {
+                        f(TreeEntry {
+                            depth: depth + 1,
+                            input: location,
+                            context: TreeContext::Stack(context),
+                        })
+                    }
+                    recurse(base, depth + 1, f);
+                }
+                ErrorTree::Alt(ref trees) => {
+                    for tree in trees {
+                        recurse(tree, depth + 1, f);
+                    }
+                }
+            }
+        }
+        recurse(self, 0, &mut f);
+    }
+
+    fn bounding_error_locations(&self) -> (Vec<ErrorLocation>, Vec<ErrorLocation>) {
+        let mut min: Option<(usize, Vec<ErrorLocation>)> = None;
+        let mut max: Option<(usize, Vec<ErrorLocation>)> = None;
+        self.for_each(|entry| {
+            let write_if =
+                |locations: &mut Option<(_, _)>, push: fn(&_, &_) -> _, reset: fn(&_, &_) -> _| {
+                    let locations = locations.get_or_insert_with(|| (entry.depth, vec![]));
+                    if reset(&entry.depth, &locations.0) {
+                        *locations = (entry.depth, vec![]);
+                    }
+                    if push(&entry.depth, &locations.0) {
+                        locations.1.push(entry.clone().into());
+                    }
+                };
+            write_if(&mut min, usize::eq, |&depth, &min| depth < min);
+            write_if(&mut max, usize::eq, |&depth, &max| depth > max);
+        });
+        (
+            min.map(|(_, locations)| locations).unwrap_or_default(),
+            max.map(|(_, locations)| locations).unwrap_or_default(),
+        )
+    }
+}
+
+#[derive(Clone, Debug, Error)]
+#[error("failed to parse glob expression")]
 pub struct ParseError<'t> {
-    #[cfg_attr(feature = "diagnostics", source_code)]
     expression: Cow<'t, str>,
-    kind: ErrorKind,
-    #[cfg(feature = "diagnostics")]
-    #[label("starting here")]
-    span: SourceSpan,
+    start: ErrorLocation,
+    ends: Vec<ErrorLocation>,
 }
 
 impl<'t> ParseError<'t> {
-    fn new(expression: &'t str, error: NomError<'t>) -> Self {
+    fn new(expression: &'t str, error: ErrorMode<'t>) -> Self {
         match error {
-            NomError::Incomplete(_) => {
+            ErrorMode::Incomplete(_) => {
                 panic!("unexpected parse error: incomplete input")
             }
-            #[cfg(feature = "diagnostics")]
-            NomError::Error(error) | NomError::Failure(error) => {
-                use nom::Offset;
-
-                let input = error.input.as_ref().as_ref();
+            ErrorMode::Error(error) | ErrorMode::Failure(error) => {
+                let (starts, ends) = error.bounding_error_locations();
                 ParseError {
                     expression: expression.into(),
-                    kind: error.code,
-                    span: (Offset::offset(&expression, &input), 0).into(),
+                    start: starts
+                        .into_iter()
+                        .next()
+                        .expect("expected lower bound error location"),
+                    ends,
                 }
             }
-            #[cfg(not(feature = "diagnostics"))]
-            NomError::Error(error) | NomError::Failure(error) => ParseError {
-                expression: expression.into(),
-                kind: error.code,
-            },
         }
     }
 
     pub fn into_owned(self) -> ParseError<'static> {
         let ParseError {
             expression,
-            kind,
-            #[cfg(feature = "diagnostics")]
-            span,
+            start,
+            ends,
         } = self;
         ParseError {
             expression: expression.into_owned().into(),
-            kind,
-            #[cfg(feature = "diagnostics")]
-            span,
+            start,
+            ends,
         }
     }
 
     pub fn expression(&self) -> &str {
         self.expression.as_ref()
     }
+}
+
+#[cfg(feature = "diagnostics")]
+impl<'t> Diagnostic for ParseError<'t> {
+    fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
+        Some(Box::new("glob::parse"))
+    }
+
+    fn source_code(&self) -> Option<&dyn SourceCode> {
+        Some(&self.expression)
+    }
+
+    // Surfacing useful parsing errors is difficult. This code replaces any
+    // lower bound errors with a simple label noting the beginning of the
+    // parsing error. Details are discarded, because these are typically
+    // top-level alternative errors that do not provide any useful insight.
+    // Upper bound errors are labeled as-is, though they only sometimes provide
+    // useful context.
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
+        let end = self
+            .ends
+            .first()
+            .map(|end| LabeledSpan::new(Some(String::from("deepest parse here")), end.offset, 1));
+        Some(Box::new(
+            Some(LabeledSpan::new(
+                Some(String::from("starting here")),
+                self.start.offset,
+                1,
+            ))
+            .into_iter()
+            .chain(end)
+            .chain(self.ends.iter().cloned().map(LabeledSpan::from)),
+        ))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ParserState {
+    flags: FlagState,
+    subexpression: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -275,7 +444,6 @@ impl<'t, A> TokenKind<'t, A> {
             TokenKind::Class(ref class) => class.to_invariant_string(),
             TokenKind::Literal(ref literal) => literal.to_invariant_string(),
             TokenKind::Repetition(ref repetition) => repetition.to_invariant_string(),
-            // TODO:
             TokenKind::Separator => Some(MAIN_SEPARATOR.to_string().into()),
             TokenKind::Wildcard(_) => None,
         }
@@ -730,41 +898,64 @@ pub fn invariant_prefix_upper_bound(tokens: &[Token]) -> usize {
 pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
     use nom::bytes::complete as bytes;
     use nom::character::complete as character;
-    use nom::error::ParseError;
     use nom::{branch, combinator, multi, sequence, IResult, Parser};
+    use supreme::ParserExt;
 
     use crate::token::FlagToggle::CaseInsensitive;
 
-    fn flags<'i, E, T, F>(
-        mut toggle: T,
-    ) -> impl FnMut(ParserInput<'i>) -> IResult<ParserInput<'i>, (), E>
+    #[derive(Clone, Copy, Debug, Error)]
+    #[error("expected {subject}")]
+    struct Expectation {
+        subject: &'static str,
+    }
+
+    type ParseResult<'i, O> = IResult<Input<'i>, O, ErrorTree<'i>>;
+
+    fn boe(input: Input) -> ParseResult<Input> {
+        if input.state.subexpression == input.offset() {
+            Ok((input, input))
+        }
+        else {
+            Err(ErrorMode::Error(ErrorTree::Base {
+                location: input,
+                kind: BaseErrorKind::External(Box::new(Expectation {
+                    subject: "beginning of expression",
+                })),
+            }))
+        }
+    }
+
+    fn identity(input: Input) -> ParseResult<Input> {
+        Ok((input, input))
+    }
+
+    fn flags<'i, F>(
+        mut toggle: impl FnMut(FlagToggle) -> F,
+    ) -> impl FnMut(Input<'i>) -> ParseResult<'i, ()>
     where
-        E: ParseError<ParserInput<'i>>,
-        T: FnMut(FlagToggle) -> F,
-        F: Parser<ParserInput<'i>, (), E>,
+        F: Parser<Input<'i>, (), ErrorTree<'i>>,
     {
         move |input| {
             let (input, _) = multi::many0(sequence::delimited(
-                bytes::tag("(?"),
+                supreme::tag("(?"),
                 multi::many1(branch::alt((
-                    sequence::tuple((bytes::tag("i"), toggle(CaseInsensitive(true)))),
-                    sequence::tuple((bytes::tag("-i"), toggle(CaseInsensitive(false)))),
+                    sequence::tuple((supreme::tag("i"), toggle(CaseInsensitive(true)))),
+                    sequence::tuple((supreme::tag("-i"), toggle(CaseInsensitive(false)))),
                 ))),
-                bytes::tag(")"),
+                supreme::tag(")"),
             ))(input)?;
             Ok((input, ()))
         }
     }
 
-    fn flags_with_state<'i, E>(input: ParserInput<'i>) -> IResult<ParserInput<'i>, (), E>
-    where
-        E: ParseError<ParserInput<'i>>,
-    {
+    // Explicit lifetimes prevent inference errors.
+    #[allow(clippy::needless_lifetimes)]
+    fn flags_with_state<'i>(input: Input<'i>) -> ParseResult<'i, ()> {
         flags(move |toggle| {
-            move |mut input: ParserInput<'i>| {
+            move |mut input: Input<'i>| {
                 match toggle {
                     CaseInsensitive(toggle) => {
-                        input.state.is_case_insensitive = toggle;
+                        input.state.flags.is_case_insensitive = toggle;
                     }
                 }
                 Ok((input, ()))
@@ -772,192 +963,166 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
         })(input)
     }
 
-    fn flags_without_state<'i, E>(input: ParserInput<'i>) -> IResult<ParserInput<'i>, (), E>
-    where
-        E: ParseError<ParserInput<'i>>,
-    {
-        flags(move |_| move |input: ParserInput<'i>| Ok((input, ())))(input)
+    // Explicit lifetimes prevent inference errors.
+    #[allow(clippy::needless_lifetimes)]
+    fn flags_without_state<'i>(input: Input<'i>) -> ParseResult<'i, ()> {
+        flags(move |_| move |input: Input<'i>| Ok((input, ())))(input)
     }
 
-    fn no_adjacent_tree<'i, O, E, F>(
-        parser: F,
-    ) -> impl FnMut(ParserInput<'i>) -> IResult<ParserInput<'i>, O, E>
-    where
-        E: ParseError<ParserInput<'i>>,
-        F: Parser<ParserInput<'i>, O, E>,
-    {
-        sequence::delimited(
-            combinator::peek(sequence::tuple((
-                combinator::not(bytes::tag("**")),
-                flags_without_state,
-            ))),
-            parser,
-            combinator::peek(sequence::tuple((
-                flags_without_state,
-                combinator::not(bytes::tag("**")),
-            ))),
-        )
-    }
-
-    fn literal(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
+    fn literal(input: Input) -> ParseResult<TokenKind<Annotation>> {
         combinator::map(
             combinator::verify(
-                // NOTE: Character classes, which accept arbitrary characters,
-                //       can be used to escape metacharacters like `*`, `?`,
-                //       etc. For example, to escape `*`, either `\*` or `[*]`
-                //       can be used.
                 bytes::escaped_transform(
-                    no_adjacent_tree(bytes::is_not("/?*$:<>()[]{},\\")),
+                    bytes::is_not("/?*$:<>()[]{},\\"),
                     '\\',
                     branch::alt((
-                        combinator::value("?", bytes::tag("?")),
-                        combinator::value("*", bytes::tag("*")),
-                        combinator::value("$", bytes::tag("$")),
-                        combinator::value(":", bytes::tag(":")),
-                        combinator::value("<", bytes::tag("<")),
-                        combinator::value(">", bytes::tag(">")),
-                        combinator::value("(", bytes::tag("(")),
-                        combinator::value(")", bytes::tag(")")),
-                        combinator::value("[", bytes::tag("[")),
-                        combinator::value("]", bytes::tag("]")),
-                        combinator::value("{", bytes::tag("{")),
-                        combinator::value("}", bytes::tag("}")),
-                        combinator::value(",", bytes::tag(",")),
+                        combinator::value("?", supreme::tag("?")),
+                        combinator::value("*", supreme::tag("*")),
+                        combinator::value("$", supreme::tag("$")),
+                        combinator::value(":", supreme::tag(":")),
+                        combinator::value("<", supreme::tag("<")),
+                        combinator::value(">", supreme::tag(">")),
+                        combinator::value("(", supreme::tag("(")),
+                        combinator::value(")", supreme::tag(")")),
+                        combinator::value("[", supreme::tag("[")),
+                        combinator::value("]", supreme::tag("]")),
+                        combinator::value("{", supreme::tag("{")),
+                        combinator::value("}", supreme::tag("}")),
+                        combinator::value(",", supreme::tag(",")),
                     )),
                 ),
                 |text: &str| !text.is_empty(),
             ),
-            |text| {
+            move |text| {
                 TokenKind::Literal(Literal {
                     text: text.into(),
-                    is_case_insensitive: input.state.is_case_insensitive,
+                    is_case_insensitive: input.state.flags.is_case_insensitive,
                 })
             },
         )(input)
     }
 
-    fn separator(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
-        combinator::value(TokenKind::Separator, bytes::tag("/"))(input)
+    fn separator(input: Input) -> ParseResult<TokenKind<Annotation>> {
+        combinator::value(TokenKind::Separator, supreme::tag("/"))(input)
     }
 
-    fn wildcard(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
+    fn wildcard<'i>(
+        terminator: impl Clone + Parser<Input<'i>, Input<'i>, ErrorTree<'i>>,
+    ) -> impl FnMut(Input<'i>) -> ParseResult<'i, TokenKind<Annotation>> {
         branch::alt((
-            combinator::map(no_adjacent_tree(bytes::tag("?")), |_| {
-                TokenKind::from(Wildcard::One)
-            }),
+            combinator::map(supreme::tag("?"), |_| TokenKind::from(Wildcard::One))
+                .context("exactly-one"),
             combinator::map(
                 sequence::tuple((
-                    branch::alt((
-                        combinator::map(
-                            sequence::tuple((bytes::tag("/"), flags_with_state)),
-                            |(left, _)| left,
-                        ),
-                        bytes::tag(""),
-                    )),
+                    combinator::map(
+                        branch::alt((
+                            sequence::tuple((
+                                combinator::value(true, supreme::tag("/")),
+                                flags_with_state,
+                            )),
+                            sequence::tuple((combinator::value(false, boe), flags_with_state)),
+                        )),
+                        |(prefix, _)| prefix,
+                    )
+                    .context("prefix"),
                     sequence::terminated(
-                        bytes::tag("**"),
+                        supreme::tag("**"),
                         branch::alt((
                             combinator::map(
-                                sequence::tuple((flags_with_state, bytes::tag("/"))),
-                                |(_, right)| right,
+                                sequence::tuple((flags_with_state, supreme::tag("/"))),
+                                |(_, postfix)| postfix,
                             ),
-                            combinator::eof,
-                            // In alternatives and repetitions, tree tokens may
-                            // be terminated by additional tags. These
-                            // delimiting tags must be consumed by their
-                            // respective parsers, so they are peeked.
-                            combinator::peek(branch::alt((
-                                bytes::tag(","),
-                                bytes::tag(":"),
-                                bytes::tag("}"),
-                                bytes::tag(">"),
-                            ))),
-                        )),
+                            terminator.clone(),
+                        ))
+                        .context("postfix"),
                     ),
                 )),
-                |(root, _): (ParserInput, _)| {
-                    Wildcard::Tree {
-                        is_rooted: !root.is_empty(),
-                    }
-                    .into()
-                },
-            ),
+                |(is_rooted, _)| Wildcard::Tree { is_rooted }.into(),
+            )
+            .context("tree"),
             combinator::map(
                 sequence::terminated(
-                    bytes::tag("*"),
+                    supreme::tag("*"),
                     branch::alt((
                         combinator::map(
                             combinator::peek(sequence::tuple((
                                 flags_without_state,
-                                bytes::is_not("*$"),
+                                bytes::is_not("*$").context("no terminating wildcard"),
                             ))),
                             |(_, right)| right,
                         ),
-                        combinator::eof,
+                        terminator.clone(),
                     )),
                 ),
                 |_| Wildcard::ZeroOrMore(Evaluation::Eager).into(),
-            ),
+            )
+            .context("zero-or-more"),
             combinator::map(
                 sequence::terminated(
-                    bytes::tag("$"),
+                    supreme::tag("$"),
                     branch::alt((
                         combinator::map(
                             combinator::peek(sequence::tuple((
                                 flags_without_state,
-                                bytes::is_not("*$"),
+                                bytes::is_not("*$").context("no terminating wildcard"),
                             ))),
                             |(_, right)| right,
                         ),
-                        combinator::eof,
+                        terminator,
                     )),
                 ),
                 |_| Wildcard::ZeroOrMore(Evaluation::Lazy).into(),
-            ),
-        ))(input)
+            )
+            .context("zero-or-more"),
+        ))
     }
 
-    fn repetition(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
-        type NParseResult<T> = Result<T, <usize as FromStr>::Err>;
+    fn repetition(input: Input) -> ParseResult<TokenKind<Annotation>> {
+        fn bounds(input: Input) -> ParseResult<(usize, Option<usize>)> {
+            type BoundResult<T> = Result<T, <usize as FromStr>::Err>;
 
-        fn bounds(input: ParserInput) -> IResult<ParserInput, (usize, Option<usize>)> {
             branch::alt((
                 sequence::preceded(
-                    bytes::tag(":"),
+                    supreme::tag(":"),
                     branch::alt((
                         combinator::map_res(
                             sequence::separated_pair(
                                 character::digit1,
-                                bytes::tag(","),
+                                supreme::tag(","),
                                 combinator::opt(character::digit1),
                             ),
-                            |(lower, upper): (ParserInput, Option<_>)| -> NParseResult<_> {
+                            |(lower, upper): (Input, Option<_>)| -> BoundResult<_> {
                                 let lower = lower.parse::<usize>()?;
                                 let upper =
                                     upper.map(|upper| upper.parse::<usize>()).transpose()?;
                                 Ok((lower, upper))
                             },
-                        ),
-                        combinator::map_res(
-                            character::digit1,
-                            |n: ParserInput| -> NParseResult<_> {
-                                let n = n.parse::<usize>()?;
-                                Ok((n, Some(n)))
-                            },
-                        ),
-                        combinator::value((1, None), bytes::tag("")),
+                        )
+                        .context("range"),
+                        combinator::map_res(character::digit1, |n: Input| -> BoundResult<_> {
+                            let n = n.parse::<usize>()?;
+                            Ok((n, Some(n)))
+                        })
+                        .context("converged"),
+                        combinator::success((1, None)),
                     )),
                 ),
-                combinator::value((0, None), bytes::tag("")),
+                combinator::success((0, None)),
             ))(input)
         }
 
         combinator::map_opt(
-            no_adjacent_tree(sequence::delimited(
-                bytes::tag("<"),
-                sequence::tuple((glob, bounds)),
-                bytes::tag(">"),
-            )),
+            sequence::delimited(
+                supreme::tag("<"),
+                sequence::tuple((
+                    glob(move |input| {
+                        combinator::peek(branch::alt((supreme::tag(":"), supreme::tag(">"))))(input)
+                    })
+                    .context("sub-glob"),
+                    bounds.context("bounds"),
+                )),
+                supreme::tag(">"),
+            ),
             |(tokens, (lower, upper))| match upper {
                 Some(upper) => Repetition::new(tokens, lower..=upper).map(From::from),
                 None => Repetition::new(tokens, lower..).map(From::from),
@@ -965,22 +1130,26 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
         )(input)
     }
 
-    fn class(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
-        fn archetypes(input: ParserInput) -> IResult<ParserInput, Vec<Archetype>> {
+    fn class(input: Input) -> ParseResult<TokenKind<Annotation>> {
+        fn archetypes(input: Input) -> ParseResult<Vec<Archetype>> {
             let escaped_character = |input| {
                 branch::alt((
                     character::none_of("[]-\\"),
                     branch::alt((
-                        combinator::value('[', bytes::tag("\\[")),
-                        combinator::value(']', bytes::tag("\\]")),
-                        combinator::value('-', bytes::tag("\\-")),
+                        combinator::value('[', supreme::tag("\\[")),
+                        combinator::value(']', supreme::tag("\\]")),
+                        combinator::value('-', supreme::tag("\\-")),
                     )),
                 ))(input)
             };
 
             multi::many1(branch::alt((
                 combinator::map(
-                    sequence::separated_pair(escaped_character, bytes::tag("-"), escaped_character),
+                    sequence::separated_pair(
+                        escaped_character,
+                        supreme::tag("-"),
+                        escaped_character,
+                    ),
                     Archetype::from,
                 ),
                 combinator::map(escaped_character, Archetype::from),
@@ -988,11 +1157,11 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
         }
 
         combinator::map(
-            no_adjacent_tree(sequence::delimited(
-                bytes::tag("["),
-                sequence::tuple((combinator::opt(bytes::tag("!")), archetypes)),
-                bytes::tag("]"),
-            )),
+            sequence::delimited(
+                supreme::tag("["),
+                sequence::tuple((combinator::opt(supreme::tag("!")), archetypes)),
+                supreme::tag("]"),
+            ),
             |(negation, archetypes)| {
                 Class {
                     is_negated: negation.is_some(),
@@ -1003,25 +1172,32 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
         )(input)
     }
 
-    fn alternative(input: ParserInput) -> IResult<ParserInput, TokenKind<Annotation>> {
-        no_adjacent_tree(sequence::delimited(
-            bytes::tag("{"),
+    fn alternative(input: Input) -> ParseResult<TokenKind<Annotation>> {
+        sequence::preceded(
+            supreme::tag("{"),
             combinator::map(
-                multi::separated_list1(bytes::tag(","), glob),
-                |alternatives| Alternative::from(alternatives).into(),
+                supreme::many1(
+                    glob(move |input| {
+                        combinator::peek(branch::alt((supreme::tag(","), supreme::tag("}"))))(input)
+                    })
+                    .context("sub-glob"),
+                    supreme::tag(","),
+                    supreme::tag("}"),
+                ),
+                |alternatives: Vec<Vec<_>>| Alternative::from(alternatives).into(),
             ),
-            bytes::tag("}"),
-        ))(input)
+        )(input)
     }
 
-    fn glob(input: ParserInput) -> IResult<ParserInput, Vec<Token<Annotation>>> {
+    fn glob<'i>(
+        terminator: impl 'i + Clone + Parser<Input<'i>, Input<'i>, ErrorTree<'i>>,
+    ) -> impl Parser<Input<'i>, Vec<Token<'i, Annotation>>, ErrorTree<'i>> {
         #[cfg(feature = "diagnostics")]
-        fn annotate<'i, E, F>(
+        fn annotate<'i, F>(
             parser: F,
-        ) -> impl FnMut(ParserInput<'i>) -> IResult<ParserInput<'i>, Token<'i, Annotation>, E>
+        ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
         where
-            E: ParseError<ParserInput<'i>>,
-            F: Parser<ParserInput<'i>, TokenKind<'i, Annotation>, E>,
+            F: 'i + Parser<Input<'i>, TokenKind<'i, Annotation>, ErrorTree<'i>>,
         {
             combinator::map(fragment::span(parser), |(span, kind)| {
                 Token::new(kind, span.into())
@@ -1029,35 +1205,47 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
         }
 
         #[cfg(not(feature = "diagnostics"))]
-        fn annotate<'i, E, F>(
+        fn annotate<'i, F>(
             parser: F,
-        ) -> impl FnMut(ParserInput<'i>) -> IResult<ParserInput<'i>, Token<'i, Annotation>, E>
+        ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
         where
-            E: ParseError<ParserInput<'i>>,
-            F: Parser<ParserInput<'i>, TokenKind<'i, Annotation>, E>,
+            F: 'i + Parser<Input<'i>, TokenKind<'i, Annotation>, ErrorTree<'i>>,
         {
             combinator::map(parser, |kind| Token::new(kind, ()))
         }
 
-        multi::many1(branch::alt((
-            annotate(sequence::preceded(flags_with_state, literal)),
-            annotate(sequence::preceded(flags_with_state, repetition)),
-            annotate(sequence::preceded(flags_with_state, alternative)),
-            annotate(sequence::preceded(flags_with_state, wildcard)),
-            annotate(sequence::preceded(flags_with_state, class)),
-            annotate(sequence::preceded(flags_with_state, separator)),
-        )))(input)
+        move |mut input: Input<'i>| {
+            input.state.subexpression = input.offset();
+            supreme::many1(
+                branch::alt((
+                    annotate(sequence::preceded(flags_with_state, literal)).context("literal"),
+                    annotate(sequence::preceded(flags_with_state, repetition))
+                        .context("repetition"),
+                    annotate(sequence::preceded(flags_with_state, alternative))
+                        .context("alternative"),
+                    annotate(sequence::preceded(
+                        flags_with_state,
+                        wildcard(terminator.clone()),
+                    ))
+                    .context("wildcard"),
+                    annotate(sequence::preceded(flags_with_state, class)).context("class"),
+                    annotate(sequence::preceded(flags_with_state, separator)).context("separator"),
+                )),
+                identity,
+                terminator.clone(),
+            )
+            .parse(input)
+        }
     }
 
     if expression.is_empty() {
         Ok(vec![])
     }
     else {
-        #[cfg_attr(not(feature = "diagnostics"), allow(clippy::useless_conversion))]
-        let input = ParserInput::new(Expression::from(expression), FlagState::default());
-        let mut tokens = combinator::all_consuming(glob)(input)
+        let input = Input::new(Expression::from(expression), ParserState::default());
+        let mut tokens = combinator::all_consuming(glob(combinator::eof))(input)
             .map(|(_, tokens)| tokens)
-            .map_err(|error| crate::token::ParseError::new(expression, error))
+            .map_err(|error| ParseError::new(expression, error))
             .map_err(GlobError::from)?;
         rule::check(expression, tokens.iter())?;
         // Remove any trailing separator tokens. Such separators are meaningless
