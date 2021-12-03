@@ -119,13 +119,13 @@ The tree wildcard `**` matches zero or more sub-directories. **This is the only
 wildcard that may match across arbitrary component boundaries**; all other
 wildcards do **not** match across component (directory) boundaries. When a tree
 wildcard participates in a match and does not terminate the pattern, its capture
-includes a trailing forward slash `/`. If a tree wildcard does not participate
-in a match, then its capture is an empty string. Tree wildcards must be
-delimited by forward slashes or terminations (such as the beginning and/or end
-of a glob or sub-glob). Tree wildcards and path separators are distinct and any
-adjacent forward slashes that form a tree wildcard are parsed together. If a
-glob expression consists solely of a tree wildcard, then it matches any and all
-files in the working directory tree.
+includes the trailing separator. If a tree wildcard does not participate in a
+match, then its capture is an empty string. Tree wildcards must be delimited by
+forward slashes or terminations (such as the beginning and/or end of a glob or
+sub-glob). Tree wildcards and path separators are distinct and any adjacent
+forward slashes that form a tree wildcard are parsed together. If a glob
+expression consists solely of a tree wildcard, then it matches any and all files
+in the working directory tree.
 
 ### Character Classes
 

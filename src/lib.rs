@@ -378,11 +378,11 @@ impl<'t> Glob<'t> {
     /// variant `Glob` postfix.
     ///
     /// The invariant prefix contains no glob patterns nor other variant
-    /// components and therefore can be interpretted as a native path. The
-    /// `Glob` postfix is variant and contains the remaining components (in
-    /// particular, patterns) that follow the prefix. For example, the glob
-    /// expression `.local/**/*.log` would produce the path `.local` and glob
-    /// `**/*.log`. It is possible for either partition to be empty.
+    /// components and therefore can be interpreted as a native path. The `Glob`
+    /// postfix is variant and contains the remaining components (in particular,
+    /// patterns) that follow the prefix. For example, the glob expression
+    /// `.local/**/*.log` would produce the path `.local` and glob `**/*.log`.
+    /// It is possible for either partition to be empty.
     ///
     /// Literal components may be considered variant if they contain characters
     /// with casing and the configured case sensitivity differs from the target
