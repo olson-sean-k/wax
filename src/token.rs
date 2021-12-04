@@ -14,8 +14,8 @@ mod supreme {
 }
 
 use itertools::Itertools as _;
-#[cfg(feature = "diagnostics")]
-use miette::{self, Diagnostic, LabeledSpan, SourceCode, SourceSpan};
+#[cfg(feature = "diagnostics-report")]
+use miette::{self, Diagnostic, LabeledSpan, SourceCode};
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
 use std::cmp;
@@ -27,15 +27,19 @@ use std::str::FromStr;
 use supreme::{BaseErrorKind, StackContext};
 use thiserror::Error;
 
-#[cfg(feature = "diagnostics")]
+#[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
+use crate::diagnostics::Span;
+#[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 use crate::fragment;
 use crate::fragment::{Locate, Stateful};
-use crate::rule;
-use crate::{GlobError, SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
+use crate::{SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
 
-#[cfg(feature = "diagnostics")]
-pub type Annotation = SourceSpan;
-#[cfg(not(feature = "diagnostics"))]
+#[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
+pub type Annotation = Span;
+#[cfg(all(
+    not(feature = "diagnostics-inspect"),
+    not(feature = "diagnostics-report"),
+))]
 pub type Annotation = ();
 
 type Expression<'i> = Locate<'i, str>;
@@ -58,7 +62,7 @@ impl<'e, 'i> From<TreeEntry<'e, Input<'i>>> for ErrorLocation {
     }
 }
 
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "diagnostics-report")]
 impl From<ErrorLocation> for LabeledSpan {
     fn from(location: ErrorLocation) -> Self {
         let ErrorLocation { offset, context } = location;
@@ -218,10 +222,11 @@ impl<'t> ParseError<'t> {
     }
 }
 
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "diagnostics-report")]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 impl<'t> Diagnostic for ParseError<'t> {
     fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
-        Some(Box::new("glob::parse"))
+        Some(Box::new("wax::glob::parse"))
     }
 
     fn source_code(&self) -> Option<&dyn SourceCode> {
@@ -235,10 +240,6 @@ impl<'t> Diagnostic for ParseError<'t> {
     // Upper bound errors are labeled as-is, though they only sometimes provide
     // useful context.
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
-        let end = self
-            .ends
-            .first()
-            .map(|end| LabeledSpan::new(Some(String::from("deepest parse here")), end.offset, 1));
         Some(Box::new(
             Some(LabeledSpan::new(
                 Some(String::from("starting here")),
@@ -246,8 +247,13 @@ impl<'t> Diagnostic for ParseError<'t> {
                 1,
             ))
             .into_iter()
-            .chain(end)
-            .chain(self.ends.iter().cloned().map(LabeledSpan::from)),
+            .chain(self.ends.iter().cloned().map(|end| {
+                LabeledSpan::new(
+                    Some(end.context),
+                    self.start.offset,
+                    end.offset.saturating_sub(self.start.offset) + 1,
+                )
+            })),
         ))
     }
 }
@@ -277,7 +283,44 @@ enum FlagToggle {
 }
 
 #[derive(Clone, Debug)]
-pub struct Token<'t, A = ()> {
+pub struct Tokenized<'t, A = Annotation> {
+    expression: Cow<'t, str>,
+    tokens: Vec<Token<'t, A>>,
+}
+
+impl<'t, A> Tokenized<'t, A> {
+    pub fn into_owned(self) -> Tokenized<'static, A> {
+        let Tokenized { expression, tokens } = self;
+        Tokenized {
+            expression: expression.into_owned().into(),
+            tokens: tokens.into_iter().map(Token::into_owned).collect(),
+        }
+    }
+
+    pub fn partition(&mut self) -> PathBuf {
+        // Get the invariant prefix for the token sequence.
+        let prefix = invariant_prefix_path(self.tokens.iter()).unwrap_or_else(PathBuf::new);
+
+        // Drain invariant tokens from the beginning of the token sequence and
+        // unroot any tokens at the beginning of the sequence (tree wildcards).
+        self.tokens
+            .drain(0..invariant_prefix_upper_bound(&self.tokens));
+        self.tokens.first_mut().map(Token::unroot);
+
+        prefix
+    }
+
+    pub fn expression(&self) -> &Cow<'t, str> {
+        &self.expression
+    }
+
+    pub fn tokens(&self) -> &[Token<'t, A>] {
+        &self.tokens
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Token<'t, A = Annotation> {
     kind: TokenKind<'t, A>,
     annotation: A,
 }
@@ -292,15 +335,6 @@ impl<'t, A> Token<'t, A> {
         Token {
             kind: kind.into_owned(),
             annotation,
-        }
-    }
-
-    #[cfg(feature = "diagnostics")]
-    pub fn unannotate(self) -> Token<'t, ()> {
-        let Token { kind, .. } = self;
-        Token {
-            kind: kind.unannotate(),
-            annotation: (),
         }
     }
 
@@ -411,24 +445,6 @@ impl<'t, A> TokenKind<'t, A> {
         }
     }
 
-    #[cfg(feature = "diagnostics")]
-    pub fn unannotate(self) -> TokenKind<'t, ()> {
-        match self {
-            TokenKind::Alternative(alternative) => alternative.unannotate().into(),
-            TokenKind::Class(class) => TokenKind::Class(class),
-            TokenKind::Literal(Literal {
-                text,
-                is_case_insensitive,
-            }) => TokenKind::Literal(Literal {
-                text,
-                is_case_insensitive,
-            }),
-            TokenKind::Repetition(repetition) => repetition.unannotate().into(),
-            TokenKind::Separator => TokenKind::Separator,
-            TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
-        }
-    }
-
     pub fn unroot(&mut self) -> bool {
         match self {
             TokenKind::Wildcard(Wildcard::Tree { ref mut is_rooted }) => {
@@ -458,6 +474,16 @@ impl<'t, A> TokenKind<'t, A> {
         matches!(
             self,
             TokenKind::Separator | TokenKind::Wildcard(Wildcard::Tree { .. })
+        )
+    }
+
+    #[cfg_attr(not(feature = "diagnostics-inspect"), allow(unused))]
+    pub fn is_capturing(&self) -> bool {
+        use TokenKind::{Alternative, Class, Repetition, Wildcard};
+
+        matches!(
+            self,
+            Alternative(_) | Class(_) | Repetition(_) | Wildcard(_),
         )
     }
 }
@@ -495,16 +521,6 @@ impl<'t, A> Alternative<'t, A> {
             self.0
                 .into_iter()
                 .map(|tokens| tokens.into_iter().map(Token::into_owned).collect())
-                .collect(),
-        )
-    }
-
-    #[cfg(feature = "diagnostics")]
-    pub fn unannotate(self) -> Alternative<'t, ()> {
-        Alternative(
-            self.0
-                .into_iter()
-                .map(|tokens| tokens.into_iter().map(Token::unannotate).collect())
                 .collect(),
         )
     }
@@ -689,20 +705,6 @@ impl<'t, A> Repetition<'t, A> {
         }
     }
 
-    #[cfg(feature = "diagnostics")]
-    pub fn unannotate(self) -> Repetition<'t, ()> {
-        let Repetition {
-            tokens,
-            lower,
-            step,
-        } = self;
-        Repetition {
-            tokens: tokens.into_iter().map(Token::unannotate).collect(),
-            lower,
-            step,
-        }
-    }
-
     pub fn tokens(&self) -> &Vec<Token<'t, A>> {
         &self.tokens
     }
@@ -753,10 +755,10 @@ pub enum Wildcard {
 }
 
 #[derive(Clone, Debug)]
-pub struct LiteralSequence<'t>(SmallVec<[&'t Literal<'t>; 4]>);
+pub struct LiteralSequence<'i, 't>(SmallVec<[&'i Literal<'t>; 4]>);
 
-impl<'t> LiteralSequence<'t> {
-    pub fn literals(&self) -> &[&'t Literal<'t>] {
+impl<'i, 't> LiteralSequence<'i, 't> {
+    pub fn literals(&self) -> &[&'i Literal<'t>] {
         self.0.as_ref()
     }
 
@@ -772,17 +774,27 @@ impl<'t> LiteralSequence<'t> {
                 .into()
         }
     }
+
+    #[cfg(any(unix, windows))]
+    pub fn is_semantic_literal(&self) -> bool {
+        matches!(self.text().as_ref(), "." | "..")
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    pub fn is_semantic_literal(&self) -> bool {
+        false
+    }
 }
 
-#[derive(Clone, Debug)]
-pub struct Component<'t, A = ()>(SmallVec<[&'t Token<'t, A>; 4]>);
+#[derive(Debug)]
+pub struct Component<'i, 't, A = ()>(SmallVec<[&'i Token<'t, A>; 4]>);
 
-impl<'t, A> Component<'t, A> {
-    pub fn tokens(&self) -> &[&'t Token<'t, A>] {
+impl<'i, 't, A> Component<'i, 't, A> {
+    pub fn tokens(&self) -> &[&'i Token<'t, A>] {
         self.0.as_ref()
     }
 
-    pub fn literal(&self) -> Option<LiteralSequence<'t>> {
+    pub fn literal(&self) -> Option<LiteralSequence<'i, 't>> {
         // This predicate is more easily expressed with `all`, but `any` is used
         // here, because it returns `false` for empty iterators and in that case
         // this function should return `None`.
@@ -808,10 +820,17 @@ impl<'t, A> Component<'t, A> {
     }
 }
 
-pub fn components<'t, A, I>(tokens: I) -> impl Iterator<Item = Component<'t, A>>
+impl<'i, 't, A> Clone for Component<'i, 't, A> {
+    fn clone(&self) -> Self {
+        Component(self.0.clone())
+    }
+}
+
+pub fn components<'i, 't, A, I>(tokens: I) -> impl Iterator<Item = Component<'i, 't, A>>
 where
+    't: 'i,
     A: 't,
-    I: IntoIterator<Item = &'t Token<'t, A>>,
+    I: IntoIterator<Item = &'i Token<'t, A>>,
     I::IntoIter: Clone,
 {
     tokens.into_iter().batching(|tokens| {
@@ -831,6 +850,45 @@ where
     })
 }
 
+// TODO: This implementation allocates many `Vec`s.
+pub fn literals<'i, 't, A, I>(
+    tokens: I,
+) -> impl Iterator<Item = (Component<'i, 't, A>, LiteralSequence<'i, 't>)>
+where
+    't: 'i,
+    A: 't,
+    I: IntoIterator<Item = &'i Token<'t, A>>,
+    I::IntoIter: Clone,
+{
+    components(tokens).flat_map(|component| {
+        if let Some(literal) = component.literal() {
+            vec![(component, literal)]
+        }
+        else {
+            component
+                .tokens()
+                .iter()
+                .filter_map(|token| match token.kind() {
+                    TokenKind::Alternative(ref alternative) => Some(
+                        alternative
+                            .branches()
+                            .iter()
+                            .map(literals)
+                            .flatten()
+                            .collect::<Vec<_>>(),
+                    ),
+                    TokenKind::Repetition(ref repetition) => {
+                        Some(literals(repetition.tokens()).collect::<Vec<_>>())
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>()
+        }
+    })
+}
+
+// TODO: Is there some way to unify this with `invariant_prefix_upper_bound`?
 pub fn invariant_prefix_path<'t, A, I>(tokens: I) -> Option<PathBuf>
 where
     A: 't,
@@ -865,7 +923,7 @@ where
     }
 }
 
-pub fn invariant_prefix_upper_bound(tokens: &[Token]) -> usize {
+pub fn invariant_prefix_upper_bound<A>(tokens: &[Token<A>]) -> usize {
     use crate::token::TokenKind::{Separator, Wildcard};
     use crate::token::Wildcard::Tree;
 
@@ -895,7 +953,7 @@ pub fn invariant_prefix_upper_bound(tokens: &[Token]) -> usize {
     tokens.len()
 }
 
-pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
+pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     use nom::bytes::complete as bytes;
     use nom::character::complete as character;
     use nom::{branch, combinator, multi, sequence, IResult, Parser};
@@ -1192,7 +1250,7 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
     fn glob<'i>(
         terminator: impl 'i + Clone + Parser<Input<'i>, Input<'i>, ErrorTree<'i>>,
     ) -> impl Parser<Input<'i>, Vec<Token<'i, Annotation>>, ErrorTree<'i>> {
-        #[cfg(feature = "diagnostics")]
+        #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
         fn annotate<'i, F>(
             parser: F,
         ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
@@ -1200,11 +1258,14 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
             F: 'i + Parser<Input<'i>, TokenKind<'i, Annotation>, ErrorTree<'i>>,
         {
             combinator::map(fragment::span(parser), |(span, kind)| {
-                Token::new(kind, span.into())
+                Token::new(kind, span)
             })
         }
 
-        #[cfg(not(feature = "diagnostics"))]
+        #[cfg(all(
+            not(feature = "diagnostics-inspect"),
+            not(feature = "diagnostics-report"),
+        ))]
         fn annotate<'i, F>(
             parser: F,
         ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
@@ -1239,32 +1300,20 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
     }
 
     if expression.is_empty() {
-        Ok(vec![])
+        Ok(Tokenized {
+            expression: expression.into(),
+            tokens: vec![],
+        })
     }
     else {
         let input = Input::new(Expression::from(expression), ParserState::default());
-        let mut tokens = combinator::all_consuming(glob(combinator::eof))(input)
+        let tokens = combinator::all_consuming(glob(combinator::eof))(input)
             .map(|(_, tokens)| tokens)
-            .map_err(|error| ParseError::new(expression, error))
-            .map_err(GlobError::from)?;
-        rule::check(expression, tokens.iter())?;
-        // Remove any trailing separator tokens. Such separators are meaningless
-        // and are typically normalized in paths by removing them or ignoring
-        // them in nominal comparisons.
-        while let Some(TokenKind::Separator) = tokens.last().map(Token::kind) {
-            tokens.pop();
-        }
-        #[cfg(feature = "diagnostics")]
-        {
-            // TODO: Token sequences tend to be small (tens of tokens). It may
-            //       not be worth the additional allocation and moves to drop
-            //       annotations.
-            Ok(tokens.into_iter().map(Token::unannotate).collect())
-        }
-        #[cfg(not(feature = "diagnostics"))]
-        {
-            Ok(tokens)
-        }
+            .map_err(|error| ParseError::new(expression, error))?;
+        Ok(Tokenized {
+            expression: expression.into(),
+            tokens,
+        })
     }
 }
 
@@ -1297,11 +1346,12 @@ mod tests {
 
     #[test]
     fn literal_case_insensitivity() {
-        let tokens = token::parse("(?-i)../foo/(?i)**/bar/**(?-i)/baz/*(?i)qux").unwrap();
-        let literals: Vec<_> = tokens
-            .into_iter()
+        let tokenized = token::parse("(?-i)../foo/(?i)**/bar/**(?-i)/baz/*(?i)qux").unwrap();
+        let literals: Vec<_> = tokenized
+            .tokens()
+            .iter()
             .flat_map(|token| match token.kind {
-                TokenKind::Literal(literal) => Some(literal),
+                TokenKind::Literal(ref literal) => Some(literal),
                 _ => None,
             })
             .collect();
@@ -1316,7 +1366,7 @@ mod tests {
     #[test]
     fn invariant_prefix_path() {
         fn invariant_prefix_path(expression: &str) -> Option<PathBuf> {
-            token::invariant_prefix_path(token::parse(expression).unwrap().iter())
+            token::invariant_prefix_path(token::parse(expression).unwrap().tokens())
         }
 
         assert_eq!(invariant_prefix_path("/a/b").unwrap(), Path::new("/a/b"));

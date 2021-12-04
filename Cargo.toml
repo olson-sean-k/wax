@@ -13,13 +13,29 @@ keywords = [
     "pattern",
     "regex"
 ]
-categories = [
-    "filesystem"
+categories = ["filesystem"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = [
+    "--cfg",
+    "docsrs"
 ]
 
 [features]
 default = []
-diagnostics = ["miette"]
+# Enables all diagnostics features. See below.
+diagnostics = [
+    "diagnostics-inspect",
+    "diagnostics-report"
+]
+# Exposes glob metadata through inspection APIs.
+diagnostics-inspect = []
+# Integrates with `miette` and provides `Diagnostic` error types and reporting.
+diagnostics-report = [
+    "miette",
+    "vec1"
+]
 
 [dependencies]
 bstr = "^0.2.0"
@@ -44,6 +60,11 @@ features = [
     "std",
     "unicode-case"
 ]
+
+[dependencies.vec1]
+version = "^1.8.0"
+default-features = false
+optional = true
 
 [dev-dependencies]
 build-fs-tree = "^0.3.0"

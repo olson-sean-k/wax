@@ -9,17 +9,21 @@
 //! Most rules concern alternatives, which have complex interactions with
 //! neighboring tokens.
 
+// TODO: The `check` function fails fast and either report no errors or exactly
+//       one error. To better support diagnostics, `check` should probably
+//       perform an exhaustive analysis and report zero or more errors.
+
 use itertools::Itertools as _;
-#[cfg(feature = "diagnostics")]
-use miette::{Diagnostic, LabeledSpan, SourceCode};
+#[cfg(feature = "diagnostics-report")]
+use miette::{Diagnostic, LabeledSpan, SourceCode, SourceSpan};
 use std::borrow::Cow;
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "diagnostics-report")]
 use std::fmt::Display;
 use thiserror::Error;
 
-#[cfg(feature = "diagnostics")]
-use crate::span::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
-use crate::token::{Annotation, Token, TokenKind};
+#[cfg(feature = "diagnostics-report")]
+use crate::diagnostics::report::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
+use crate::token::{Token, TokenKind, Tokenized};
 use crate::{IteratorExt as _, SliceExt as _, Terminals};
 
 #[derive(Debug, Error)]
@@ -27,20 +31,20 @@ use crate::{IteratorExt as _, SliceExt as _, Terminals};
 pub struct RuleError<'t> {
     expression: Cow<'t, str>,
     kind: ErrorKind,
-    #[cfg(feature = "diagnostics")]
+    #[cfg(feature = "diagnostics-report")]
     span: CompositeSourceSpan,
 }
 
 impl<'t> RuleError<'t> {
     fn new(
-        expression: &'t str,
+        expression: Cow<'t, str>,
         kind: ErrorKind,
-        #[cfg(feature = "diagnostics")] span: CompositeSourceSpan,
+        #[cfg(feature = "diagnostics-report")] span: CompositeSourceSpan,
     ) -> Self {
         RuleError {
-            expression: expression.into(),
+            expression,
             kind,
-            #[cfg(feature = "diagnostics")]
+            #[cfg(feature = "diagnostics-report")]
             span,
         }
     }
@@ -49,13 +53,13 @@ impl<'t> RuleError<'t> {
         let RuleError {
             expression,
             kind,
-            #[cfg(feature = "diagnostics")]
+            #[cfg(feature = "diagnostics-report")]
             span,
         } = self;
         RuleError {
             expression: expression.into_owned().into(),
             kind,
-            #[cfg(feature = "diagnostics")]
+            #[cfg(feature = "diagnostics-report")]
             span,
         }
     }
@@ -65,10 +69,17 @@ impl<'t> RuleError<'t> {
     }
 }
 
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "diagnostics-report")]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 impl<'t> Diagnostic for RuleError<'t> {
     fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
-        Some(Box::new(String::from("glob::rule")))
+        Some(Box::new(String::from(match self.kind {
+            ErrorKind::RootedSubGlob => "wax::glob::rooted_sub_glob",
+            ErrorKind::SingularTree => "wax::glob::singular_tree",
+            ErrorKind::SingularZeroOrMore => "wax::glob::singular_zero_or_more",
+            ErrorKind::AdjacentBoundary => "wax::glob::adjacent_boundary",
+            ErrorKind::AdjacentZeroOrMore => "wax::glob::adjacent_zero_or_more",
+        })))
     }
 
     fn source_code(&self) -> Option<&dyn SourceCode> {
@@ -95,35 +106,29 @@ enum ErrorKind {
     AdjacentZeroOrMore,
 }
 
-pub fn check<'t, 'i, I>(expression: &'t str, tokens: I) -> Result<(), RuleError<'t>>
-where
-    I: IntoIterator<Item = &'i Token<'t, Annotation>>,
-    I::IntoIter: Clone,
-    't: 'i,
-{
-    let tokens = tokens.into_iter();
-    boundary(expression, tokens.clone())?;
-    group(expression, tokens)?;
+pub fn check<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
+    boundary(tokenized)?;
+    group(tokenized)?;
     Ok(())
 }
 
-fn boundary<'t, 'i, I>(expression: &'t str, tokens: I) -> Result<(), RuleError<'t>>
-where
-    I: IntoIterator<Item = &'i Token<'t, Annotation>>,
-    't: 'i,
-{
-    #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
-    if let Some((left, right)) = tokens
-        .into_iter()
+fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
+    #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
+    if let Some((left, right)) = tokenized
+        .tokens()
+        .iter()
         .tuple_windows::<(_, _)>()
         .find(|(left, right)| left.is_component_boundary() && right.is_component_boundary())
-        .map(|(left, right)| (left.annotation(), right.annotation()))
+        .map(|(left, right)| (*left.annotation(), *right.annotation()))
     {
         Err(RuleError::new(
-            expression,
+            tokenized.expression().clone(),
             ErrorKind::AdjacentBoundary,
-            #[cfg(feature = "diagnostics")]
-            CompositeSourceSpan::span(Some("here"), left.union(right)),
+            #[cfg(feature = "diagnostics-report")]
+            CompositeSourceSpan::span(
+                Some("here"),
+                SourceSpan::from(left).union(&SourceSpan::from(right)),
+            ),
         ))
     }
     else {
@@ -131,51 +136,39 @@ where
     }
 }
 
-fn group<'t, 'i, I>(expression: &'t str, tokens: I) -> Result<(), RuleError<'t>>
-where
-    I: IntoIterator<Item = &'i Token<'t, Annotation>>,
-    't: 'i,
-{
+fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     use crate::token::TokenKind::{Separator, Wildcard};
     use crate::token::Wildcard::{Tree, ZeroOrMore};
     use crate::Terminals::{Only, StartEnd};
 
     struct CorrelatedError {
         kind: ErrorKind,
-        #[cfg(feature = "diagnostics")]
+        #[cfg(feature = "diagnostics-report")]
         span: CorrelatedSourceSpan,
     }
 
     impl CorrelatedError {
-        #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
-        fn new(
-            kind: ErrorKind,
-            outer: Option<&Token<Annotation>>,
-            inner: &Token<Annotation>,
-        ) -> Self {
+        #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
+        fn new(kind: ErrorKind, outer: Option<&Token>, inner: &Token) -> Self {
             CorrelatedError {
                 kind,
-                #[cfg(feature = "diagnostics")]
+                #[cfg(feature = "diagnostics-report")]
                 span: CorrelatedSourceSpan::split_some(
-                    outer.map(Token::annotation).cloned(),
-                    inner.annotation().clone(),
+                    outer.map(Token::annotation).cloned().map(From::from),
+                    (*inner.annotation()).into(),
                 ),
             }
         }
     }
 
     #[derive(Clone, Copy, Default)]
-    struct Outer<'t, 'i> {
-        left: Option<&'i Token<'t, Annotation>>,
-        right: Option<&'i Token<'t, Annotation>>,
+    struct Outer<'i, 't> {
+        left: Option<&'i Token<'t>>,
+        right: Option<&'i Token<'t>>,
     }
 
-    impl<'t, 'i> Outer<'t, 'i> {
-        pub fn push(
-            self,
-            left: Option<&'i Token<'t, Annotation>>,
-            right: Option<&'i Token<'t, Annotation>>,
-        ) -> Self {
+    impl<'i, 't> Outer<'i, 't> {
+        pub fn push(self, left: Option<&'i Token<'t>>, right: Option<&'i Token<'t>>) -> Self {
             Outer {
                 left: left.or(self.left),
                 right: right.or(self.right),
@@ -183,13 +176,13 @@ where
         }
     }
 
-    fn has_preceding_component_boundary<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+    fn has_preceding_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| token.has_preceding_token_with(&mut |token| token.is_component_boundary()))
             .unwrap_or(false)
     }
 
-    fn has_terminating_component_boundary<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+    fn has_terminating_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
                 token.has_terminating_token_with(&mut |token| token.is_component_boundary())
@@ -197,7 +190,7 @@ where
             .unwrap_or(false)
     }
 
-    fn has_preceding_zom_token<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+    fn has_preceding_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
                 token.has_preceding_token_with(&mut |token| {
@@ -207,7 +200,7 @@ where
             .unwrap_or(false)
     }
 
-    fn has_terminating_zom_token<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+    fn has_terminating_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
                 token.has_terminating_token_with(&mut |token| {
@@ -217,10 +210,12 @@ where
             .unwrap_or(false)
     }
 
-    #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
-    fn diagnose<'t, 'i>(
-        token: &'i Token<'t, Annotation>,
-        expression: &'t str,
+    #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
+    fn diagnose<'i, 't>(
+        // This is a somewhat unusual API, but it allows the lifetime `'t` of
+        // the `Cow` to be properly forwarded to output values (`RuleError`).
+        #[allow(clippy::ptr_arg)] expression: &'i Cow<'t, str>,
+        token: &'i Token<'t>,
         label: &'static str,
     ) -> impl 'i + Copy + Fn(CorrelatedError) -> RuleError<'t>
     where
@@ -228,25 +223,31 @@ where
     {
         move |CorrelatedError {
                   kind,
-                  #[cfg(feature = "diagnostics")]
+                  #[cfg(feature = "diagnostics-report")]
                   span,
               }| {
             RuleError::new(
-                expression,
+                expression.clone(),
                 kind,
-                #[cfg(feature = "diagnostics")]
-                CompositeSourceSpan::correlated(Some(label), token.annotation().clone(), span),
+                #[cfg(feature = "diagnostics-report")]
+                CompositeSourceSpan::correlated(
+                    Some(label),
+                    SourceSpan::from(*token.annotation()),
+                    span,
+                ),
             )
         }
     }
 
-    fn recurse<'t, 'i, I>(
-        expression: &'t str,
+    fn recurse<'i, 't, I>(
+        // This is a somewhat unusual API, but it allows the lifetime `'t` of
+        // the `Cow` to be properly forwarded to output values (`RuleError`).
+        #[allow(clippy::ptr_arg)] expression: &Cow<'t, str>,
         tokens: I,
-        outer: Outer<'t, 'i>,
+        outer: Outer<'i, 't>,
     ) -> Result<(), RuleError<'t>>
     where
-        I: IntoIterator<Item = &'i Token<'t, Annotation>>,
+        I: IntoIterator<Item = &'i Token<'t>>,
         't: 'i,
     {
         for (left, token, right) in tokens
@@ -257,7 +258,7 @@ where
             match token.kind() {
                 TokenKind::Alternative(ref alternative) => {
                     let outer = outer.push(left, right);
-                    let diagnose = diagnose(token, expression, "in this alternative");
+                    let diagnose = diagnose(expression, token, "in this alternative");
                     for tokens in alternative.branches() {
                         if let Some(terminals) = tokens.terminals() {
                             check_group(terminals, outer).map_err(diagnose)?;
@@ -268,7 +269,7 @@ where
                 }
                 TokenKind::Repetition(ref repetition) => {
                     let outer = outer.push(left, right);
-                    let diagnose = diagnose(token, expression, "in this repetition");
+                    let diagnose = diagnose(expression, token, "in this repetition");
                     let tokens = repetition.tokens();
                     if let Some(terminals) = tokens.terminals() {
                         check_group(terminals, outer).map_err(diagnose)?;
@@ -284,7 +285,7 @@ where
     }
 
     fn check_group<'t>(
-        terminals: Terminals<&Token<Annotation>>,
+        terminals: Terminals<&Token>,
         outer: Outer<'t, 't>,
     ) -> Result<(), CorrelatedError> {
         let Outer { left, right } = outer;
@@ -380,7 +381,7 @@ where
     }
 
     fn check_group_alternative<'t>(
-        terminals: Terminals<&Token<Annotation>>,
+        terminals: Terminals<&Token>,
         outer: Outer<'t, 't>,
     ) -> Result<(), CorrelatedError> {
         let Outer { left, .. } = outer;
@@ -407,7 +408,7 @@ where
     }
 
     fn check_group_repetition<'t>(
-        terminals: Terminals<&Token<Annotation>>,
+        terminals: Terminals<&Token>,
         outer: Outer<'t, 't>,
         bounds: (usize, Option<usize>),
     ) -> Result<(), CorrelatedError> {
@@ -465,5 +466,9 @@ where
         }
     }
 
-    recurse(expression, tokens, Default::default())
+    recurse(
+        tokenized.expression(),
+        tokenized.tokens(),
+        Default::default(),
+    )
 }

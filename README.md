@@ -25,18 +25,18 @@ if glob.is_match("logo.png") {
 }
 ```
 
-Match a specific path against a glob and extract captures:
+Match a specific path against a glob with matched sub-text (captures):
 
 ```rust
-use wax::{EncodedPath, Glob};
+use wax::{CandidatePath, Glob};
 
 let glob = Glob::new("**/{*.{go,rs}}").unwrap();
 
-let path = EncodedPath::from("src/main.go");
-let captures = glob.captures(&path).unwrap();
+let path = CandidatePath::from("src/main.go");
+let matched = glob.matched(&path).unwrap();
 
 // Prints `main.go`.
-println!("{}", captures.get(2).unwrap());
+println!("{}", matched.get(2).unwrap());
 ```
 
 Match files in a directory tree against a glob:
@@ -93,6 +93,10 @@ let glob = Glob::new("**/*.{go,rs}").unwrap();
 assert!(glob.is_match("src/lib.rs"));
 ```
 
+Patterns form captures that can be used to extract matched sub-text (as seen in
+many regular expression engines). In the above example, there are three patterns
+that can be queried for matched sub-text: `**/`, `*`, and `{go,rs}`.
+
 Globs use a consistent and opinionated format and patterns are **not**
 configurable; the semantics of a particular glob are always the same. For
 example, `*` **never** matches across component boundaries.
@@ -118,14 +122,14 @@ a single capture, such as `{???}`.
 The tree wildcard `**` matches zero or more sub-directories. **This is the only
 wildcard that may match across arbitrary component boundaries**; all other
 wildcards do **not** match across component (directory) boundaries. When a tree
-wildcard participates in a match and does not terminate the pattern, its capture
-includes the trailing separator. If a tree wildcard does not participate in a
-match, then its capture is an empty string. Tree wildcards must be delimited by
-forward slashes or terminations (such as the beginning and/or end of a glob or
-sub-glob). Tree wildcards and path separators are distinct and any adjacent
-forward slashes that form a tree wildcard are parsed together. If a glob
-expression consists solely of a tree wildcard, then it matches any and all files
-in the working directory tree.
+wildcard participates in a match and does not terminate the pattern, its
+captured text includes the trailing separator. If a tree wildcard does not
+participate in a match, then its captured text is an empty string. Tree
+wildcards must be delimited by forward slashes or terminations (such as the
+beginning and/or end of a glob or sub-glob). Tree wildcards and path separators
+are distinct and any adjacent forward slashes that form a tree wildcard are
+parsed together. If a glob expression consists solely of a tree wildcard, then
+it matches any and all files in the working directory tree.
 
 ### Character Classes
 
@@ -171,9 +175,9 @@ composed with [repetitions](#repetitions).
 
 Alternatives form a single capture group regardless of the contents of their
 sub-globs. This capture is formed from the complete match of the sub-glob, so if
-the sub-glob `a?c` matches `abc` in `{a?c,x?z}`, then the capture text will be
+the sub-glob `a?c` matches `abc` in `{a?c,x?z}`, then the captured text will be
 `abc` (**not** `b` as it would be outside of an alternative sequence).
-Alternatives can be used to group capture text using a single sub-glob, such as
+Alternatives can be used to group captures using a single sub-glob, such as
 `{*.{go,rs}}` to capture an entire file name with a particular extension or
 `{???}` to group a sequence of exactly-one wildcards.
 
@@ -204,7 +208,7 @@ zero or more times, so `<a>` and `<a:0,>` are equivalent.
 
 Repetitions form a singular capture group regardless of the contents of their
 sub-glob. The capture is formed from the complete match of the sub-glob. If the
-repetition `<abc/>` matches `abc/abc/`, then the capture text will be
+repetition `<abc/>` matches `abc/abc/`, then the captured text will be
 `abc/abc/`.
 
 Repetitions compose particularly well with [character
@@ -255,7 +259,8 @@ about failures.
 
 Wax optionally integrates with the [`miette`][miette] crate, which can be used
 to capture and display diagnostics. This can be useful for reporting errors to
-users that provide glob expressions.
+users that provide glob expressions. Diagnostic reporting, including warnings
+and help diagnostics, can be enabled with the `diagnostics-report` feature.
 
 ```
 Error: glob::rule
@@ -270,8 +275,20 @@ Error: glob::rule
    `----
 ```
 
+Wax also provides inspection APIs that allow code to query glob metadata.
+Diagnostic inspection can be enabled with the `diagnostics-inspect` feature.
+
+```rust
+use wax::Glob;
+
+let glob = Glob::new("videos/**/{*.{mp4,webm}}").unwrap();
+println!("glob has {} captures", glob.captures().count());
+```
+
 Diagnostics are disabled by default and can be enabled with the `diagnostics`
-feature. This can be done via Cargo in a crate's `Cargo.toml` file.
+meta-feature, which enables both the `diagnostics-inspect` and
+`diagnostics-report` features. This can be done via Cargo in a crate's
+`Cargo.toml` file.
 
 ```toml
 [dependency.wax]
@@ -346,7 +363,7 @@ relative to some such working directory.
 ### Encoding
 
 Globs operate exclusively on UTF-8 encoded text. However, this encoding is not
-used for file names and paths on all platforms. Wax uses the [`EncodedPath`]
+used for file names and paths on all platforms. Wax uses the [`CandidatePath`]
 type to re-encode native paths via lossy conversions that use Unicode
 replacement codepoints whenever a part of a path cannot be represented as valid
 UTF-8. On some platforms these conversions are always no-ops. In practice, the
@@ -356,14 +373,14 @@ overwhelming majority of paths can be losslessly encoded in UTF-8.
 
 At the time of writing, Wax is experimental and unstable. It is possible that
 glob expression syntax and semantics may change between versions in the `0.y.z`
-series without warning.
+series without warning nor deprecation.
 
 [miette]: https://github.com/zkat/miette
 [nym]: https://github.com/olson-sean-k/nym
 [thiserror]: https://github.com/dtolnay/thiserror
 
 [`Display`]: https://doc.rust-lang.org/std/fmt/trait.Display.html
-[`EncodedPath`]: https://docs.rs/wax/*/wax/struct.EncodedPath.html
+[`CandidatePath`]: https://docs.rs/wax/*/wax/struct.CandidatePath.html
 [`Error`]: https://doc.rust-lang.org/std/error/trait.Error.html
 [`Glob`]: https://docs.rs/wax/*/wax/struct.Glob.html
 [`Glob::has_semantic_literals`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.has_semantic_literals

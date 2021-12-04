@@ -552,7 +552,7 @@ where
     }
 }
 
-#[cfg_attr(not(feature = "diagnostics"), allow(unused))]
+#[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
 pub fn span<'i, T, I, O, E, F>(mut parser: F) -> impl FnMut(I) -> IResult<I, ((usize, usize), O), E>
 where
     T: 'i + ?Sized,
