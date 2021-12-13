@@ -53,8 +53,8 @@ struct ErrorLocation {
     context: String,
 }
 
-impl<'e, 'i> From<TreeEntry<'e, Input<'i>>> for ErrorLocation {
-    fn from(entry: TreeEntry<'e, Input<'i>>) -> Self {
+impl<'e, 'i> From<ErrorEntry<'e, Input<'i>>> for ErrorLocation {
+    fn from(entry: ErrorEntry<'e, Input<'i>>) -> Self {
         ErrorLocation {
             location: entry.input.location(),
             context: entry.context.to_string(),
@@ -77,28 +77,28 @@ impl Display for ErrorLocation {
 }
 
 #[derive(Clone, Debug)]
-struct TreeEntry<'e, I> {
+struct ErrorEntry<'e, I> {
     depth: usize,
     input: &'e I,
-    context: TreeContext<'e>,
+    context: ErrorContext<'e>,
 }
 
 #[derive(Clone, Debug)]
-enum TreeContext<'e> {
+enum ErrorContext<'e> {
     Kind(&'e BaseErrorKind),
     Stack(&'e StackContext),
 }
 
-impl<'e> Display for TreeContext<'e> {
+impl<'e> Display for ErrorContext<'e> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            TreeContext::Kind(kind) => match kind {
+            ErrorContext::Kind(kind) => match kind {
                 BaseErrorKind::Expected(_) | BaseErrorKind::Kind(_) => write!(f, "{}", kind),
                 // Omit any "external error" prefix as seen in the `Display`
                 // implementation of `BaseErrorKind`.
                 BaseErrorKind::External(error) => write!(f, "{}", error),
             },
-            TreeContext::Stack(stack) => write!(f, "{}", stack),
+            ErrorContext::Stack(stack) => write!(f, "{}", stack),
         }
     }
 }
@@ -106,7 +106,7 @@ impl<'e> Display for TreeContext<'e> {
 trait ErrorTreeExt<I> {
     fn for_each<F>(&self, f: F)
     where
-        F: FnMut(TreeEntry<I>);
+        F: FnMut(ErrorEntry<I>);
 
     fn bounding_error_locations(&self) -> (Vec<ErrorLocation>, Vec<ErrorLocation>);
 }
@@ -114,30 +114,30 @@ trait ErrorTreeExt<I> {
 impl<'i> ErrorTreeExt<Input<'i>> for ErrorTree<'i> {
     fn for_each<F>(&self, mut f: F)
     where
-        F: FnMut(TreeEntry<Input<'i>>),
+        F: FnMut(ErrorEntry<Input<'i>>),
     {
         fn recurse<'i, F>(tree: &'_ ErrorTree<'i>, depth: usize, f: &mut F)
         where
-            F: FnMut(TreeEntry<Input<'i>>),
+            F: FnMut(ErrorEntry<Input<'i>>),
         {
             match tree {
                 ErrorTree::Base {
                     ref location,
                     ref kind,
-                } => f(TreeEntry {
+                } => f(ErrorEntry {
                     depth,
                     input: location,
-                    context: TreeContext::Kind(kind),
+                    context: ErrorContext::Kind(kind),
                 }),
                 ErrorTree::Stack {
                     ref base,
                     ref contexts,
                 } => {
                     for (location, context) in contexts {
-                        f(TreeEntry {
+                        f(ErrorEntry {
                             depth: depth + 1,
                             input: location,
-                            context: TreeContext::Stack(context),
+                            context: ErrorContext::Stack(context),
                         })
                     }
                     recurse(base, depth + 1, f);
