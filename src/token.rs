@@ -31,7 +31,7 @@ use thiserror::Error;
 use crate::diagnostics::Span;
 #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 use crate::fragment;
-use crate::fragment::{Locate, Stateful};
+use crate::fragment::{Located, Location, Stateful};
 use crate::{SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
 
 #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
@@ -42,21 +42,21 @@ pub type Annotation = Span;
 ))]
 pub type Annotation = ();
 
-type Expression<'i> = Locate<'i, str>;
+type Expression<'i> = Located<'i, str>;
 type Input<'i> = Stateful<Expression<'i>, ParserState>;
 type ErrorTree<'i> = supreme::ErrorTree<Input<'i>>;
 type ErrorMode<'t> = nom::Err<ErrorTree<'t>>;
 
 #[derive(Clone, Debug)]
 struct ErrorLocation {
-    offset: usize,
+    location: usize,
     context: String,
 }
 
 impl<'e, 'i> From<TreeEntry<'e, Input<'i>>> for ErrorLocation {
     fn from(entry: TreeEntry<'e, Input<'i>>) -> Self {
         ErrorLocation {
-            offset: entry.input.offset(),
+            location: entry.input.location(),
             context: entry.context.to_string(),
         }
     }
@@ -65,14 +65,14 @@ impl<'e, 'i> From<TreeEntry<'e, Input<'i>>> for ErrorLocation {
 #[cfg(feature = "diagnostics-report")]
 impl From<ErrorLocation> for LabeledSpan {
     fn from(location: ErrorLocation) -> Self {
-        let ErrorLocation { offset, context } = location;
-        LabeledSpan::new(Some(context), offset, 1)
+        let ErrorLocation { location, context } = location;
+        LabeledSpan::new(Some(context), location, 1)
     }
 }
 
 impl Display for ErrorLocation {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "at offset {}: {}", self.offset, self.context)
+        write!(f, "at offset {}: {}", self.location, self.context)
     }
 }
 
@@ -243,15 +243,15 @@ impl<'t> Diagnostic for ParseError<'t> {
         Some(Box::new(
             Some(LabeledSpan::new(
                 Some(String::from("starting here")),
-                self.start.offset,
+                self.start.location,
                 1,
             ))
             .into_iter()
             .chain(self.ends.iter().cloned().map(|end| {
                 LabeledSpan::new(
                     Some(end.context),
-                    self.start.offset,
-                    end.offset.saturating_sub(self.start.offset) + 1,
+                    self.start.location,
+                    end.location.saturating_sub(self.start.location) + 1,
                 )
             })),
         ))
@@ -970,7 +970,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     type ParseResult<'i, O> = IResult<Input<'i>, O, ErrorTree<'i>>;
 
     fn boe(input: Input) -> ParseResult<Input> {
-        if input.state.subexpression == input.offset() {
+        if input.state.subexpression == input.location() {
             Ok((input, input))
         }
         else {
@@ -1276,7 +1276,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
         }
 
         move |mut input: Input<'i>| {
-            input.state.subexpression = input.offset();
+            input.state.subexpression = input.location();
             supreme::many1(
                 branch::alt((
                     annotate(sequence::preceded(flags_with_state, literal)).context("literal"),

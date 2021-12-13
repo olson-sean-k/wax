@@ -9,74 +9,65 @@ use std::ops::{Deref, RangeFrom, RangeTo};
 
 // TODO: Move this into its own crate.
 
-#[derive(Debug, Eq, Hash, PartialEq)]
-pub struct Locate<'i, T>
-where
-    T: ?Sized,
-{
-    data: &'i T,
-    offset: usize,
+pub trait Location {
+    fn location(&self) -> usize;
 }
 
-impl<'i, T> Locate<'i, T>
+#[derive(Debug, Eq, Hash, PartialEq)]
+pub struct Located<'i, I>
 where
-    T: ?Sized,
+    I: ?Sized,
 {
-    pub fn into_data(self) -> &'i T {
+    data: &'i I,
+    location: usize,
+}
+
+impl<'i, I> Located<'i, I>
+where
+    I: ?Sized,
+{
+    pub fn into_data(self) -> &'i I {
         self.data
     }
-
-    pub fn offset(&self) -> usize {
-        self.offset
-    }
 }
 
-impl<'i, T> AsBytes for Locate<'i, T>
+impl<'i, I> AsBytes for Located<'i, I>
 where
-    T: ?Sized,
-    &'i T: AsBytes,
+    I: ?Sized,
+    &'i I: AsBytes,
 {
     fn as_bytes(&self) -> &[u8] {
         self.data.as_bytes()
     }
 }
 
-impl<'i, T> AsRef<Self> for Locate<'i, T>
+impl<'i, I> AsRef<I> for Located<'i, I>
 where
-    T: ?Sized,
+    I: ?Sized,
 {
-    fn as_ref(&self) -> &Self {
-        self
-    }
-}
-
-impl<'i, T> AsRef<T> for Locate<'i, T>
-where
-    T: ?Sized,
-{
-    fn as_ref(&self) -> &T {
+    fn as_ref(&self) -> &I {
         self.data
     }
 }
 
-impl<'i, T> Clone for Locate<'i, T>
+impl<'i, I> Clone for Located<'i, I>
 where
-    T: ?Sized,
+    I: ?Sized,
 {
     fn clone(&self) -> Self {
-        Locate {
+        Located {
             data: self.data,
-            offset: self.offset,
+            location: self.location,
         }
     }
 }
 
-impl<'i, 'u, T, U> Compare<&'u U> for Locate<'i, T>
+impl<'i, 'u, I, U> Compare<&'u U> for Located<'i, I>
 where
-    T: ?Sized,
+    I: ?Sized,
     U: ?Sized,
-    &'i T: Compare<&'u U>,
-    &'u U: Into<Locate<'u, U>>,
+    &'i I: Compare<&'u U>,
+    &'u U: Into<Located<'u, U>>,
 {
     fn compare(&self, other: &'u U) -> CompareResult {
         self.data.compare(other.into().data)
@@ -87,35 +78,35 @@ where
     }
 }
 
-impl<'i, T> Copy for Locate<'i, T> where T: ?Sized {}
+impl<'i, I> Copy for Located<'i, I> where I: ?Sized {}
 
-impl<'i, T> Deref for Locate<'i, T>
+impl<'i, I> Deref for Located<'i, I>
 where
-    T: ?Sized,
+    I: ?Sized,
 {
-    type Target = T;
+    type Target = I;
 
     fn deref(&self) -> &Self::Target {
         self.as_ref()
     }
 }
 
-impl<'i, T> Display for Locate<'i, T>
+impl<'i, I> Display for Located<'i, I>
 where
-    T: Display + ?Sized,
+    I: Display + ?Sized,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         Display::fmt(self.data, f)
     }
 }
 
-impl<'i, T> ExtendInto for Locate<'i, T>
+impl<'i, I> ExtendInto for Located<'i, I>
 where
-    T: ?Sized,
-    &'i T: ExtendInto,
+    I: ?Sized,
+    &'i I: ExtendInto,
 {
-    type Item = <&'i T as ExtendInto>::Item;
-    type Extender = <&'i T as ExtendInto>::Extender;
+    type Item = <&'i I as ExtendInto>::Item;
+    type Extender = <&'i I as ExtendInto>::Extender;
 
     fn new_builder(&self) -> Self::Extender {
         self.data.new_builder()
@@ -126,32 +117,32 @@ where
     }
 }
 
-impl<'i, T> From<Locate<'i, T>> for Cow<'i, T>
+impl<'i, I> From<Located<'i, I>> for Cow<'i, I>
 where
-    T: ?Sized + ToOwned,
+    I: ?Sized + ToOwned,
 {
-    fn from(fragment: Locate<'i, T>) -> Self {
+    fn from(fragment: Located<'i, I>) -> Self {
         Cow::Borrowed(fragment.data)
     }
 }
 
-impl<'i, T> From<&'i T> for Locate<'i, T>
+impl<'i, I> From<&'i I> for Located<'i, I>
 where
-    T: ?Sized,
+    I: ?Sized,
 {
-    fn from(data: &'i T) -> Self {
-        Locate { data, offset: 0 }
+    fn from(data: &'i I) -> Self {
+        Located { data, location: 0 }
     }
 }
 
-impl<'i, T> InputIter for Locate<'i, T>
+impl<'i, I> InputIter for Located<'i, I>
 where
-    T: ?Sized,
-    &'i T: InputIter,
+    I: ?Sized,
+    &'i I: InputIter,
 {
-    type Item = <&'i T as InputIter>::Item;
-    type Iter = <&'i T as InputIter>::Iter;
-    type IterElem = <&'i T as InputIter>::IterElem;
+    type Item = <&'i I as InputIter>::Item;
+    type Iter = <&'i I as InputIter>::Iter;
+    type IterElem = <&'i I as InputIter>::IterElem;
 
     fn iter_indices(&self) -> Self::Iter {
         self.data.iter_indices()
@@ -173,19 +164,19 @@ where
     }
 }
 
-impl<'i, T> InputLength for Locate<'i, T>
+impl<'i, I> InputLength for Located<'i, I>
 where
-    T: ?Sized,
-    &'i T: InputLength,
+    I: ?Sized,
+    &'i I: InputLength,
 {
     fn input_len(&self) -> usize {
         self.data.input_len()
     }
 }
 
-impl<'i, T> InputTake for Locate<'i, T>
+impl<'i, I> InputTake for Located<'i, I>
 where
-    T: ?Sized,
+    I: ?Sized,
     Self: Slice<RangeFrom<usize>> + Slice<RangeTo<usize>>,
 {
     fn take(&self, count: usize) -> Self {
@@ -197,13 +188,13 @@ where
     }
 }
 
-impl<'i, T> InputTakeAtPosition for Locate<'i, T>
+impl<'i, I> InputTakeAtPosition for Located<'i, I>
 where
-    T: ?Sized,
-    &'i T: InputIter + InputLength + InputTakeAtPosition,
+    I: ?Sized,
+    &'i I: InputIter + InputLength + InputTakeAtPosition,
     Self: Slice<RangeFrom<usize>> + Slice<RangeTo<usize>>,
 {
-    type Item = <&'i T as InputIter>::Item;
+    type Item = <&'i I as InputIter>::Item;
 
     fn split_at_position_complete<P, E>(&self, predicate: P) -> IResult<Self, Self, E>
     where
@@ -263,27 +254,35 @@ where
     }
 }
 
-impl<'i, T> Offset for Locate<'i, T>
+impl<'i, I> Location for Located<'i, I>
 where
-    T: ?Sized,
+    I: ?Sized,
 {
-    fn offset(&self, other: &Self) -> usize {
-        assert!(other.offset >= self.offset);
-        other.offset - self.offset
+    fn location(&self) -> usize {
+        self.location
     }
 }
 
-impl<'i, T, R> Slice<R> for Locate<'i, T>
+impl<'i, I> Offset for Located<'i, I>
 where
-    T: ?Sized,
-    &'i T: AsBytes + Offset + Slice<R> + Slice<RangeTo<usize>>,
+    I: ?Sized,
+{
+    fn offset(&self, other: &Self) -> usize {
+        other.location.saturating_sub(self.location)
+    }
+}
+
+impl<'i, I, R> Slice<R> for Located<'i, I>
+where
+    I: ?Sized,
+    &'i I: AsBytes + Offset + Slice<R> + Slice<RangeTo<usize>>,
 {
     fn slice(&self, range: R) -> Self {
         let sliced = self.data.slice(range);
         let offset = self.data.offset(&sliced);
-        Locate {
+        Located {
             data: sliced,
-            offset: self.offset + offset,
+            location: self.location + offset,
         }
     }
 }
@@ -512,6 +511,15 @@ where
     }
 }
 
+impl<I, T> Location for Stateful<I, T>
+where
+    I: Location,
+{
+    fn location(&self) -> usize {
+        self.data.location()
+    }
+}
+
 impl<I, T> Offset for Stateful<I, T>
 where
     I: Offset,
@@ -538,13 +546,12 @@ where
 // This function should be provided if/when this module is refactored into its
 // own crate.
 #[allow(unused)]
-pub fn bof<'i, T, I, E>(input: I) -> IResult<I, I, E>
+pub fn bof<I, E>(input: I) -> IResult<I, I, E>
 where
-    T: 'i + ?Sized,
-    I: AsRef<Locate<'i, T>> + Clone,
+    I: Clone + Location,
     E: ParseError<I>,
 {
-    if input.as_ref().offset() == 0 {
+    if input.location() == 0 {
         Ok((input.clone(), input))
     }
     else {
@@ -553,19 +560,17 @@ where
 }
 
 #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
-pub fn span<'i, T, I, O, E, F>(mut parser: F) -> impl FnMut(I) -> IResult<I, ((usize, usize), O), E>
+pub fn span<I, O, E, F>(mut parser: F) -> impl FnMut(I) -> IResult<I, ((usize, usize), O), E>
 where
-    T: 'i + ?Sized,
-    I: AsRef<Locate<'i, T>>,
+    I: Clone + Location,
     E: ParseError<I>,
     F: Parser<I, O, E>,
 {
     move |input: I| {
-        let locate = *input.as_ref();
-        let start = locate.offset();
+        let start = input.location();
         parser.parse(input).map(move |(remaining, output)| {
-            let n = Offset::offset(&locate, remaining.as_ref());
-            (remaining, ((start, n), output))
+            let end = remaining.location();
+            (remaining, ((start, end.saturating_sub(start)), output))
         })
     }
 }
