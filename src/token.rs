@@ -16,6 +16,7 @@ mod supreme {
 use itertools::Itertools as _;
 #[cfg(feature = "diagnostics-report")]
 use miette::{self, Diagnostic, LabeledSpan, SourceCode};
+use pori::{Located, Location, Stateful};
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
 use std::cmp;
@@ -29,9 +30,6 @@ use thiserror::Error;
 
 #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 use crate::diagnostics::Span;
-#[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
-use crate::fragment;
-use crate::fragment::{Located, Location, Stateful};
 use crate::{SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
 
 #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
@@ -1257,9 +1255,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
         where
             F: 'i + Parser<Input<'i>, TokenKind<'i, Annotation>, ErrorTree<'i>>,
         {
-            combinator::map(fragment::span(parser), |(span, kind)| {
-                Token::new(kind, span)
-            })
+            combinator::map(pori::span(parser), |(span, kind)| Token::new(kind, span))
         }
 
         #[cfg(all(

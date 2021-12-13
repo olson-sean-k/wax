@@ -13,7 +13,6 @@
 mod capture;
 mod diagnostics;
 mod encode;
-mod fragment;
 mod rule;
 mod token;
 
