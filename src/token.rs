@@ -256,6 +256,12 @@ impl<'t> Diagnostic for ParseError<'t> {
     }
 }
 
+pub trait IntoTokens<'t>: Sized {
+    type Annotation;
+
+    fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>>;
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct ParserState {
     flags: FlagState,
@@ -317,6 +323,15 @@ impl<'t, A> Tokenized<'t, A> {
     }
 }
 
+impl<'t, A> IntoTokens<'t> for Tokenized<'t, A> {
+    type Annotation = A;
+
+    fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>> {
+        let Tokenized { tokens, .. } = self;
+        tokens
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Token<'t, A = Annotation> {
     kind: TokenKind<'t, A>,
@@ -333,6 +348,14 @@ impl<'t, A> Token<'t, A> {
         Token {
             kind: kind.into_owned(),
             annotation,
+        }
+    }
+
+    pub fn unannotate(self) -> Token<'t, ()> {
+        let Token { kind, .. } = self;
+        Token {
+            kind: kind.unannotate(),
+            annotation: (),
         }
     }
 
@@ -443,6 +466,17 @@ impl<'t, A> TokenKind<'t, A> {
         }
     }
 
+    pub fn unannotate(self) -> TokenKind<'t, ()> {
+        match self {
+            TokenKind::Alternative(alternative) => TokenKind::Alternative(alternative.unannotate()),
+            TokenKind::Class(class) => TokenKind::Class(class),
+            TokenKind::Literal(literal) => TokenKind::Literal(literal),
+            TokenKind::Repetition(repetition) => TokenKind::Repetition(repetition.unannotate()),
+            TokenKind::Separator => TokenKind::Separator,
+            TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
+        }
+    }
+
     pub fn unroot(&mut self) -> bool {
         match self {
             TokenKind::Wildcard(Wildcard::Tree { ref mut is_rooted }) => {
@@ -519,6 +553,16 @@ impl<'t, A> Alternative<'t, A> {
             self.0
                 .into_iter()
                 .map(|tokens| tokens.into_iter().map(Token::into_owned).collect())
+                .collect(),
+        )
+    }
+
+    pub fn unannotate(self) -> Alternative<'t, ()> {
+        let Alternative(branches) = self;
+        Alternative(
+            branches
+                .into_iter()
+                .map(|branch| branch.into_iter().map(|token| token.unannotate()).collect())
                 .collect(),
         )
     }
@@ -703,6 +747,19 @@ impl<'t, A> Repetition<'t, A> {
         }
     }
 
+    pub fn unannotate(self) -> Repetition<'t, ()> {
+        let Repetition {
+            tokens,
+            lower,
+            step,
+        } = self;
+        Repetition {
+            tokens: tokens.into_iter().map(|token| token.unannotate()).collect(),
+            lower,
+            step,
+        }
+    }
+
     pub fn tokens(&self) -> &Vec<Token<'t, A>> {
         &self.tokens
     }
@@ -821,6 +878,23 @@ impl<'i, 't, A> Component<'i, 't, A> {
 impl<'i, 't, A> Clone for Component<'i, 't, A> {
     fn clone(&self) -> Self {
         Component(self.0.clone())
+    }
+}
+
+pub fn any<'t, A, I>(tokens: I) -> Token<'t, ()>
+where
+    I: IntoIterator,
+    I::Item: IntoIterator<Item = Token<'t, A>>,
+{
+    Token {
+        kind: Alternative(
+            tokens
+                .into_iter()
+                .map(|tokens| tokens.into_iter().map(|token| token.unannotate()).collect())
+                .collect(),
+        )
+        .into(),
+        annotation: (),
     }
 }
 

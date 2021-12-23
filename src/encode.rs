@@ -90,9 +90,9 @@ impl Grouping {
     }
 }
 
-pub fn compile<'t, T>(tokens: impl IntoIterator<Item = T>) -> Regex
+pub fn compile<'t, A, T>(tokens: impl IntoIterator<Item = T>) -> Regex
 where
-    T: Borrow<Token<'t>>,
+    T: Borrow<Token<'t, A>>,
 {
     let mut pattern = String::new();
     pattern.push('^');
@@ -101,13 +101,13 @@ where
     Regex::new(&pattern).expect("glob compilation failed")
 }
 
-fn encode<'t, T>(
+fn encode<'t, A, T>(
     grouping: Grouping,
     superposition: Option<Position<()>>,
     pattern: &mut String,
     tokens: impl IntoIterator<Item = T>,
 ) where
-    T: Borrow<Token<'t>>,
+    T: Borrow<Token<'t, A>>,
 {
     use itertools::Position::{First, Last, Middle, Only};
 

@@ -14,10 +14,10 @@ boundaries.
 
 ## Basic Usage
 
-Match a specific path against a glob:
+Match a path against a glob:
 
 ```rust
-use wax::Glob;
+use wax::{Glob, Pattern};
 
 let glob = Glob::new("*.png").unwrap();
 if glob.is_match("logo.png") {
@@ -25,10 +25,10 @@ if glob.is_match("logo.png") {
 }
 ```
 
-Match a specific path against a glob with matched text (captures):
+Match a path against a glob with matched text (captures):
 
 ```rust
-use wax::{CandidatePath, Glob};
+use wax::{CandidatePath, Glob, Pattern};
 
 let glob = Glob::new("**/{*.{go,rs}}").unwrap();
 
@@ -46,6 +46,22 @@ use wax::Glob;
 
 let glob = Glob::new("**/*.{md,txt}").unwrap();
 for entry in glob.walk("doc", usize::MAX) {
+    // ...
+}
+```
+
+Match a path against multiple globs:
+
+```rust
+use wax::{Glob, Pattern};
+
+let any = wax::any::<Glob, _>([
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "doc/**/*.md",
+    "pkg/**/PKGBUILD",
+]).unwrap();
+if any.is_match("src/token/mod.rs") {
     // ...
 }
 ```
@@ -228,6 +244,48 @@ zero-or-more wildcard `*` or `$`, nor a singular tree wildcard `**`. Repetitions
 with a lower bound of zero may not root a glob expression, as this could cause
 the expression to match or walk overlapping trees.
 
+## Combinators
+
+Glob patterns can be combined and matched together using the [`any`] combinator.
+[`any`] accepts an [`IntoIterator`] type with items that can be converted into a
+type that implements [`Pattern`] (most notably [`Glob`]). The output is an
+[`Any`], which implements [`Pattern`] and efficiently matches any of its input
+patterns. This is often more ergonomic and faster than matching against multiple
+[`Glob`]s.
+
+```rust
+use wax::{Glob, Pattern};
+
+let any = wax::any::<Glob, _>(["**/*.txt", "src/**/*.rs"]).unwrap();
+if any.is_match("src/lib.rs") {
+    // ...
+}
+```
+
+The first type parameter determines to which [`Pattern`] type the input items
+are converted and is typically [`Glob`].
+
+Because [`any`] accepts any types that can be converted into a [`Pattern`] type,
+it is possible to combine opaque patterns from foreign code (i.e., [`Glob`]s
+obtained from functions in external crates).
+
+```rust
+extern crate foreign;
+
+use wax::{Glob, Pattern};
+
+let theirs: Glob = foreign::get().unwrap();
+let mine = Glob::new("**/*.txt").unwrap();
+
+if wax::any::<Glob, _>([theirs, mine]).unwrap().is_match("src/README.txt") {
+    // ...
+}
+```
+
+Unlike [alternatives](#alternatives), [`Any`] supports patterns with overlapping
+trees (rooted and unrooted expressions). However, it is not possible to match an
+[`Any`] against a directory tree (as with `Glob::walk`).
+
 ## Flags and Case Sensitivity
 
 Flags toggle the matching behavior of globs. Importantly, flags are a part of a
@@ -382,6 +440,8 @@ series without warning nor deprecation.
 [nym]: https://github.com/olson-sean-k/nym
 [thiserror]: https://github.com/dtolnay/thiserror
 
+[`any`]: https://docs.rs/wax/*/wax/fn.any.html
+[`Any`]: https://docs.rs/wax/*/wax/struct.Any.html
 [`CandidatePath`]: https://docs.rs/wax/*/wax/struct.CandidatePath.html
 [`Display`]: https://doc.rust-lang.org/std/fmt/trait.Display.html
 [`Error`]: https://doc.rust-lang.org/std/error/trait.Error.html
@@ -389,4 +449,6 @@ series without warning nor deprecation.
 [`Glob::has_semantic_literals`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.has_semantic_literals
 [`Glob::partitioned`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.partitioned
 [`GlobError`]: https://docs.rs/wax/*/wax/enum.GlobError.html
+[`IntoIterator`]: https://doc.rust-lang.org/std/iter/trait.IntoIterator.html
 [`PathBuf`]: https://doc.rust-lang.org/std/path/struct.PathBuf.html
+[`Pattern`]: https://docs.rs/wax/*/wax/trait.Pattern.html
