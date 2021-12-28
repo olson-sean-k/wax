@@ -899,6 +899,14 @@ pub fn is_match<'p>(
     Ok(glob.is_match(path))
 }
 
+pub fn matched<'i, 'p>(
+    expression: &'i str,
+    path: &'p CandidatePath<'_>,
+) -> Result<Option<MatchedText<'p>>, GlobError<'i>> {
+    let glob = Glob::new(expression)?;
+    Ok(glob.matched(path))
+}
+
 pub fn walk(
     expression: &str,
     directory: impl AsRef<Path>,
