@@ -301,7 +301,7 @@ impl<'t, A> Tokenized<'t, A> {
         }
     }
 
-    pub fn partition(&mut self) -> PathBuf {
+    pub fn partition(mut self) -> (PathBuf, Self) {
         // Get the invariant prefix for the token sequence.
         let prefix = invariant_prefix_path(self.tokens.iter()).unwrap_or_else(PathBuf::new);
 
@@ -311,7 +311,7 @@ impl<'t, A> Tokenized<'t, A> {
             .drain(0..invariant_prefix_upper_bound(&self.tokens));
         self.tokens.first_mut().map(Token::unroot);
 
-        prefix
+        (prefix, self)
     }
 
     pub fn expression(&self) -> &Cow<'t, str> {

@@ -476,8 +476,8 @@ impl<'t> Glob<'t> {
     /// prefix can be used to interact with native paths as needed for a given
     /// application.
     pub fn partitioned(expression: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
-        let mut tokenized = parse_and_check(expression)?;
-        let prefix = tokenized.partition();
+        let tokenized = parse_and_check(expression)?;
+        let (prefix, tokenized) = tokenized.partition();
         let regex = Glob::compile(tokenized.tokens());
         Ok((prefix, Glob { tokenized, regex }))
     }
@@ -576,8 +576,8 @@ impl<'t> DiagnosticGlob<'t> for Glob<'t> {
     }
 
     fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Self)> {
-        parse_and_diagnose(expression).map(|(mut tokenized, diagnostics)| {
-            let prefix = tokenized.partition();
+        parse_and_diagnose(expression).map(|(tokenized, diagnostics)| {
+            let (prefix, tokenized) = tokenized.partition();
             let regex = Glob::compile(tokenized.tokens());
             ((prefix, Glob { tokenized, regex }), diagnostics)
         })
