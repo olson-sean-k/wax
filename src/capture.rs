@@ -74,12 +74,48 @@ impl From<OwnedText> for MaybeOwnedText<'static> {
     }
 }
 
+/// Text that has been matched by a [`Pattern`] and its captures.
+///
+/// To test a [`Glob`] or other [`Pattern`] against a [`CandidatePath`] and get
+/// the matched text, use the [`Pattern::matched`] function.
+///
+/// All [`Pattern`]s provide an implicit capture of the complete text of a
+/// match. This implicit capture has index zero, and is exposed via the
+/// [`complete`] function as well as the [`get`] function using index zero.
+/// Capturing tokens are indexed starting at one, and can be used to isolate
+/// more specific sub-text.
+///
+/// # Examples
+///
+/// Capturing tokens and matched text can be used to isolate sub-text in a
+/// match. For example, the file name of a match can be extracted using an
+/// alternative to group patterns.
+///
+/// ```rust
+/// use wax::{CandidatePath, Glob, Pattern};
+///
+/// let glob = Glob::new("src/**/{*.{go,rs}}").unwrap();
+/// let candidate = CandidatePath::from("src/graph/link.rs");
+/// let matched = glob.matched(&candidate).unwrap();
+///
+/// # assert_eq!("link.rs", matched.get(2).unwrap());
+/// // Prints `link.rs`.
+/// println!("{}", matched.get(2).unwrap());
+/// ```
+///
+/// [`CandidatePath`]: crate::CandidatePath
+/// [`complete`]: crate::MatchedText::complete
+/// [`get`]: crate::MatchedText::get
+/// [`Glob`]: crate::Glob
+/// [`Pattern`]: crate::Pattern
+/// [`Pattern::matched`]: crate::Pattern::matched
 #[derive(Debug)]
 pub struct MatchedText<'t> {
     inner: MaybeOwnedText<'t>,
 }
 
 impl<'t> MatchedText<'t> {
+    /// Clones any borrowed data into an owning instance.
     pub fn into_owned(self) -> MatchedText<'static> {
         let MatchedText { inner } = self;
         MatchedText {
@@ -87,6 +123,15 @@ impl<'t> MatchedText<'t> {
         }
     }
 
+    /// Clones any borrowed data to an owning instance.
+    ///
+    /// This function is similar to [`into_owned`], but does not consume its
+    /// receiver. Due to a technical limitation, `MatchedText` cannot implement
+    /// [`Clone`], so this function is provided as a stop gap that allows a
+    /// distinct instance to be created that owns its data.
+    ///
+    /// [`Clone`]: std::clone::Clone
+    /// [`into_owned`]: crate::MatchedText::into_owned
     // This conversion may appear to operate in place.
     #[must_use]
     pub fn to_owned(&self) -> MatchedText<'static> {
@@ -95,10 +140,33 @@ impl<'t> MatchedText<'t> {
         }
     }
 
+    /// Gets the complete text of a match.
+    ///
+    /// All [`Pattern`]s have an implicit capture of the complete text at index
+    /// zero. This function is therefore equivalent to unwrapping the output of
+    /// the [`get`] function with index zero.
+    ///
+    /// [`get`]: crate::MatchedText::get
+    /// [`Pattern`]: crate::Pattern
     pub fn complete(&self) -> &str {
         self.get(0).unwrap()
     }
 
+    /// Gets the matched text of a capture at the given index.
+    ///
+    /// All [`Pattern`]s have an implicit capture of the complete text at index
+    /// zero. Capturing tokens are indexed from one, so any capturing
+    /// sub-expression will be indexed after the implicit complete text. For
+    /// example, the sub-expression `*` in the glob expression `*.txt` is at
+    /// index one and will exclude the suffix `.txt` in its matched text.
+    ///
+    /// Alternative and repetition patterns group their sub-globs into a single
+    /// capture, so it is not possible to isolate matched text from their
+    /// sub-globs. This can be used to explicitly group matched text, such as
+    /// isolating an entire matched file name using an expression like
+    /// `{*.{go,rs}}`.
+    ///
+    /// [`Pattern`]: crate::Pattern
     pub fn get(&self, index: usize) -> Option<&str> {
         match self.inner {
             MaybeOwnedText::Borrowed(ref captures) => {

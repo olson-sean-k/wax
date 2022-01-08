@@ -3,6 +3,7 @@
 use crate::diagnostics::Span;
 use crate::token::Token;
 
+/// A token that captures matched text in a glob expression.
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
 #[derive(Clone, Copy, Debug)]
 pub struct CapturingToken {
@@ -11,10 +12,18 @@ pub struct CapturingToken {
 }
 
 impl CapturingToken {
+    /// Gets the index of the capture.
+    ///
+    /// Captures are one-indexed and the index zero always represents the
+    /// implicit capture of the complete match, so the index of
+    /// `CapturingToken`s is always one or greater. See [`MatchedText`].
+    ///
+    /// [`MatchedText`]: crate::MatchedText
     pub fn index(&self) -> usize {
         self.index
     }
 
+    /// Gets the span of the token's sub-expression.
     pub fn span(&self) -> Span {
         self.span
     }
@@ -35,7 +44,7 @@ where
         })
 }
 
-// These tests use `Glob` APIs, which simply wrap functions in this module.
+// These tests use `Glob` APIs, which wrap functions in this module.
 #[cfg(test)]
 mod tests {
     use crate::Glob;

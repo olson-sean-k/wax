@@ -20,9 +20,7 @@ Match a path against a glob:
 use wax::{Glob, Pattern};
 
 let glob = Glob::new("*.png").unwrap();
-if glob.is_match("logo.png") {
-    // ...
-}
+assert!(glob.is_match("logo.png"));
 ```
 
 Match a path against a glob with matched text (captures):
@@ -35,8 +33,7 @@ let glob = Glob::new("**/{*.{go,rs}}").unwrap();
 let path = CandidatePath::from("src/main.go");
 let matched = glob.matched(&path).unwrap();
 
-// Prints `main.go`.
-println!("{}", matched.get(2).unwrap());
+assert_eq!("main.go", matched.get(2).unwrap());
 ```
 
 Match files in a directory tree against a glob:
@@ -46,6 +43,7 @@ use wax::Glob;
 
 let glob = Glob::new("**/*.{md,txt}").unwrap();
 for entry in glob.walk("doc", usize::MAX) {
+    let entry = entry.unwrap();
     // ...
 }
 ```
@@ -61,9 +59,7 @@ let any = wax::any::<Glob, _>([
     "doc/**/*.md",
     "pkg/**/PKGBUILD",
 ]).unwrap();
-if any.is_match("src/token/mod.rs") {
-    // ...
-}
+assert!(any.is_match("src/token/mod.rs"));
 ```
 
 See more details below.
@@ -146,7 +142,7 @@ terminations (such as the beginning and/or end of a glob or sub-glob). Tree
 wildcards and path separators are distinct and any adjacent forward slashes that
 form a tree wildcard are parsed together (but rooting forward slashes are still
 meaningful). If a glob expression consists solely of a tree wildcard, then it
-matches any and all files in the working directory tree.
+matches any and all files and directory trees.
 
 ### Character Classes
 
@@ -257,9 +253,7 @@ patterns. This is often more ergonomic and faster than matching against multiple
 use wax::{Glob, Pattern};
 
 let any = wax::any::<Glob, _>(["**/*.txt", "src/**/*.rs"]).unwrap();
-if any.is_match("src/lib.rs") {
-    // ...
-}
+assert!(any.is_match("src/lib.rs"));
 ```
 
 The first type parameter determines to which [`Pattern`] type the input items
@@ -395,6 +389,7 @@ use wax::Glob;
 let path = Path::new("."); // Working directory.
 let (prefix, glob) = Glob::partitioned("../site/img/*.{jpg,png}").unwrap();
 for entry in glob.walk(path.join(prefix), usize::MAX) {
+    let entry = entry.unwrap();
     // ...
 }
 ```
@@ -427,8 +422,9 @@ Globs operate exclusively on UTF-8 encoded text. However, this encoding is not
 used for file names and paths on all platforms. Wax uses the [`CandidatePath`]
 type to re-encode native paths via lossy conversions that use Unicode
 replacement codepoints whenever a part of a path cannot be represented as valid
-UTF-8. On some platforms these conversions are always no-ops. In practice, the
-overwhelming majority of paths can be losslessly encoded in UTF-8.
+UTF-8. On some platforms these conversions are always no-ops. In practice, most
+paths can be losslessly encoded in UTF-8, but this means that Wax cannot match
+some byte sequences.
 
 ## Stability
 

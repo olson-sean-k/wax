@@ -174,6 +174,17 @@ impl<'i> ErrorTreeExt<Input<'i>> for ErrorTree<'i> {
     }
 }
 
+/// Describes errors that occur when parsing a glob expression.
+///
+/// Common examples of glob expressions that cannot be parsed are alternative
+/// and repetition patterns with missing delimiters and ambiguous patterns, such
+/// as `src/***/*.rs` or `{.local,.config/**/*.toml`.
+///
+/// When the `diagnostics-report` feature is enabled, this error implements the
+/// [`Diagnostic`] trait and provides more detailed information about the parse
+/// failure.
+///
+/// [`Diagnostic`]: miette::Diagnostic
 #[derive(Clone, Debug, Error)]
 #[error("failed to parse glob expression")]
 pub struct ParseError<'t> {
@@ -202,6 +213,7 @@ impl<'t> ParseError<'t> {
         }
     }
 
+    /// Clones any borrowed data into an owning instance.
     pub fn into_owned(self) -> ParseError<'static> {
         let ParseError {
             expression,
@@ -215,6 +227,7 @@ impl<'t> ParseError<'t> {
         }
     }
 
+    /// Gets the glob expression that failed to parse.
     pub fn expression(&self) -> &str {
         self.expression.as_ref()
     }
@@ -800,12 +813,6 @@ impl<'t, A> Repetition<'t, A> {
 pub enum Wildcard {
     One,
     ZeroOrMore(Evaluation),
-    // NOTE: Repetitions can represent tree wildcards as they are more general
-    //       and are allowed to cross component boundaries. However,
-    //       transforming tree wildcards into repetitions would move complex
-    //       logic into the parser and require additional state that is easier
-    //       (and likely less expensive) to manage in compilation (see
-    //       `encode::compile`).
     Tree { is_rooted: bool },
 }
 

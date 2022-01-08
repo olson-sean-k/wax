@@ -10,15 +10,23 @@ use vec1::Vec1;
 use crate::token::{self, TokenKind, Tokenized};
 
 pub type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
+
+/// `Result` that includes diagnostics on both success and failure.
+///
+/// On success, the `Ok` variant contains zero or more diagnostics. On failure,
+/// the `Err` variant contains one or more diagnostics, where at least one of
+/// the diagnostics is an error.
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub type DiagnosticResult<'t, T> = Result<(T, Vec<BoxedDiagnostic<'t>>), Vec1<BoxedDiagnostic<'t>>>;
 
+/// Extension traits for `Result`s with diagnostics.
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub trait DiagnosticResultExt<'t, T> {
     fn diagnostics(&self) -> &[BoxedDiagnostic<'t>];
 }
 
 impl<'t, T> DiagnosticResultExt<'t, T> for DiagnosticResult<'t, T> {
+    /// Gets the diagnostics associated with the `Result`.
     fn diagnostics(&self) -> &[BoxedDiagnostic<'t>] {
         match self {
             Ok((_, ref diagnostics)) => diagnostics,
@@ -27,6 +35,25 @@ impl<'t, T> DiagnosticResultExt<'t, T> for DiagnosticResult<'t, T> {
     }
 }
 
+/// Functions for constructing [`Glob`]s with diagnostics.
+///
+/// This trait provides functions that emit diagnostics and mirror the inherent
+/// functions used to construct [`Glob`]s. Unlike [`Glob`]'s inherent functions,
+/// these functions return diagnostics on both success and failure.
+///
+/// # Examples
+///
+/// ```rust
+/// use wax::{DiagnosticGlob, DiagnosticResultExt as _, Glob};
+///
+/// let result = <Glob as DiagnosticGlob>::new("(?i)readme.{md,mkd,markdown}");
+/// for diagnostic in result.diagnostics() {
+///     eprintln!("{}", diagnostic);
+/// }
+/// if let Ok((glob, _)) = result { /* ... */ }
+/// ```
+///
+/// [`Glob`]: crate::Glob
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub trait DiagnosticGlob<'t>: Sized {
     fn new(expression: &'t str) -> DiagnosticResult<'t, Self>;
@@ -183,13 +210,13 @@ pub fn diagnostics<'i, 't>(
         }))
 }
 
-// These tests use `Glob` APIs, which simply wrap functions in this module.
+// These tests use `Glob` APIs, which wrap functions in this module.
 #[cfg(test)]
 mod tests {
     use crate::Glob;
 
     // It is non-trivial to downcast `&dyn Diagnostic`, so diagnostics are
-    // identified in tests by code.
+    // identified in tests by their code.
     const CODE_SEMANTIC_LITERAL: &str = "wax::glob::semantic_literal";
     const CODE_TERMINATING_SEPARATOR: &str = "wax::glob::terminating_separator";
 

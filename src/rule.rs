@@ -26,6 +26,19 @@ use crate::diagnostics::report::{CompositeSourceSpan, CorrelatedSourceSpan, Sour
 use crate::token::{Token, TokenKind, Tokenized};
 use crate::{IteratorExt as _, SliceExt as _, Terminals};
 
+/// Describes errors concerning rules and patterns in a glob expression.
+///
+/// Patterns must follow rules described in the [repository
+/// documentation](https://github.com/olson-sean-k/wax/blob/master/README.md).
+/// These rules are designed to avoid nonsense glob expressions and ambiguity.
+/// If a glob expression parses but violates these rules or is otherwise
+/// malformed, then this error is returned by some APIs.
+///
+/// When the `diagnostics-report` feature is enabled, this error implements the
+/// [`Diagnostic`] trait and provides more detailed information about the rule
+/// violation.
+///
+/// [`Diagnostic`]: miette::Diagnostic
 #[derive(Debug, Error)]
 #[error("malformed glob expression: {kind}")]
 pub struct RuleError<'t> {
@@ -49,6 +62,7 @@ impl<'t> RuleError<'t> {
         }
     }
 
+    /// Clones any borrowed data into an owning instance.
     pub fn into_owned(self) -> RuleError<'static> {
         let RuleError {
             expression,
@@ -64,6 +78,7 @@ impl<'t> RuleError<'t> {
         }
     }
 
+    /// Gets the glob expression that violated pattern rules.
     pub fn expression(&self) -> &str {
         self.expression.as_ref()
     }
