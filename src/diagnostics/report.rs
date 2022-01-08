@@ -82,7 +82,7 @@ impl CompositeSourceSpan {
                 let mut labels = vec![LabeledSpan::new_with_span(label, span.clone())];
                 labels.extend(correlated.labels());
                 labels
-            }
+            },
         }
     }
 }
@@ -117,7 +117,7 @@ impl CorrelatedSourceSpan {
         match self {
             CorrelatedSourceSpan::Contiguous(ref span) => {
                 vec![LabeledSpan::new_with_span(label, span.clone())]
-            }
+            },
             CorrelatedSourceSpan::Split(ref left, ref right) => vec![
                 LabeledSpan::new_with_span(label.clone(), left.clone()),
                 LabeledSpan::new_with_span(label, right.clone()),

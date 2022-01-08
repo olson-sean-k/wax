@@ -87,7 +87,7 @@ enum ErrorContext<'e> {
     Stack(&'e StackContext),
 }
 
-impl<'e> Display for ErrorContext<'e> {
+impl Display for ErrorContext<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             ErrorContext::Kind(kind) => match kind {
@@ -139,12 +139,12 @@ impl<'i> ErrorTreeExt<Input<'i>> for ErrorTree<'i> {
                         })
                     }
                     recurse(base, depth + 1, f);
-                }
+                },
                 ErrorTree::Alt(ref trees) => {
                     for tree in trees {
                         recurse(tree, depth + 1, f);
                     }
-                }
+                },
             }
         }
         recurse(self, 0, &mut f);
@@ -187,7 +187,7 @@ impl<'t> ParseError<'t> {
         match error {
             ErrorMode::Incomplete(_) => {
                 panic!("unexpected parse error: incomplete input")
-            }
+            },
             ErrorMode::Error(error) | ErrorMode::Failure(error) => {
                 let (starts, ends) = error.bounding_error_locations();
                 ParseError {
@@ -198,7 +198,7 @@ impl<'t> ParseError<'t> {
                         .expect("expected lower bound error location"),
                     ends,
                 }
-            }
+            },
         }
     }
 
@@ -222,7 +222,7 @@ impl<'t> ParseError<'t> {
 
 #[cfg(feature = "diagnostics-report")]
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-impl<'t> Diagnostic for ParseError<'t> {
+impl Diagnostic for ParseError<'_> {
     fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
         Some(Box::new("wax::glob::parse"))
     }
@@ -481,7 +481,7 @@ impl<'t, A> TokenKind<'t, A> {
         match self {
             TokenKind::Wildcard(Wildcard::Tree { ref mut is_rooted }) => {
                 mem::replace(is_rooted, false)
-            }
+            },
             _ => false,
         }
     }
@@ -526,7 +526,7 @@ impl<'t, A> From<Alternative<'t, A>> for TokenKind<'t, A> {
     }
 }
 
-impl<'t, A> From<Class> for TokenKind<'t, A> {
+impl<A> From<Class> for TokenKind<'_, A> {
     fn from(class: Class) -> Self {
         TokenKind::Class(class)
     }
@@ -625,19 +625,19 @@ impl Archetype {
             Archetype::Character(x) => (!PATHS_ARE_CASE_INSENSITIVE).then(|| x.to_string().into()),
             Archetype::Range(a, b) => {
                 ((a == b) && !PATHS_ARE_CASE_INSENSITIVE).then(|| a.to_string().into())
-            }
+            },
         }
     }
 }
 
 impl From<char> for Archetype {
-    fn from(literal: char) -> Archetype {
+    fn from(literal: char) -> Self {
         Archetype::Character(literal)
     }
 }
 
 impl From<(char, char)> for Archetype {
-    fn from(range: (char, char)) -> Archetype {
+    fn from(range: (char, char)) -> Self {
         Archetype::Range(range.0, range.1)
     }
 }
@@ -945,13 +945,12 @@ where
                         alternative
                             .branches()
                             .iter()
-                            .map(literals)
-                            .flatten()
+                            .flat_map(literals)
                             .collect::<Vec<_>>(),
                     ),
                     TokenKind::Repetition(ref repetition) => {
                         Some(literals(repetition.tokens()).collect::<Vec<_>>())
-                    }
+                    },
                     _ => None,
                 })
                 .flatten()
@@ -1004,10 +1003,10 @@ pub fn invariant_prefix_upper_bound<A>(tokens: &[Token<A>]) -> usize {
         match token {
             Separator => {
                 separator = Some(n);
-            }
+            },
             Wildcard(Tree { .. }) => {
                 return n;
-            }
+            },
             _ => {
                 // TODO: This may be expensive.
                 if token.to_invariant_string().is_some() {
@@ -1019,7 +1018,7 @@ pub fn invariant_prefix_upper_bound<A>(tokens: &[Token<A>]) -> usize {
                         None => 0,
                     };
                 }
-            }
+            },
         }
     }
     tokens.len()
@@ -1086,7 +1085,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                 match toggle {
                     CaseInsensitive(toggle) => {
                         input.state.flags.is_case_insensitive = toggle;
-                    }
+                    },
                 }
                 Ok((input, ()))
             }

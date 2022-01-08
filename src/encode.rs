@@ -39,13 +39,13 @@ const fn main_separator_class_expression() -> &'static str {
 }
 
 macro_rules! sepexpr {
-    ($fmt: expr) => {
+    ($fmt:expr) => {
         formatcp!($fmt, formatcp!("[{0}]", SEPARATOR_CLASS_EXPRESSION))
     };
 }
 
 macro_rules! nsepexpr {
-    ($fmt: expr) => {
+    ($fmt:expr) => {
         formatcp!($fmt, formatcp!("[^{0}]", SEPARATOR_CLASS_EXPRESSION))
     };
 }
@@ -139,7 +139,7 @@ fn encode<'t, A, T>(
                     pattern.push_str("(?-i)");
                 }
                 pattern.push_str(&literal.text().escaped());
-            }
+            },
             (_, Separator) => pattern.push_str(sepexpr!("{0}")),
             (position, Alternative(alternative)) => {
                 let encodings: Vec<_> = alternative
@@ -159,7 +159,7 @@ fn encode<'t, A, T>(
                     })
                     .collect();
                 grouping.push_str(pattern, &encodings.join("|"));
-            }
+            },
             (position, Repetition(repetition)) => {
                 let encoding = {
                     let (lower, upper) = repetition.bounds();
@@ -180,7 +180,7 @@ fn encode<'t, A, T>(
                     pattern
                 };
                 grouping.push_str(pattern, &encoding);
-            }
+            },
             (_, Class(class)) => {
                 grouping.push_with(pattern, || {
                     let mut pattern = String::new();
@@ -195,7 +195,7 @@ fn encode<'t, A, T>(
                                 pattern.push_str(&left.escaped());
                                 pattern.push('-');
                                 pattern.push_str(&right.escaped());
-                            }
+                            },
                         }
                     }
                     pattern.push_str(nsepexpr!("&&{0}]"));
@@ -213,14 +213,14 @@ fn encode<'t, A, T>(
                         NULL_CHARACTER_CLASS.into()
                     }
                 });
-            }
+            },
             (_, Wildcard(One)) => grouping.push_str(pattern, nsepexpr!("{0}")),
             (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, nsepexpr!("{0}*")),
             (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, nsepexpr!("{0}*?")),
             (First(_), Wildcard(Tree { is_rooted })) => match superposition {
-                Some(Middle(_)) | Some(Last(_)) => {
+                Some(Middle(_) | Last(_)) => {
                     encode_intermediate_tree(grouping, pattern);
-                }
+                },
                 _ => {
                     if *is_rooted {
                         grouping.push_str(pattern, sepexpr!("{0}.*{0}?"));
@@ -230,20 +230,20 @@ fn encode<'t, A, T>(
                         grouping.push_str(pattern, sepexpr!(".*{0}"));
                         pattern.push(')');
                     }
-                }
+                },
             },
             (Middle(_), Wildcard(Tree { .. })) => {
                 encode_intermediate_tree(grouping, pattern);
-            }
+            },
             (Last(_), Wildcard(Tree { .. })) => match superposition {
-                Some(First(_)) | Some(Middle(_)) => {
+                Some(First(_) | Middle(_)) => {
                     encode_intermediate_tree(grouping, pattern);
-                }
+                },
                 _ => {
                     pattern.push_str(sepexpr!("(?:{0}?|{0}"));
                     grouping.push_str(pattern, ".*");
                     pattern.push(')');
-                }
+                },
             },
             (Only(_), Wildcard(Tree { .. })) => grouping.push_str(pattern, ".*"),
         }

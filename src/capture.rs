@@ -15,8 +15,7 @@ impl OwnedText {
         else {
             self.ranges
                 .get(index - 1)
-                .map(|range| range.map(|range| &self.matched[range.0..range.1]))
-                .flatten()
+                .and_then(|range| range.map(|range| &self.matched[range.0..range.1]))
         }
     }
 }
@@ -100,7 +99,7 @@ impl<'t> MatchedText<'t> {
         match self.inner {
             MaybeOwnedText::Borrowed(ref captures) => {
                 captures.get(index).map(|capture| capture.as_str())
-            }
+            },
             MaybeOwnedText::Owned(ref captures) => captures.get(index),
         }
     }

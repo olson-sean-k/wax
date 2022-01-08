@@ -84,7 +84,7 @@ trait StrExt {
 
 impl StrExt for str {
     fn has_casing(&self) -> bool {
-        self.chars().any(|x| x.has_casing())
+        self.chars().any(CharExt::has_casing)
     }
 }
 
@@ -176,7 +176,7 @@ where
                     else {
                         Some(Adjacency::Last { left, item })
                     }
-                }
+                },
                 Adjacency::Only { .. } | Adjacency::Last { .. } => None,
             };
             adjacency
@@ -239,7 +239,7 @@ impl<T> SliceExt<T> for [T] {
     fn terminals(&self) -> Option<Terminals<&T>> {
         match self.len() {
             0 => None,
-            1 => Some(Terminals::Only(&self[0])),
+            1 => Some(Terminals::Only(self.first().unwrap())),
             _ => Some(Terminals::StartEnd(
                 self.first().unwrap(),
                 self.last().unwrap(),
@@ -334,19 +334,19 @@ impl<'b> CandidatePath<'b> {
     }
 }
 
-impl<'b> AsRef<str> for CandidatePath<'b> {
+impl AsRef<str> for CandidatePath<'_> {
     fn as_ref(&self) -> &str {
         self.text.as_ref()
     }
 }
 
-impl<'b> Debug for CandidatePath<'b> {
+impl Debug for CandidatePath<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.text)
     }
 }
 
-impl<'b> Display for CandidatePath<'b> {
+impl Display for CandidatePath<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.text)
     }
@@ -512,7 +512,7 @@ impl<'t> Glob<'t> {
                     // `depth` is relative to the input `directory`, so count
                     // any components added by an invariant prefix path from the
                     // glob.
-                    let depth = depth - cmp::min(depth, prefix.components().count());
+                    let depth = depth.saturating_sub(prefix.components().count());
                     (root, directory.into(), depth)
                 }
             })
@@ -589,8 +589,8 @@ impl FromStr for Glob<'static> {
 
     fn from_str(expression: &str) -> Result<Self, Self::Err> {
         Glob::new(expression)
-            .map(|glob| glob.into_owned())
-            .map_err(|error| error.into_owned())
+            .map(Glob::into_owned)
+            .map_err(GlobError::into_owned)
     }
 }
 
@@ -858,7 +858,7 @@ impl<'g> Walk<'g> {
     }
 }
 
-impl<'g> Iterator for Walk<'g> {
+impl Iterator for Walk<'_> {
     type Item = Result<WalkEntry<'static>, GlobError<'static>>;
 
     fn next(&mut self) -> Option<Self::Item> {

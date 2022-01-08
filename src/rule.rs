@@ -71,7 +71,7 @@ impl<'t> RuleError<'t> {
 
 #[cfg(feature = "diagnostics-report")]
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-impl<'t> Diagnostic for RuleError<'t> {
+impl Diagnostic for RuleError<'_> {
     fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
         Some(Box::new(String::from(match self.kind {
             ErrorKind::RootedSubGlob => "wax::glob::rooted_sub_glob",
@@ -266,7 +266,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                         }
                         recurse(expression, tokens.iter(), outer)?;
                     }
-                }
+                },
                 TokenKind::Repetition(ref repetition) => {
                     let outer = outer.push(left, right);
                     let diagnose = diagnose(expression, token, "in this repetition");
@@ -277,8 +277,8 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                             .map_err(diagnose)?;
                     }
                     recurse(expression, tokens.iter(), outer)?;
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         Ok(())
@@ -302,7 +302,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     left,
                     inner,
                 ))
-            }
+            },
             // The group is followed by component boundaries; disallow trailing
             // separators.
             //
@@ -315,13 +315,13 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     right,
                     inner,
                 ))
-            }
+            },
             // Disallow singular tree tokens.
             //
             // For example, `{foo,bar,**}`.
             Only((inner, Wildcard(Tree { .. }))) => {
                 Err(CorrelatedError::new(ErrorKind::SingularTree, None, inner))
-            }
+            },
             // The group is preceded by component boundaries; disallow leading
             // tree tokens.
             //
@@ -334,7 +334,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     left,
                     inner,
                 ))
-            }
+            },
             // The group is followed by component boundaries; disallow trailing
             // tree tokens.
             //
@@ -347,7 +347,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     right,
                     inner,
                 ))
-            }
+            },
             // The group is prefixed by a zero-or-more token; disallow leading
             // zero-or-more tokens.
             //
@@ -361,7 +361,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     left,
                     inner,
                 ))
-            }
+            },
             // The group is followed by a zero-or-more token; disallow trailing
             // zero-or-more tokens.
             //
@@ -375,7 +375,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     right,
                     inner,
                 ))
-            }
+            },
             _ => Ok(()),
         }
     }
@@ -392,7 +392,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // For example, `{foo,/}` or `{foo,/bar}`.
             Only((inner, Separator)) | StartEnd((inner, Separator), _) if left.is_none() => {
                 Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
-            }
+            },
             // The alternative is preceded by a termination; disallow rooted
             // sub-globs.
             //
@@ -402,7 +402,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 if left.is_none() =>
             {
                 Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
-            }
+            },
             _ => Ok(()),
         }
     }
@@ -423,7 +423,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 if left.is_none() && lower == 0 =>
             {
                 Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
-            }
+            },
             // The repetition is preceded by a termination; disallow rooted
             // sub-globs with a zero lower bound.
             //
@@ -433,7 +433,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 if left.is_none() && lower == 0 =>
             {
                 Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
-            }
+            },
             // The repetition begins and ends with a separator.
             //
             // For example, `</foo/bar/:1,>`.
@@ -445,7 +445,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     Some(left),
                     right,
                 ))
-            }
+            },
             // The repetition is a singular separator.
             //
             // For example, `</:1,>`.
