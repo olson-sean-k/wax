@@ -309,15 +309,15 @@ impl<'t> From<ParseError<'t>> for GlobError<'t> {
     }
 }
 
-impl From<WalkError> for GlobError<'static> {
-    fn from(error: WalkError) -> Self {
-        GlobError::Walk(error)
-    }
-}
-
 impl<'t> From<RuleError<'t>> for GlobError<'t> {
     fn from(error: RuleError<'t>) -> Self {
         GlobError::Rule(error)
+    }
+}
+
+impl From<WalkError> for GlobError<'static> {
+    fn from(error: WalkError) -> Self {
+        GlobError::Walk(error)
     }
 }
 
@@ -851,7 +851,7 @@ impl<'g> Walk<'g> {
     /// This function does not copy the contents of paths and captures when
     /// emitting entries and so may be more efficient than external iteration
     /// via `Iterator` (and `Iterator::for_each`).
-    pub fn for_each(mut self, mut f: impl FnMut(Result<WalkEntry, GlobError>)) {
+    pub fn for_each(mut self, mut f: impl FnMut(Result<WalkEntry, WalkError>)) {
         walk!(self => |entry| {
             f(entry);
         });
@@ -859,7 +859,7 @@ impl<'g> Walk<'g> {
 }
 
 impl Iterator for Walk<'_> {
-    type Item = Result<WalkEntry<'static>, GlobError<'static>>;
+    type Item = Result<WalkEntry<'static>, WalkError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         walk!(self => |entry| {
