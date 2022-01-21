@@ -800,6 +800,8 @@ impl<'e> WalkEntry<'e> {
 
 /// Iterator over files matching a `Glob` in a directory tree.
 #[derive(Debug)]
+// This type is principally an iterator and is therefore lazy.
+#[must_use]
 pub struct Walk<'g> {
     regex: Cow<'g, Regex>,
     regexes: Vec<Regex>,
@@ -919,6 +921,9 @@ pub fn walk(
 }
 
 /// Escapes text as a literal glob expression.
+// It is possible to call this function using a mutable reference, which may
+// appear to mutate the parameter in place.
+#[must_use]
 pub fn escape(unescaped: &str) -> Cow<str> {
     const ESCAPE: char = '\\';
 

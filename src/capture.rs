@@ -52,6 +52,8 @@ impl<'t> MaybeOwnedText<'t> {
         }
     }
 
+    // This conversion may appear to operate in place.
+    #[must_use]
     fn to_owned(&self) -> MaybeOwnedText<'static> {
         match self {
             MaybeOwnedText::Borrowed(ref borrowed) => OwnedText::from(borrowed).into(),
@@ -85,6 +87,8 @@ impl<'t> MatchedText<'t> {
         }
     }
 
+    // This conversion may appear to operate in place.
+    #[must_use]
     pub fn to_owned(&self) -> MatchedText<'static> {
         MatchedText {
             inner: self.inner.to_owned(),
