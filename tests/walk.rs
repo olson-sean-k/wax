@@ -105,6 +105,30 @@ fn walk_with_invariant_glob() {
     );
 }
 
+#[test]
+fn walk_with_not() {
+    let (_root, path) = temptree();
+
+    let glob = Glob::new("**/*.{md,rs}").unwrap();
+    let paths: HashSet<_> = glob
+        .walk(&path, usize::MAX)
+        .not(["**/tests/**"])
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.into_path())
+        .collect();
+    assert_eq!(
+        paths,
+        IntoIterator::into_iter([
+            path.join("doc/guide.md"),
+            path.join("src/glob.rs"),
+            path.join("src/lib.rs"),
+            path.join("README.md"),
+        ])
+        .collect(),
+    );
+}
+
 // TODO: See `Glob::walk`.
 //#[test]
 //fn walk_with_exhausted_depth() {

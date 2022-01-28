@@ -1116,6 +1116,60 @@ impl<'g> Walk<'g> {
             f(entry);
         });
     }
+
+    /// Filters [`WalkEntry`]s against negated [`Glob`]s.
+    ///
+    /// This function creates an adaptor that discards [`WalkEntry`]s that match
+    /// any of the given [`Glob`]s. This allows for broad negations while
+    /// matching a [`Glob`] against a directory tree that cannot be achieved
+    /// using a single glob expression.
+    ///
+    /// Errors are not filtered, so if an error occurs reading a file at a path
+    /// that would have been discarded, that error is still yielded by the
+    /// iterator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any of the given patterns could not be converted
+    /// into a [`Glob`]. If the given patterns are [`Glob`]s, then this function
+    /// is infallible.
+    ///
+    /// # Examples
+    ///
+    /// Because glob expressions do not support general negations, it is
+    /// sometimes impossible to express patterns that deny particular text. In
+    /// such cases, [`not`] can be used to apply additional patterns as a
+    /// filter.
+    ///
+    /// ```rust,no_run
+    /// use wax::Glob;
+    ///
+    /// // Find image files, but not if they are beneath a directory with a name that
+    /// // suggests that they are private.
+    /// let glob = Glob::new("**/*.(?i){jpg,jpeg,png}").unwrap();
+    /// for entry in glob
+    ///     .walk(".", usize::MAX)
+    ///     .not(["**/(?i)<.:0,1>private/**"])
+    ///     .unwrap()
+    /// {
+    ///     let entry = entry.unwrap();
+    ///     // ...
+    /// }
+    /// ```
+    ///
+    /// [`Glob`]: crate::Glob
+    /// [`WalkEntry`]: crate::WalkEntry
+    pub fn not<'n, P>(
+        self,
+        patterns: impl IntoIterator<Item = P>,
+    ) -> Result<impl 'g + Iterator<Item = Result<WalkEntry<'static>, WalkError>>, GlobError<'n>>
+    where
+        'n: 'g,
+        P: TryInto<Glob<'n>, Error = GlobError<'n>>,
+    {
+        let any = crate::any(patterns)?;
+        Ok(self.filter_ok(move |entry| !any.is_match(entry.to_candidate_path())))
+    }
 }
 
 impl Iterator for Walk<'_> {
@@ -1188,7 +1242,8 @@ impl Iterator for Walk<'_> {
 /// # Errors
 ///
 /// Returns an error if any of the inputs could not be converted into the target
-/// [`Pattern`] type `P`.
+/// [`Pattern`] type `P`. If the inputs are of type `P`, then this function is
+/// infallible.
 ///
 /// [`Any`]: crate::Any
 /// [`Glob`]: crate::Glob

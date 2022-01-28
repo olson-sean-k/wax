@@ -48,6 +48,22 @@ for entry in glob.walk("doc", usize::MAX) {
 }
 ```
 
+Match files in a directory tree against a glob with negations:
+
+```rust
+use wax::Glob;
+
+let glob = Glob::new("**/*.{md,txt}").unwrap();
+for entry in glob
+    .walk("doc", usize::MAX)
+    .not(["**/secret/**"])
+    .unwrap()
+{
+    let entry = entry.unwrap();
+    // ...
+}
+```
+
 Match a path against multiple globs:
 
 ```rust
