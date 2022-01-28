@@ -90,6 +90,17 @@ impl Grouping {
     }
 }
 
+pub fn case_folded_eq(left: &str, right: &str) -> bool {
+    let regex = Regex::new(&format!("(?i){}", regex::escape(left)))
+        .expect("literal regular expression compilation failed");
+    if let Some(matched) = regex.find(right) {
+        matched.start() == 0 && matched.end() == right.len()
+    }
+    else {
+        false
+    }
+}
+
 pub fn compile<'t, A, T>(tokens: impl IntoIterator<Item = T>) -> Regex
 where
     T: Borrow<Token<'t, A>>,
@@ -247,5 +258,20 @@ fn encode<'t, A, T>(
             },
             (Only(_), Wildcard(Tree { .. })) => grouping.push_str(pattern, ".*"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::encode;
+
+    #[test]
+    fn case_folded_eq() {
+        assert!(encode::case_folded_eq("a", "a"));
+        assert!(encode::case_folded_eq("a", "A"));
+
+        assert!(!encode::case_folded_eq("a", "b"));
+        assert!(!encode::case_folded_eq("aa", "a"));
+        assert!(!encode::case_folded_eq("a", "aa"));
     }
 }

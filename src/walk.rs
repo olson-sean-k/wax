@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use walkdir::{self, DirEntry, WalkDir};
 
 use crate::capture::MatchedText;
-use crate::token::{self, Token};
+use crate::token::{self, Boundedness, Token};
 use crate::{CandidatePath, Glob, GlobError, PositionExt as _};
 
 /// Describes errors that occur when matching a [`Glob`] against a directory
@@ -237,28 +237,15 @@ impl Negation {
     where
         P: TryInto<Glob<'n>, Error = GlobError<'n>>,
     {
-        use crate::token::{TokenKind, Wildcard};
-
         let globs: Vec<_> = patterns
             .into_iter()
             .map(TryInto::try_into)
             .collect::<Result<_, _>>()?;
-        // NOTE: It is possible to encode a terminating tree wildcard as a
-        //       repetition instead, but this could be difficult to detect. For
-        //       example, `<*/>` and `<<?>/>` both behave similarly to tree
-        //       wildcards. However, most unbounded repetitions require
-        //       traversal, such as `<a*/>`, as they only match some sub-paths
-        //       and not any and all sub-paths.
         // Partition the negation globs into terminals and nonterminals. A
         // terminal glob matches all sub-paths once it has matched and so
         // arrests the traversal into sub-directories. This is determined by
         // whether or not a glob is terminated with a tree wildcard.
-        let (terminals, nonterminals) = globs.into_iter().partition::<Vec<_>, _>(|glob| {
-            matches!(
-                glob.tokenized.tokens().last().map(|token| token.kind()),
-                Some(TokenKind::Wildcard(Wildcard::Tree { .. })),
-            )
-        });
+        let (terminals, nonterminals) = globs.into_iter().partition::<Vec<_>, _>(is_terminal);
         Ok(Negation {
             terminal: crate::any::<Glob, _>(terminals).unwrap().regex,
             nonterminal: crate::any::<Glob, _>(nonterminals).unwrap().regex,
@@ -715,4 +702,44 @@ fn candidates<'e>(
         })
         .zip_longest(patterns.into_iter().skip(depth))
         .with_position()
+}
+
+/// Returns `true` if the [`Glob`] is terminal.
+///
+/// A [`Glob`] is terminal if its final component has unbounded depth and
+/// unbounded variance. When walking a directory tree, such an expression allows
+/// a matching directory to be ignored when used as a negation, because the
+/// negating expression matches any and all sub-paths.
+///
+/// See [`Negation`].
+///
+/// [`Glob`]: crate::Glob
+/// [`Negation`]: crate::walk::Negation
+fn is_terminal(glob: &Glob<'_>) -> bool {
+    let component = token::components(glob.tokenized.tokens()).last();
+    matches!(
+        component.map(|component| { (component.depth(), component.variance().boundedness(),) }),
+        Some((Boundedness::Open, Boundedness::Open)),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::walk;
+    use crate::Glob;
+
+    #[test]
+    fn query_terminal_glob() {
+        assert!(walk::is_terminal(&Glob::new("**").unwrap()));
+        assert!(walk::is_terminal(&Glob::new("a/**").unwrap()));
+        assert!(walk::is_terminal(&Glob::new("a/<*/>*").unwrap()));
+        assert!(walk::is_terminal(&Glob::new("a/<<?>/>*").unwrap()));
+
+        assert!(!walk::is_terminal(&Glob::new("a/**/b").unwrap()));
+        assert!(!walk::is_terminal(&Glob::new("a/*").unwrap()));
+        assert!(!walk::is_terminal(&Glob::new("a/<?>").unwrap()));
+        assert!(!walk::is_terminal(&Glob::new("a</**/b>").unwrap()));
+        assert!(!walk::is_terminal(&Glob::new("**/a").unwrap()));
+        assert!(!walk::is_terminal(&Glob::new("").unwrap()));
+    }
 }

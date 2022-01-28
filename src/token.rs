@@ -18,11 +18,11 @@ use itertools::Itertools as _;
 use miette::{self, Diagnostic, LabeledSpan, SourceCode};
 use pori::{Located, Location, Stateful};
 use smallvec::{smallvec, SmallVec};
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::cmp;
 use std::fmt::{self, Display, Formatter};
 use std::mem;
-use std::ops::{Bound, Deref, RangeBounds};
+use std::ops::{Add, Bound, Deref, RangeBounds};
 use std::path::{PathBuf, MAIN_SEPARATOR};
 use std::str::FromStr;
 use supreme::{BaseErrorKind, StackContext};
@@ -30,7 +30,8 @@ use thiserror::Error;
 
 #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 use crate::diagnostics::Span;
-use crate::{SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
+use crate::encode;
+use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
 
 #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 pub type Annotation = Span;
@@ -299,6 +300,195 @@ enum FlagToggle {
     CaseInsensitive(bool),
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Boundedness {
+    Closed,
+    Open,
+}
+
+impl Boundedness {
+    pub fn is_closed(&self) -> bool {
+        matches!(self, Boundedness::Closed)
+    }
+
+    pub fn is_open(&self) -> bool {
+        matches!(self, Boundedness::Open)
+    }
+}
+
+trait Depth<A>: Iterator + Sized {
+    fn depth(self) -> Boundedness;
+}
+
+impl<'t, A, I> Depth<A> for I
+where
+    I: Iterator,
+    I::Item: Borrow<Token<'t, A>>,
+{
+    fn depth(mut self) -> Boundedness {
+        if self.any(|token| token.borrow().depth().is_open()) {
+            Boundedness::Open
+        }
+        else {
+            Boundedness::Closed
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash)]
+pub enum Variance<'t> {
+    Invariant(Cow<'t, str>),
+    // NOTE: In this context, _boundedness_ refers to whether or not a variant
+    //       token or expression is _constrained_ or _unconstrained_. For
+    //       example, the expression `**` is unconstrained and matches _any and
+    //       all_, while the expression `a*z` is constrained and matches _some_.
+    //       Note that both expressions match an infinite number of components,
+    //       but the constrained expression does *not* match any component.
+    //       Boundedness does **not** consider length, only whether or not some
+    //       part of an expression is constrained to a known set of matches. As
+    //       such, both the expressions `?` and `*` are variant with open
+    //       bounds.
+    Variant(Boundedness),
+}
+
+impl<'t> Variance<'t> {
+    pub fn map_invariant(self, mut f: impl FnMut(Cow<'t, str>) -> Cow<'t, str>) -> Self {
+        match self {
+            Variance::Invariant(text) => Variance::Invariant(f(text)),
+            variance => variance,
+        }
+    }
+
+    pub fn to_invariant_string(&self) -> Option<Cow<'t, str>> {
+        match self {
+            Variance::Invariant(ref text) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn boundedness(&self) -> Boundedness {
+        match self {
+            Variance::Variant(ref boundedness) => *boundedness,
+            _ => Boundedness::Closed,
+        }
+    }
+
+    pub fn is_invariant(&self) -> bool {
+        matches!(self, Variance::Invariant(_))
+    }
+
+    pub fn is_variant(&self) -> bool {
+        matches!(self, Variance::Variant(_))
+    }
+}
+
+impl<'t> Add for Variance<'t> {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        use Boundedness::{Closed, Open};
+        use Variance::{Invariant, Variant};
+
+        match (self, rhs) {
+            (Invariant(left), Invariant(right)) => Invariant(left + right),
+            (Variant(Open), Variant(Open)) => Variant(Open),
+            (Invariant(_), Variant(_)) | (Variant(_), Invariant(_)) | (Variant(_), Variant(_)) => {
+                Variant(Closed)
+            },
+        }
+    }
+}
+
+impl<'t> From<&'t Archetype> for Variance<'t> {
+    fn from(archetype: &'t Archetype) -> Self {
+        archetype.variance()
+    }
+}
+
+impl<'t, A> From<&'t Token<'t, A>> for Variance<'t> {
+    fn from(token: &'t Token<'t, A>) -> Self {
+        token.variance()
+    }
+}
+
+impl<'t> PartialEq for Variance<'t> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // TODO: This comparison relies on non-textual invariant tokens
+            //       using text that has no casing, notably separators. It may
+            //       be better to store segments or fragments that differentiate
+            //       between nominal and structural tokens rather than
+            //       accumulating all text into a string, which lacks this
+            //       information.
+            (Variance::Invariant(ref left), Variance::Invariant(ref right)) => {
+                if PATHS_ARE_CASE_INSENSITIVE {
+                    // This comparison uses Unicode simple case folding. It
+                    // would be better to use full case folding (and better
+                    // still to use case folding appropriate for the language of
+                    // the text), but this approach is used to have consistent
+                    // results with the regular expression encoding of compiled
+                    // globs. A more comprehensive alternative would be to use
+                    // something like the `focaccia` crate. See also
+                    // `CharExt::has_casing`.
+                    encode::case_folded_eq(left.as_ref(), right.as_ref())
+                }
+                else {
+                    left == right
+                }
+            },
+            (Variance::Variant(ref left), Variance::Variant(ref right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+trait ConjunctiveVariance<'t>: Iterator + Sized
+where
+    Self::Item: Into<Variance<'t>>,
+{
+    fn conjunctive_variance(self) -> Variance<'t> {
+        self.map(Into::into)
+            .reduce(Add::add)
+            .unwrap_or_else(|| Variance::Invariant("".into()))
+    }
+}
+
+impl<'t, I> ConjunctiveVariance<'t> for I
+where
+    I: Iterator,
+    I::Item: Into<Variance<'t>>,
+{
+}
+
+trait DisjunctiveVariance<'t>: Iterator + Sized
+where
+    Self::Item: Into<Variance<'t>>,
+{
+    fn disjunctive_variance(self) -> Variance<'t> {
+        let variances: Vec<_> = self.map(Into::into).collect();
+        if variances.iter().combinations(2).all(|combination| {
+            let mut combination = combination.into_iter();
+            let (left, right) = (combination.next(), combination.next());
+            left == right
+        }) {
+            variances
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Variance::Invariant("".into()))
+        }
+        else {
+            Variance::Variant(Boundedness::Closed)
+        }
+    }
+}
+
+impl<'t, I> DisjunctiveVariance<'t> for I
+where
+    I: Iterator,
+    I::Item: Into<Variance<'t>>,
+{
+}
+
 #[derive(Clone, Debug)]
 pub struct Tokenized<'t, A = Annotation> {
     expression: Cow<'t, str>,
@@ -333,6 +523,10 @@ impl<'t, A> Tokenized<'t, A> {
 
     pub fn tokens(&self) -> &[Token<'t, A>] {
         &self.tokens
+    }
+
+    pub fn variance(&self) -> Variance {
+        self.tokens().iter().conjunctive_variance()
     }
 }
 
@@ -499,14 +693,69 @@ impl<'t, A> TokenKind<'t, A> {
         }
     }
 
-    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
+    pub fn depth(&self) -> Boundedness {
+        use crate::token::Wildcard::{One, Tree, ZeroOrMore};
+        use TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
+
         match self {
-            TokenKind::Alternative(ref alternative) => alternative.to_invariant_string(),
-            TokenKind::Class(ref class) => class.to_invariant_string(),
-            TokenKind::Literal(ref literal) => literal.to_invariant_string(),
-            TokenKind::Repetition(ref repetition) => repetition.to_invariant_string(),
-            TokenKind::Separator => Some(MAIN_SEPARATOR.to_string().into()),
-            TokenKind::Wildcard(_) => None,
+            Class(_) | Literal(_) | Separator | Wildcard(One | ZeroOrMore(_)) => {
+                Boundedness::Closed
+            },
+            Alternative(ref alternative) => {
+                if alternative.has_token_with(&mut |token| token.depth().is_open()) {
+                    Boundedness::Open
+                }
+                else {
+                    Boundedness::Closed
+                }
+            },
+            Repetition(ref repetition) => {
+                let (_, upper) = repetition.bounds();
+                if upper.is_none() && repetition.has_component_boundary() {
+                    Boundedness::Open
+                }
+                else {
+                    Boundedness::Closed
+                }
+            },
+            Wildcard(Tree { .. }) => Boundedness::Open,
+        }
+    }
+
+    pub fn breadth(&self) -> Boundedness {
+        use crate::token::Wildcard::{One, Tree, ZeroOrMore};
+        use TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
+
+        match self {
+            Class(_) | Literal(_) | Separator | Wildcard(One) => Boundedness::Closed,
+            Alternative(ref alternative) => {
+                if alternative.has_token_with(&mut |token| token.breadth().is_open()) {
+                    Boundedness::Open
+                }
+                else {
+                    Boundedness::Closed
+                }
+            },
+            Repetition(ref repetition) => {
+                if repetition.has_token_with(&mut |token| token.breadth().is_open()) {
+                    Boundedness::Open
+                }
+                else {
+                    Boundedness::Closed
+                }
+            },
+            Wildcard(Tree { .. } | ZeroOrMore(_)) => Boundedness::Open,
+        }
+    }
+
+    pub fn variance(&self) -> Variance {
+        match self {
+            TokenKind::Alternative(ref alternative) => alternative.variance(),
+            TokenKind::Class(ref class) => class.variance(),
+            TokenKind::Literal(ref literal) => literal.variance(),
+            TokenKind::Repetition(ref repetition) => repetition.variance(),
+            TokenKind::Separator => Variance::Invariant(MAIN_SEPARATOR.to_string().into()),
+            TokenKind::Wildcard(_) => Variance::Variant(Boundedness::Open),
         }
     }
 
@@ -584,12 +833,11 @@ impl<'t, A> Alternative<'t, A> {
         &self.0
     }
 
-    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
-        match self.0.terminals() {
-            Some(Terminals::Only(tokens)) => fold_invariant_strings(tokens.iter()),
-            None => Some("".into()),
-            _ => None,
-        }
+    pub fn variance(&self) -> Variance {
+        self.branches()
+            .iter()
+            .map(|tokens| tokens.iter().conjunctive_variance())
+            .disjunctive_variance()
     }
 
     pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
@@ -630,14 +878,23 @@ pub enum Archetype {
 }
 
 impl Archetype {
-    // Using a `&self` receiver interacts better with `Cow` and is more
-    // consistent with this method on other token types.
-    #[allow(clippy::wrong_self_convention)]
-    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
+    pub fn variance(&self) -> Variance {
         match self {
-            Archetype::Character(x) => (!PATHS_ARE_CASE_INSENSITIVE).then(|| x.to_string().into()),
+            Archetype::Character(x) => {
+                if PATHS_ARE_CASE_INSENSITIVE {
+                    Variance::Variant(Boundedness::Closed)
+                }
+                else {
+                    Variance::Invariant(x.to_string().into())
+                }
+            },
             Archetype::Range(a, b) => {
-                ((a == b) && !PATHS_ARE_CASE_INSENSITIVE).then(|| a.to_string().into())
+                if (a != b) || PATHS_ARE_CASE_INSENSITIVE {
+                    Variance::Variant(Boundedness::Closed)
+                }
+                else {
+                    Variance::Invariant(a.to_string().into())
+                }
             },
         }
     }
@@ -670,14 +927,17 @@ impl Class {
         self.is_negated
     }
 
-    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
-        (!self.is_negated)
-            .then(|| match self.archetypes.terminals() {
-                Some(Terminals::Only(archetype)) => archetype.to_invariant_string(),
-                None => Some("".into()),
-                _ => None,
-            })
-            .flatten()
+    pub fn variance(&self) -> Variance {
+        if self.is_negated {
+            // It is not feasible to encode a character class that matches all
+            // UTF-8 text and therefore nothing when negated, and so a character
+            // class must be variant if it is negated.
+            Variance::Variant(Boundedness::Closed)
+        }
+        else {
+            // TODO: This ignores casing groups, such as in the pattern `[aA]`.
+            self.archetypes().iter().disjunctive_variance()
+        }
     }
 }
 
@@ -698,8 +958,13 @@ impl<'t> Literal<'t> {
         self.text.as_ref()
     }
 
-    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
-        (!self.has_variant_casing()).then(|| self.text.clone())
+    pub fn variance(&self) -> Variance {
+        if self.has_variant_casing() {
+            Variance::Variant(Boundedness::Closed)
+        }
+        else {
+            Variance::Invariant(self.text.clone())
+        }
     }
 
     pub fn is_case_insensitive(&self) -> bool {
@@ -734,7 +999,7 @@ impl<'t, A> Repetition<'t, A> {
             Bound::Unbounded => None,
         };
         match upper {
-            Some(upper) => (upper >= lower).then(|| Repetition {
+            Some(upper) => (upper != 0 && upper >= lower).then(|| Repetition {
                 tokens,
                 lower,
                 step: Some(upper - lower),
@@ -781,13 +1046,40 @@ impl<'t, A> Repetition<'t, A> {
         (self.lower, self.step.map(|step| self.lower + step))
     }
 
-    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
-        matches!(self.step, Some(0))
-            .then(|| {
-                fold_invariant_strings(self.tokens.iter())
-                    .map(|string| string.repeat(self.lower).into())
+    pub fn variance(&self) -> Variance {
+        use Boundedness::Open;
+        use TokenKind::Separator;
+        use Variance::Variant;
+
+        let variance = self
+            .tokens()
+            .iter()
+            // Coalesce tokens with open variance with separators. This isn't
+            // destructive and doesn't affect invariant strings, because this
+            // only happens in the presence of open variance, which means that
+            // the repetition has no invariant string representation.
+            .coalesce(|left, right| {
+                match (
+                    (left.kind(), left.variance()),
+                    (right.kind(), right.variance()),
+                ) {
+                    ((Separator, _), (_, Variant(Open))) => Ok(right),
+                    ((_, Variant(Open)), (Separator, _)) => Ok(left),
+                    _ => Err((left, right)),
+                }
             })
-            .flatten()
+            .conjunctive_variance();
+        match self.step {
+            // TODO: Repeating the invariant text could be unknowingly expensive
+            //       and could pose a potential attack vector. Is there an
+            //       alternative representation that avoids epic allocations?
+            Some(0) => variance.map_invariant(|text| text.repeat(self.lower).into()),
+            Some(_) | None => variance + Variant(Open),
+        }
+    }
+
+    pub fn has_component_boundary(&self) -> bool {
+        self.has_token_with(&mut |token| token.is_component_boundary())
     }
 
     pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
@@ -877,8 +1169,12 @@ impl<'i, 't, A> Component<'i, 't, A> {
         })
     }
 
-    pub fn to_invariant_string(&self) -> Option<Cow<str>> {
-        fold_invariant_strings(self.0.iter().cloned())
+    pub fn depth(&self) -> Boundedness {
+        self.tokens().iter().copied().depth()
+    }
+
+    pub fn variance(&self) -> Variance {
+        self.tokens().iter().copied().conjunctive_variance()
     }
 }
 
@@ -988,8 +1284,13 @@ where
     //       when it stabilizes.
     prefix.push_str(
         &components(tokens)
-            .map(|component| component.to_invariant_string().map(Cow::into_owned))
-            .take_while(|string| string.is_some())
+            .map(|component| {
+                component
+                    .variance()
+                    .to_invariant_string()
+                    .map(Cow::into_owned)
+            })
+            .take_while(|text| text.is_some())
             .flatten()
             .join(&MAIN_SEPARATOR.to_string()),
     );
@@ -1015,8 +1316,7 @@ pub fn invariant_prefix_upper_bound<A>(tokens: &[Token<A>]) -> usize {
                 return n;
             },
             _ => {
-                // TODO: This may be expensive.
-                if token.to_invariant_string().is_some() {
+                if token.variance().is_invariant() {
                     continue;
                 }
                 else {
@@ -1393,32 +1693,11 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     }
 }
 
-fn fold_invariant_strings<'t, A, I>(tokens: I) -> Option<Cow<'t, str>>
-where
-    A: 't,
-    I: IntoIterator<Item = &'t Token<'t, A>>,
-    I::IntoIter: Clone,
-{
-    match tokens.into_iter().exactly_one() {
-        Ok(token) => token.to_invariant_string(),
-        Err(tokens) => tokens
-            .fold(Some(String::new()), |output, token| {
-                output.and_then(|mut output| {
-                    token.to_invariant_string().map(move |string| {
-                        output.push_str(string.as_ref());
-                        output
-                    })
-                })
-            })
-            .map(From::from),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use crate::token::{self, TokenKind};
+    use crate::token::{self, Boundedness, TokenKind, Variance};
 
     #[test]
     fn literal_case_insensitivity() {
@@ -1452,7 +1731,7 @@ mod tests {
         assert_eq!(invariant_prefix_path("a/b*").unwrap(), Path::new("a/"));
         assert_eq!(invariant_prefix_path("a/b/*/c").unwrap(), Path::new("a/b/"));
 
-        #[cfg_attr(not(any(unix, windows)), allow(unused))]
+        #[cfg(any(unix, windows))]
         let prefix = invariant_prefix_path("../foo/(?i)bar/(?-i)baz").unwrap();
         #[cfg(unix)]
         assert_eq!(prefix, Path::new("../foo"));
@@ -1463,5 +1742,23 @@ mod tests {
         assert!(invariant_prefix_path("a*").is_none());
         assert!(invariant_prefix_path("*/b").is_none());
         assert!(invariant_prefix_path("a?/b").is_none());
+    }
+
+    #[test]
+    fn tree_expression_variance() {
+        use Boundedness::{Closed, Open};
+        use Variance::Variant;
+
+        let tokenized = token::parse("**").unwrap();
+        assert!(matches!(tokenized.variance(), Variant(Open)));
+        let tokenized = token::parse("<*/>*").unwrap();
+        assert!(matches!(tokenized.variance(), Variant(Open)));
+        let tokenized = token::parse("<<?>/>*").unwrap();
+        assert!(matches!(tokenized.variance(), Variant(Open)));
+
+        let tokenized = token::parse("foo/**").unwrap();
+        assert!(matches!(tokenized.variance(), Variant(Closed)));
+        let tokenized = token::parse("<foo*/>*").unwrap();
+        assert!(matches!(tokenized.variance(), Variant(Closed)));
     }
 }

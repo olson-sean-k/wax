@@ -251,7 +251,7 @@ impl<T> SliceExt<T> for [T] {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum Terminals<T> {
     Only(T),
     StartEnd(T, T),
@@ -293,6 +293,28 @@ pub trait Pattern<'t>: IntoTokens<'t> {
     ///
     /// [`CandidatePath`]: crate::CandidatePath
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>>;
+
+    /// Gets the variance of the pattern.
+    ///
+    /// An invariant glob expression is essentially constant or literal and has
+    /// no patterns that resolve differently than an equivalent path does using
+    /// the platform's file system APIs. For example, the expression
+    /// `path/to/file.txt` is always invariant and resolves identically to the
+    /// paths `path/to/file.txt` and `path\to\file.txt` on Unix and Windows,
+    /// respectively.
+    ///
+    /// A variant glob expression does not resolve the same way as any path used
+    /// with the platform's file system APIs. This is typically because the
+    /// expression matches multiple texts using a regular pattern, such as in
+    /// the expression `**/*.rs`.
+    ///
+    /// Note that this considers potentially invariant patterns such as
+    /// `path/[t][o]/{file.txt}`, which is invariant on Unix. Variance also
+    /// considers flags and the case sensitivity of literals. For example,
+    /// `(?i)file.text` is invariant on Windows but is not on Unix. Variance is
+    /// therefore platform dependent, as it is based on the behavior of file
+    /// system APIs.
+    fn variance(&self) -> Variance;
 }
 
 // TODO: It is not possible to use the `#[doc(cfg())]` attribute on the
@@ -440,6 +462,74 @@ impl<'b> From<&'b Path> for CandidatePath<'b> {
 impl<'b> From<&'b str> for CandidatePath<'b> {
     fn from(text: &'b str) -> Self {
         CandidatePath { text: text.into() }
+    }
+}
+
+/// Variance of a [`Pattern`].
+///
+/// The variance of a pattern describes the kinds of paths it can match with
+/// respect to the platform file system APIs. [`Pattern`]s are either variant or
+/// invariant.
+///
+/// [`Pattern`]: crate::Pattern
+/// [`Variance`]: crate::Variance
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum Variance {
+    /// A [`Pattern`] is invariant and equivalent to a native path.
+    ///
+    /// An invariant [`Pattern`] is equivalent to a native path and resolves the
+    /// same way as such a native path does when used with the platform's file
+    /// system APIs. These APIs may differ, so variance is platform dependent.
+    ///
+    /// Invariant expressions are not limited to literals and separators. Some
+    /// non-literal expressions may be invariant, such as in the expression
+    /// `path/[t][o]/{file,file}.txt`, which is invariant on Unix (but not on
+    /// Windows, because the character class expressions do not consider
+    /// casing).
+    ///
+    /// [`Pattern`]: crate::Pattern
+    Invariant(
+        /// An equivalent native path that describes the invariant [`Pattern`].
+        /// For example, the invariant expression `path/to/file.txt` can be
+        /// described by the paths `path/to/file.txt` and `path\to\file.txt` on
+        /// Unix and Windows, respectively.
+        PathBuf,
+    ),
+    /// A [`Pattern`] is variant and resolves differently than any native path.
+    ///
+    /// A variant [`Pattern`] has no equivalent native path. Most globs are
+    /// variant and match a variety of paths, as invariant [`Pattern`]s have no
+    /// more utility than a native path.
+    ///
+    /// Variant expressions may be formed from only literals or other
+    /// expressions that seem to be strictly variant at first blush. For
+    /// example, the variance of literals considers the case sensitivity of the
+    /// platform's file system APIs, so the expression `(?i)path/to/file.txt` is
+    /// variant on Unix (but not on Windows). Similarly, the expression
+    /// `path/[t][o]/file.txt` is variant on Windows (but not on Unix).
+    ///
+    /// [`Pattern`]: crate::Pattern
+    Variant,
+}
+
+impl Variance {
+    pub fn is_invariant(&self) -> bool {
+        matches!(self, Variance::Invariant(_))
+    }
+
+    pub fn is_variant(&self) -> bool {
+        matches!(self, Variance::Variant)
+    }
+}
+
+impl From<token::Variance<'_>> for Variance {
+    fn from(variance: token::Variance<'_>) -> Self {
+        match variance {
+            token::Variance::Invariant(text) => {
+                Variance::Invariant(PathBuf::from(text.into_owned()))
+            },
+            token::Variance::Variant(_) => Variance::Variant,
+        }
     }
 }
 
@@ -717,26 +807,6 @@ impl<'t> Glob<'t> {
         inspect::captures(self.tokenized.tokens())
     }
 
-    /// Returns `true` if the glob is invariant.
-    ///
-    /// An invariant glob expression is essentially constant or literal and has
-    /// no patterns that resolve differently than an equivalent path does using
-    /// the platform's file system APIs.
-    ///
-    /// Note that this considers potentially invariant patterns such as
-    /// `path/[t][o]/{file.txt}`, which is invariant on Unix. Variance also
-    /// considers flags and the case sensitivity of literals. For example,
-    /// `(?i)file.text` is invariant on Windows but is not on Unix. Variance is
-    /// therefore platform dependent, as it is based on the behavior of file
-    /// system APIs.
-    pub fn is_invariant(&self) -> bool {
-        // TODO: This may be expensive.
-        self.tokenized
-            .tokens()
-            .iter()
-            .all(|token| token.to_invariant_string().is_some())
-    }
-
     /// Returns `true` if the glob is rooted.
     ///
     /// As with Unix paths, a glob expression is rooted if it begins with a
@@ -818,6 +888,10 @@ impl<'t> Pattern<'t> for Glob<'t> {
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
+
+    fn variance(&self) -> Variance {
+        self.tokenized.variance().into()
+    }
 }
 
 impl<'t> TryFrom<&'t str> for Glob<'t> {
@@ -864,6 +938,10 @@ impl<'t> Pattern<'t> for Any<'t> {
 
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
+    }
+
+    fn variance(&self) -> Variance {
+        self.token.variance().into()
     }
 }
 
@@ -1461,6 +1539,11 @@ mod tests {
     }
 
     #[test]
+    fn reject_glob_with_invalid_repetition_bounds_tokens() {
+        assert!(Glob::new("<a/:0,0>").is_err());
+    }
+
+    #[test]
     fn reject_glob_with_invalid_repetition_zom_tokens() {
         assert!(Glob::new("<*:0,>").is_err());
         assert!(Glob::new("<a/*:0,>*").is_err());
@@ -1899,27 +1982,53 @@ mod tests {
     }
 
     #[test]
-    fn query_glob_is_invariant() {
-        assert!(Glob::new("").unwrap().is_invariant());
-        assert!(Glob::new("/a/file.ext").unwrap().is_invariant());
-        assert!(Glob::new("/a/{file.ext}").unwrap().is_invariant());
-        assert!(Glob::new("{a/b/file.ext}").unwrap().is_invariant());
-        assert!(Glob::new("<a/b:2>").unwrap().is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a]/file.ext").unwrap().is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a-a]/file.ext").unwrap().is_invariant());
-
-        assert!(!Glob::new("/a/{b,c}").unwrap().is_invariant());
-        assert!(!Glob::new("<a/b:1,>").unwrap().is_invariant());
-        assert!(!Glob::new("/[ab]/file.ext").unwrap().is_invariant());
-        assert!(!Glob::new("**").unwrap().is_invariant());
-        assert!(!Glob::new("/a/*.ext").unwrap().is_invariant());
-        assert!(!Glob::new("/a/b*").unwrap().is_invariant());
-        #[cfg(unix)]
-        assert!(!Glob::new("/a/(?i)file.ext").unwrap().is_invariant());
+    fn query_glob_variance() {
+        assert!(Glob::new("").unwrap().variance().is_invariant());
+        assert!(Glob::new("/a/file.ext").unwrap().variance().is_invariant());
+        assert!(Glob::new("/a/{file.ext}")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        assert!(Glob::new("{a/b/file.ext}")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        assert!(Glob::new("{a,a}").unwrap().variance().is_invariant());
         #[cfg(windows)]
-        assert!(!Glob::new("/a/(?-i)file.ext").unwrap().is_invariant());
+        assert!(Glob::new("{a,A}").unwrap().variance().is_invariant());
+        assert!(Glob::new("<a/b:2>").unwrap().variance().is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a]/file.ext")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a-a]/file.ext")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a-aaa-a]/file.ext")
+            .unwrap()
+            .variance()
+            .is_invariant());
+
+        assert!(Glob::new("/a/{b,c}").unwrap().variance().is_variant());
+        assert!(Glob::new("<a/b:1,>").unwrap().variance().is_variant());
+        assert!(Glob::new("/[ab]/file.ext").unwrap().variance().is_variant());
+        assert!(Glob::new("**").unwrap().variance().is_variant());
+        assert!(Glob::new("/a/*.ext").unwrap().variance().is_variant());
+        assert!(Glob::new("/a/b*").unwrap().variance().is_variant());
+        #[cfg(unix)]
+        assert!(Glob::new("/a/(?i)file.ext")
+            .unwrap()
+            .variance()
+            .is_variant());
+        #[cfg(windows)]
+        assert!(Glob::new("/a/(?-i)file.ext")
+            .unwrap()
+            .variance()
+            .is_variant());
     }
 
     #[test]
