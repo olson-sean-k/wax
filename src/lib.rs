@@ -19,6 +19,7 @@ mod diagnostics;
 mod encode;
 mod rule;
 mod token;
+mod walk;
 
 use bstr::ByteVec;
 use itertools::{Itertools as _, Position};
@@ -26,21 +27,12 @@ use itertools::{Itertools as _, Position};
 use miette::Diagnostic;
 use regex::Regex;
 use std::borrow::{Borrow, Cow};
-use std::cmp;
 use std::ffi::OsStr;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::fs::{FileType, Metadata};
 use std::iter::Fuse;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
 use thiserror::Error;
-use walkdir::{self, DirEntry, WalkDir};
-
-/// Describes errors that occur when matching a [`Glob`] against a directory
-/// tree.
-///
-/// [`Glob`]: crate::Glob
-pub use walkdir::Error as WalkError;
 
 #[cfg(feature = "diagnostics-inspect")]
 use crate::diagnostics::inspect;
@@ -57,6 +49,7 @@ pub use crate::diagnostics::report::{DiagnosticGlob, DiagnosticResult, Diagnosti
 pub use crate::diagnostics::Span;
 pub use crate::rule::RuleError;
 pub use crate::token::ParseError;
+pub use crate::walk::{Walk, WalkEntry, WalkError};
 
 #[cfg(windows)]
 const PATHS_ARE_CASE_INSENSITIVE: bool = true;
@@ -497,8 +490,8 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 /// [`walk`]: crate::Glob::walk
 #[derive(Clone, Debug)]
 pub struct Glob<'t> {
-    tokenized: Tokenized<'t>,
-    regex: Regex,
+    pub(crate) tokenized: Tokenized<'t>,
+    pub(crate) regex: Regex,
 }
 
 impl<'t> Glob<'t> {
@@ -667,52 +660,35 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     ///
+    /// Because [`Glob`]s do not support general negations, the [`not`] iterator
+    /// adaptor can be used when walking a directory tree to filter
+    /// [`WalkEntry`]s using arbitary patterns. **This should be preferred over
+    /// external iterator filtering, because it does not traverse directory
+    /// trees that match terminal negations.**
+    ///
+    /// ```rust,no_run
+    /// use wax::Glob;
+    ///
+    /// let glob = Glob::new("**/*.(?i){jpg,jpeg,png}").unwrap();
+    /// for entry in glob
+    ///     .walk("./Pictures", usize::MAX)
+    ///     .not(["**/(i?){background<s:0,1>,wallpaper<s:0,1>}/**"])
+    ///     .unwrap()
+    /// {
+    ///     let entry = entry.unwrap();
+    ///     println!("{:?}", entry.path());
+    /// }
+    /// ```
+    ///
     /// [`Glob`]: crate::Glob
     /// [`has_root`]: crate::Glob::has_root
+    /// [`not`]: crate::Walk::not
     /// [`Path::join`]: std::path::Path::join
     /// [`PathBuf::push`]: std::path::PathBuf::push
     /// [`Pattern`]: crate::Pattern
     /// [`WalkEntry`]: crate::WalkEntry
     pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
-        let directory = directory.as_ref();
-        // The directory tree is traversed from `root`, which may include an
-        // invariant prefix from the glob pattern. `Walk` patterns are only
-        // applied to path components following the `prefix` (distinct from the
-        // glob pattern prefix) in `root`.
-        let (root, prefix, depth) = token::invariant_prefix_path(self.tokenized.tokens())
-            .map(|prefix| {
-                let root = directory.join(&prefix).into();
-                if prefix.is_absolute() {
-                    // Absolute paths replace paths with which they are joined,
-                    // in which case there is no prefix.
-                    (root, PathBuf::new().into(), depth)
-                }
-                else {
-                    // TODO: If the depth is exhausted by an invariant prefix
-                    //       path, then `Walk` should yield no entries. This
-                    //       computes a depth of zero when this occurs, so
-                    //       entries may still be yielded.
-                    // `depth` is relative to the input `directory`, so count
-                    // any components added by an invariant prefix path from the
-                    // glob.
-                    let depth = depth.saturating_sub(prefix.components().count());
-                    (root, directory.into(), depth)
-                }
-            })
-            .unwrap_or_else(|| {
-                let root = Cow::from(directory);
-                (root.clone(), root, depth)
-            });
-        let regexes = Walk::compile(self.tokenized.tokens());
-        Walk {
-            regex: Cow::Borrowed(&self.regex),
-            regexes,
-            prefix: prefix.into_owned(),
-            walk: WalkDir::new(root)
-                .follow_links(false)
-                .max_depth(depth)
-                .into_iter(),
-        }
+        walk::walk(self, directory, depth)
     }
 
     /// Gets non-error [`Diagnostic`]s.
@@ -861,8 +837,8 @@ impl<'t> TryFrom<&'t str> for Glob<'t> {
 /// [`Pattern`]: crate::Pattern
 #[derive(Clone, Debug)]
 pub struct Any<'t> {
-    token: Token<'t, ()>,
-    regex: Regex,
+    pub(crate) token: Token<'t, ()>,
+    pub(crate) regex: Regex,
 }
 
 impl<'t> Any<'t> {
@@ -888,298 +864,6 @@ impl<'t> Pattern<'t> for Any<'t> {
 
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
-    }
-}
-
-/// Traverses a directory tree via a `Walk` instance.
-///
-/// This macro emits an interruptable loop that executes a block of code
-/// whenever a `WalkEntry` or error is encountered while traversing a directory
-/// tree. The block may return from its function or otherwise interrupt and
-/// subsequently resume the loop.
-///
-/// Note that if the block attempts to emit a `WalkEntry` across a function
-/// boundary that the entry must copy its contents via `into_owned`.
-macro_rules! walk {
-    ($state:expr => |$entry:ident| $f:block) => {
-        use itertools::EitherOrBoth::{Both, Left, Right};
-        use itertools::Position::{First, Last, Middle, Only};
-
-        // `while-let` avoids a mutable borrow of `walk`, which would prevent a
-        // subsequent call to `skip_current_dir` within the loop body.
-        #[allow(clippy::while_let_on_iterator)]
-        #[allow(unreachable_code)]
-        'walk: while let Some(entry) = $state.walk.next() {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    let $entry = Err(error.into());
-                    $f
-                    continue; // May be unreachable.
-                }
-            };
-            let depth = cmp::max(entry.depth(), 1) - 1;
-            let path = entry
-                .path()
-                .strip_prefix(&$state.prefix)
-                .expect("path is not in tree");
-            for candidate in path
-                .components()
-                .skip(depth)
-                .filter_map(|component| match component {
-                    Component::Normal(component) => Some(CandidatePath::from(component)),
-                    _ => None,
-                })
-                .zip_longest($state.regexes.iter().skip(depth))
-                .with_position()
-            {
-                match candidate.as_tuple() {
-                    (First(_) | Middle(_), Both(component, regex)) => {
-                        if !regex.is_match(component.as_ref()) {
-                            // Do not descend into directories that do not match
-                            // the corresponding component regex.
-                            if entry.file_type().is_dir() {
-                                $state.walk.skip_current_dir();
-                            }
-                            continue 'walk;
-                        }
-                    }
-                    (Last(_) | Only(_), Both(component, regex)) => {
-                        if regex.is_match(component.as_ref()) {
-                            let path = CandidatePath::from(path);
-                            if let Some(matched) =
-                                $state.regex.captures(path.as_ref()).map(MatchedText::from)
-                            {
-                                let $entry = Ok(WalkEntry {
-                                    entry: Cow::Borrowed(&entry),
-                                    matched,
-                                });
-                                $f
-                            }
-                        }
-                        else {
-                            // Do not descend into directories that do not match
-                            // the corresponding component regex.
-                            if entry.file_type().is_dir() {
-                                $state.walk.skip_current_dir();
-                            }
-                        }
-                    }
-                    (_, Left(_component)) => {
-                        let path = CandidatePath::from(path);
-                        if let Some(matched) =
-                            $state.regex.captures(path.as_ref()).map(MatchedText::from)
-                        {
-                            let $entry = Ok(WalkEntry {
-                                entry: Cow::Borrowed(&entry),
-                                matched,
-                            });
-                            $f
-                            continue 'walk; // May be unreachable.
-                        }
-                    }
-                    (_, Right(_regex)) => {
-                        continue 'walk;
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Describes a file matching a [`Glob`] in a directory tree.
-///
-/// [`Glob`]: crate::Glob
-#[derive(Debug)]
-pub struct WalkEntry<'e> {
-    entry: Cow<'e, DirEntry>,
-    matched: MatchedText<'e>,
-}
-
-impl<'e> WalkEntry<'e> {
-    /// Clones any borrowed data into an owning instance.
-    pub fn into_owned(self) -> WalkEntry<'static> {
-        let WalkEntry { entry, matched } = self;
-        WalkEntry {
-            entry: Cow::Owned(entry.into_owned()),
-            matched: matched.into_owned(),
-        }
-    }
-
-    pub fn into_path(self) -> PathBuf {
-        match self.entry {
-            Cow::Borrowed(entry) => entry.path().to_path_buf(),
-            Cow::Owned(entry) => entry.into_path(),
-        }
-    }
-
-    /// Gets the path of the matched file.
-    pub fn path(&self) -> &Path {
-        self.entry.path()
-    }
-
-    /// Converts the entry to the matched [`CandidatePath`].
-    ///
-    /// This differs from `path` and `into_path`, and uses the same encoding and
-    /// representation exposed by the matched text in `matched`.
-    ///
-    /// [`CandidatePath`]: crate::CandidatePath
-    /// [`into_path`]: crate::WalkEntry::into_path
-    /// [`matched`]: crate::WalkEntry::matched
-    /// [`path`]: crate::WalkEntry::path
-    pub fn to_candidate_path(&self) -> CandidatePath<'_> {
-        self.path().into()
-    }
-
-    pub fn file_type(&self) -> FileType {
-        self.entry.file_type()
-    }
-
-    pub fn metadata(&self) -> Result<Metadata, GlobError<'static>> {
-        self.entry.metadata().map_err(From::from)
-    }
-
-    /// Gets the depth of the file from the root of the directory tree.
-    pub fn depth(&self) -> usize {
-        self.entry.depth()
-    }
-
-    /// Gets the matched text in the path of the file.
-    pub fn matched(&self) -> &MatchedText<'e> {
-        &self.matched
-    }
-}
-
-/// Iterator over files matching a [`Glob`] in a directory tree.
-///
-/// [`Glob`]: crate::Glob
-#[derive(Debug)]
-// This type is principally an iterator and is therefore lazy.
-#[must_use]
-pub struct Walk<'g> {
-    regex: Cow<'g, Regex>,
-    regexes: Vec<Regex>,
-    prefix: PathBuf,
-    walk: walkdir::IntoIter,
-}
-
-impl<'g> Walk<'g> {
-    fn compile<'t, I>(tokens: I) -> Vec<Regex>
-    where
-        I: IntoIterator<Item = &'t Token<'t>>,
-        I::IntoIter: Clone,
-    {
-        let mut regexes = Vec::new();
-        for component in token::components(tokens) {
-            if component
-                .tokens()
-                .iter()
-                .any(|token| token.has_component_boundary())
-            {
-                // Stop at component boundaries, such as tree wildcards or any
-                // boundary within an alternative token.
-                break;
-            }
-            else {
-                regexes.push(Glob::compile(component.tokens().iter().cloned()));
-            }
-        }
-        regexes
-    }
-
-    /// Clones any borrowed data into an owning instance.
-    pub fn into_owned(self) -> Walk<'static> {
-        let Walk {
-            regex,
-            regexes,
-            prefix,
-            walk,
-        } = self;
-        Walk {
-            regex: Cow::Owned(regex.into_owned()),
-            regexes,
-            prefix,
-            walk,
-        }
-    }
-
-    /// Calls a closure on each matched file or error.
-    ///
-    /// This function does not clone the contents of paths and captures when
-    /// emitting entries and so may be more efficient than external iteration
-    /// via [`Iterator`] (and [`Iterator::for_each`]), which must clone text.
-    ///
-    /// [`Iterator`]: std::iter::Iterator
-    /// [`Iterator::for_each`]: std::iter::Iterator::for_each
-    pub fn for_each(mut self, mut f: impl FnMut(Result<WalkEntry, WalkError>)) {
-        walk!(self => |entry| {
-            f(entry);
-        });
-    }
-
-    /// Filters [`WalkEntry`]s against negated [`Glob`]s.
-    ///
-    /// This function creates an adaptor that discards [`WalkEntry`]s that match
-    /// any of the given [`Glob`]s. This allows for broad negations while
-    /// matching a [`Glob`] against a directory tree that cannot be achieved
-    /// using a single glob expression.
-    ///
-    /// Errors are not filtered, so if an error occurs reading a file at a path
-    /// that would have been discarded, that error is still yielded by the
-    /// iterator.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any of the given patterns could not be converted
-    /// into a [`Glob`]. If the given patterns are [`Glob`]s, then this function
-    /// is infallible.
-    ///
-    /// # Examples
-    ///
-    /// Because glob expressions do not support general negations, it is
-    /// sometimes impossible to express patterns that deny particular text. In
-    /// such cases, [`not`] can be used to apply additional patterns as a
-    /// filter.
-    ///
-    /// ```rust,no_run
-    /// use wax::Glob;
-    ///
-    /// // Find image files, but not if they are beneath a directory with a name that
-    /// // suggests that they are private.
-    /// let glob = Glob::new("**/*.(?i){jpg,jpeg,png}").unwrap();
-    /// for entry in glob
-    ///     .walk(".", usize::MAX)
-    ///     .not(["**/(?i)<.:0,1>private/**"])
-    ///     .unwrap()
-    /// {
-    ///     let entry = entry.unwrap();
-    ///     // ...
-    /// }
-    /// ```
-    ///
-    /// [`Glob`]: crate::Glob
-    /// [`WalkEntry`]: crate::WalkEntry
-    pub fn not<'n, P>(
-        self,
-        patterns: impl IntoIterator<Item = P>,
-    ) -> Result<impl 'g + Iterator<Item = Result<WalkEntry<'static>, WalkError>>, GlobError<'n>>
-    where
-        'n: 'g,
-        P: TryInto<Glob<'n>, Error = GlobError<'n>>,
-    {
-        let any = crate::any(patterns)?;
-        Ok(self.filter_ok(move |entry| !any.is_match(entry.to_candidate_path())))
-    }
-}
-
-impl Iterator for Walk<'_> {
-    type Item = Result<WalkEntry<'static>, WalkError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        walk!(self => |entry| {
-            return Some(entry.map(|entry: WalkEntry| entry.into_owned()));
-        });
-        None
     }
 }
 

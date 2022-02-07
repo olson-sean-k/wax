@@ -129,7 +129,7 @@ fn walk_with_not() {
     );
 }
 
-// TODO: See `Glob::walk`.
+// TODO: See `crate::walk::walk`.
 //#[test]
 //fn walk_with_exhausted_depth() {
 //    let (_root, path) = temptree();
