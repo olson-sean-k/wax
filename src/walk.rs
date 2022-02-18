@@ -84,6 +84,7 @@ macro_rules! walk {
                                 $state.walk.skip_current_dir();
                             }
                         }
+                        continue 'walk;
                     }
                     (_, Left(_component)) => {
                         let path = CandidatePath::from(path);
@@ -95,13 +96,24 @@ macro_rules! walk {
                                 matched,
                             });
                             $f
-                            continue 'walk; // May be unreachable.
                         }
+                        continue 'walk;
                     }
                     (_, Right(_pattern)) => {
                         continue 'walk;
                     }
                 }
+            }
+            // If the loop is not entered, check for a match. This may indicate
+            // that the `Glob` is empty and a single invariant path may be
+            // matched.
+            let path = CandidatePath::from(path);
+            if let Some(matched) = $state.pattern.captures(path.as_ref()).map(MatchedText::from) {
+                let $entry = Ok(WalkEntry {
+                    entry: Cow::Borrowed(&entry),
+                    matched,
+                });
+                $f
             }
         }
     };
@@ -126,16 +138,20 @@ macro_rules! walk {
                 .path()
                 .strip_prefix(&$state.prefix)
                 .expect("path is not in tree");
-            for candidate in candidates(&entry, path, $state.components.iter()) {
-                let path = CandidatePath::from(path);
-                if $state.negation.terminal.is_match(path.as_ref()) {
-                    // Do not descend into directories that match the terminal
-                    // negation.
-                    if entry.file_type().is_dir() {
-                        $state.walk.skip_current_dir();
-                    }
-                    continue 'walk;
+            let candidates = candidates(&entry, path, $state.components.iter());
+            let path = CandidatePath::from(path);
+            if $state.negation.terminal.is_match(path.as_ref()) {
+                // Do not descend into directories that match the terminal
+                // negation.
+                if entry.file_type().is_dir() {
+                    $state.walk.skip_current_dir();
                 }
+                continue 'walk;
+            }
+            if $state.negation.nonterminal.is_match(path.as_ref()) {
+                continue 'walk;
+            }
+            for candidate in candidates {
                 match candidate.as_tuple() {
                     (First(_) | Middle(_), Both(component, pattern)) => {
                         if !pattern.is_match(component.as_ref()) {
@@ -152,9 +168,6 @@ macro_rules! walk {
                             if let Some(matched) =
                                 $state.pattern.captures(path.as_ref()).map(MatchedText::from)
                             {
-                                if $state.negation.nonterminal.is_match(path.as_ref()) {
-                                    continue 'walk;
-                                }
                                 let $entry = Ok(WalkEntry {
                                     entry: Cow::Borrowed(&entry),
                                     matched,
@@ -169,26 +182,34 @@ macro_rules! walk {
                                 $state.walk.skip_current_dir();
                             }
                         }
+                        continue 'walk;
                     }
                     (_, Left(_component)) => {
                         if let Some(matched) =
                             $state.pattern.captures(path.as_ref()).map(MatchedText::from)
                         {
-                            if $state.negation.nonterminal.is_match(path.as_ref()) {
-                                continue 'walk;
-                            }
                             let $entry = Ok(WalkEntry {
                                 entry: Cow::Borrowed(&entry),
                                 matched,
                             });
                             $f
-                            continue 'walk; // May be unreachable.
                         }
+                        continue 'walk;
                     }
                     (_, Right(_pattern)) => {
                         continue 'walk;
                     }
                 }
+            }
+            // If the loop is not entered, check for a match. This may indicate
+            // that the `Glob` is empty and a single invariant path may be
+            // matched.
+            if let Some(matched) = $state.pattern.captures(path.as_ref()).map(MatchedText::from) {
+                let $entry = Ok(WalkEntry {
+                    entry: Cow::Borrowed(&entry),
+                    matched,
+                });
+                $f
             }
         }
     };

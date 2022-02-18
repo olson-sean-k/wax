@@ -153,12 +153,16 @@ boundaries**; all other patterns do **not** implicitly match across component
 (directory) boundaries. When a tree wildcard participates in a match and does
 not terminate the pattern, its captured text includes the trailing separator. If
 a tree wildcard does not participate in a match, then its captured text is an
-empty string. Tree wildcards must be delimited by forward slashes or
-terminations (such as the beginning and/or end of a glob or sub-glob). Tree
-wildcards and path separators are distinct and any adjacent forward slashes that
-form a tree wildcard are parsed together (but rooting forward slashes are still
-meaningful). If a glob expression consists solely of a tree wildcard, then it
-matches any and all files and directory trees.
+empty string.
+
+Tree wildcards must be delimited by forward slashes or terminations (such as the
+beginning and/or end of a glob or sub-glob). Tree wildcards and path separators
+are distinct and any adjacent forward slashes that form a tree wildcard are
+parsed together (but rooting forward slashes are still meaningful).
+
+If a glob expression consists solely of a tree wildcard, then it matches any and
+all files and directory trees. This includes the root when matching against a
+directory tree.
 
 ### Character Classes
 

@@ -43,7 +43,9 @@ fn walk_with_tree() {
         .collect();
     assert_eq!(
         paths,
-        IntoIterator::into_iter([
+        [
+            #[allow(clippy::redundant_clone)]
+            path.to_path_buf(),
             path.join("doc"),
             path.join("doc/guide.md"),
             path.join("src"),
@@ -52,7 +54,8 @@ fn walk_with_tree() {
             path.join("tests"),
             path.join("tests/walk.rs"),
             path.join("README.md"),
-        ])
+        ]
+        .into_iter()
         .collect(),
     );
 }
@@ -99,10 +102,20 @@ fn walk_with_invariant_glob() {
         .flatten()
         .map(|entry| entry.into_path())
         .collect();
-    assert_eq!(
-        paths,
-        IntoIterator::into_iter([path.join("src/lib.rs"),]).collect(),
-    );
+    assert_eq!(paths, [path.join("src/lib.rs")].into_iter().collect(),);
+}
+
+#[test]
+fn walk_with_invariant_partitioned_glob() {
+    let (_root, path) = temptree();
+
+    let (prefix, glob) = Glob::partitioned("src/lib.rs").unwrap();
+    let paths: HashSet<_> = glob
+        .walk(path.join(prefix), usize::MAX)
+        .flatten()
+        .map(|entry| entry.into_path())
+        .collect();
+    assert_eq!(paths, [path.join("src/lib.rs")].into_iter().collect(),);
 }
 
 #[test]
@@ -119,12 +132,13 @@ fn walk_with_not() {
         .collect();
     assert_eq!(
         paths,
-        IntoIterator::into_iter([
+        [
             path.join("doc/guide.md"),
             path.join("src/glob.rs"),
             path.join("src/lib.rs"),
             path.join("README.md"),
-        ])
+        ]
+        .into_iter()
         .collect(),
     );
 }
