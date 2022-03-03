@@ -39,10 +39,10 @@ assert_eq!("main.go", matched.get(2).unwrap());
 Match files in a directory tree against a glob:
 
 ```rust
-use wax::Glob;
+use wax::{Glob, WalkBehavior};
 
 let glob = Glob::new("**/*.{md,txt}").unwrap();
-for entry in glob.walk("doc", usize::MAX) {
+for entry in glob.walk("doc", WalkBehavior::default()) {
     let entry = entry.unwrap();
     // ...
 }

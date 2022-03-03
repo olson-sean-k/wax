@@ -266,6 +266,141 @@ impl Negation {
     }
 }
 
+/// Configuration for interpreting symbolic links.
+///
+/// Determines how symbolic links are interpreted when traversing directory
+/// trees using functions like [`Glob::walk`]. By default, symbolic links are
+/// read as regular files and their targets are ignored.
+///
+/// [`Glob::walk`]: crate::Glob::walk
+#[derive(Clone, Copy, Debug)]
+pub enum LinkBehavior {
+    /// Read the symbolic link file itself.
+    ///
+    /// This behavior reads the symbolic link as a regular file. The
+    /// corresponding [`WalkEntry`] uses the path of the link file and its
+    /// metadata describes the link file itself. The target is effectively
+    /// ignored and traversal will **not** follow the link.
+    ///
+    /// [`WalkEntry`]: crate::WalkEntry
+    ReadFile,
+    /// Read the target of the symbolic link.
+    ///
+    /// This behavior reads the target of the symbolic link. The corresponding
+    /// [`WalkEntry`] uses the path of the link file and its metadata describes
+    /// the target. If the target is a directory, then traversal will follow the
+    /// link and descend into the target.
+    ///
+    /// If a link is reentrant and forms a cycle, then an error will be emitted
+    /// instead of a [`WalkEntry`] and traversal will not follow the link.
+    ///
+    /// [`WalkEntry`]: crate::WalkEntry
+    ReadTarget,
+}
+
+impl Default for LinkBehavior {
+    fn default() -> Self {
+        LinkBehavior::ReadFile
+    }
+}
+
+/// Configuration for matching [`Glob`]s against directory trees.
+///
+/// Determines the behavior of the traversal within a directory tree when using
+/// functions like [`Glob::walk`]. `WalkBehavior` can be constructed via
+/// conversions from types representing its fields. APIs generally accept `impl
+/// Into<WalkBehavior>`, so these conversion can be used implicitly. When
+/// constructed using such a conversion, `WalkBehavior` will use defaults for
+/// any remaining fields.
+///
+/// # Examples
+///
+/// By default, symbolic links are interpreted as regular files and targets are
+/// ignored. To read linked targets, use [`LinkBehavior::ReadTarget`].
+///
+/// ```rust
+/// use wax::LinkBehavior;
+///
+/// for entry in wax::walk("**", ".", LinkBehavior::ReadTarget).unwrap() {
+///     let entry = entry.unwrap();
+///     // ...
+/// }
+/// ```
+///
+/// [`Glob`]: crate::Glob
+/// [`Glob::walk`]: crate::Glob::walk
+#[derive(Clone, Copy, Debug)]
+pub struct WalkBehavior {
+    // TODO: Consider using a dedicated type for this field. Using primitive
+    //       types does not interact well with conversions used in `walk` APIs.
+    //       For example, if another `usize` field is introduced, then the
+    //       conversions become ambiguous and confusing.
+    /// Maximum depth.
+    ///
+    /// Determines the maximum depth to which a directory tree will be traversed
+    /// relative to the root. A depth of zero corresponds to the root and so
+    /// using such a depth will yield at most one entry for the root.
+    ///
+    /// The default value is [`usize::MAX`].
+    ///
+    /// [`usize::MAX`]: usize::MAX
+    pub depth: usize,
+    /// Interpretation of symbolic links.
+    ///
+    /// Determines how symbolic links are interpreted when traversing a
+    /// directory tree. See [`LinkBehavior`].
+    ///
+    /// The default value is [`LinkBehavior::ReadFile`].
+    ///
+    /// [`LinkBehavior`]: crate::LinkBehavior
+    /// [`LinkBehavior::ReadFile`]: crate::LinkBehavior::ReadFile
+    pub link: LinkBehavior,
+}
+
+/// Constructs a `WalkBehavior` using the following defaults:
+///
+/// | Field     | Description                       | Value                      |
+/// |-----------|-----------------------------------|----------------------------|
+/// | [`depth`] | Maximum depth.                    | [`usize::MAX`]             |
+/// | [`link`]  | Interpretation of symbolic links. | [`LinkBehavior::ReadFile`] |
+///
+/// [`depth`]: crate::WalkBehavior::depth
+/// [`link`]: crate::WalkBehavior::link
+/// [`LinkBehavior::ReadFile`]: crate::LinkBehavior::ReadFile
+/// [`usize::MAX`]: usize::MAX
+impl Default for WalkBehavior {
+    fn default() -> Self {
+        WalkBehavior {
+            depth: usize::MAX,
+            link: Default::default(),
+        }
+    }
+}
+
+impl From<()> for WalkBehavior {
+    fn from(_: ()) -> Self {
+        Default::default()
+    }
+}
+
+impl From<LinkBehavior> for WalkBehavior {
+    fn from(link: LinkBehavior) -> Self {
+        WalkBehavior {
+            link,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<usize> for WalkBehavior {
+    fn from(depth: usize) -> Self {
+        WalkBehavior {
+            depth,
+            ..Default::default()
+        }
+    }
+}
+
 /// Iterator over files matching a [`Glob`] in a directory tree.
 ///
 /// [`Glob`]: crate::Glob
@@ -515,8 +650,13 @@ impl<'e> WalkEntry<'e> {
     }
 }
 
-pub fn walk<'g>(glob: &'g Glob<'_>, directory: impl AsRef<Path>, depth: usize) -> Walk<'g, ()> {
+pub fn walk<'g>(
+    glob: &'g Glob<'_>,
+    directory: impl AsRef<Path>,
+    behavior: impl Into<WalkBehavior>,
+) -> Walk<'g, ()> {
     let directory = directory.as_ref();
+    let WalkBehavior { depth, link } = behavior.into();
     // The directory tree is traversed from `root`, which may include an
     // invariant prefix from the glob pattern. `Walk` patterns are only
     // applied to path components following the `prefix` (distinct from the
@@ -545,14 +685,17 @@ pub fn walk<'g>(glob: &'g Glob<'_>, directory: impl AsRef<Path>, depth: usize) -
             let root = Cow::from(directory);
             (root.clone(), root, depth)
         });
-    let regexes = Walk::<()>::compile(glob.tokenized.tokens());
+    let components = Walk::<()>::compile(glob.tokenized.tokens());
     Walk {
         pattern: Cow::Borrowed(&glob.regex),
-        components: regexes,
+        components,
         negation: (),
         prefix: prefix.into_owned(),
         walk: WalkDir::new(root)
-            .follow_links(false)
+            .follow_links(match link {
+                LinkBehavior::ReadFile => false,
+                LinkBehavior::ReadTarget => true,
+            })
             .max_depth(depth)
             .into_iter(),
     }

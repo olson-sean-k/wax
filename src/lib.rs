@@ -49,7 +49,7 @@ pub use crate::diagnostics::report::{DiagnosticGlob, DiagnosticResult, Diagnosti
 pub use crate::diagnostics::Span;
 pub use crate::rule::RuleError;
 pub use crate::token::ParseError;
-pub use crate::walk::{Walk, WalkEntry, WalkError};
+pub use crate::walk::{LinkBehavior, Walk, WalkBehavior, WalkEntry, WalkError};
 
 #[cfg(windows)]
 const PATHS_ARE_CASE_INSENSITIVE: bool = true;
@@ -566,11 +566,11 @@ impl<'t> Glob<'t> {
     ///
     /// ```rust,no_run
     /// use std::path::Path;
-    /// use wax::Glob;
+    /// use wax::{Glob, WalkBehavior};
     ///
     /// let directory = Path::new("."); // Working directory.
     /// let (prefix, glob) = Glob::partitioned("../site/img/*.{jpg,png}").unwrap();
-    /// for entry in glob.walk(directory.join(prefix), usize::MAX) {
+    /// for entry in glob.walk(directory.join(prefix), WalkBehavior::default()) {
     ///     // ...
     /// }
     /// ```
@@ -651,10 +651,10 @@ impl<'t> Glob<'t> {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use wax::Glob;
+    /// use wax::{Glob, WalkBehavior};
     ///
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
-    /// for entry in glob.walk("./Pictures", usize::MAX) {
+    /// for entry in glob.walk("./Pictures", WalkBehavior::default()) {
     ///     let entry = entry.unwrap();
     ///     println!("JPEG: {:?}", entry.path());
     /// }
@@ -687,8 +687,8 @@ impl<'t> Glob<'t> {
     /// [`PathBuf::push`]: std::path::PathBuf::push
     /// [`Pattern`]: crate::Pattern
     /// [`WalkEntry`]: crate::WalkEntry
-    pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
-        walk::walk(self, directory, depth)
+    pub fn walk(&self, directory: impl AsRef<Path>, behavior: impl Into<WalkBehavior>) -> Walk {
+        walk::walk(self, directory, behavior)
     }
 
     /// Gets non-error [`Diagnostic`]s.
@@ -1042,11 +1042,11 @@ pub fn matched<'i, 'p>(
 pub fn walk(
     expression: &str,
     directory: impl AsRef<Path>,
-    depth: usize,
+    behavior: impl Into<WalkBehavior>,
 ) -> Result<Walk<'static>, GlobError> {
     let (prefix, glob) = Glob::partitioned(expression)?;
     Ok(glob
-        .walk(directory.as_ref().join(prefix), depth)
+        .walk(directory.as_ref().join(prefix), behavior)
         .into_owned())
 }
 
