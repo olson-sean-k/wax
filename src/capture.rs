@@ -1,6 +1,8 @@
 use regex::Captures as BorrowedText;
 use std::str;
 
+use crate::CandidatePath;
+
 #[derive(Clone, Debug)]
 struct OwnedText {
     matched: String,
@@ -149,7 +151,7 @@ impl<'t> MatchedText<'t> {
     /// [`get`]: crate::MatchedText::get
     /// [`Pattern`]: crate::Pattern
     pub fn complete(&self) -> &str {
-        self.get(0).unwrap()
+        self.get(0).expect("match has no complete text")
     }
 
     /// Gets the matched text of a capture at the given index.
@@ -174,6 +176,10 @@ impl<'t> MatchedText<'t> {
             },
             MaybeOwnedText::Owned(ref captures) => captures.get(index),
         }
+    }
+
+    pub fn to_candidate_path(&self) -> CandidatePath {
+        CandidatePath::from(self.complete())
     }
 }
 

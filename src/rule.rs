@@ -19,12 +19,109 @@ use miette::{Diagnostic, LabeledSpan, SourceCode, SourceSpan};
 use std::borrow::Cow;
 #[cfg(feature = "diagnostics-report")]
 use std::fmt::Display;
+use std::iter::Fuse;
 use thiserror::Error;
 
 #[cfg(feature = "diagnostics-report")]
 use crate::diagnostics::report::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
 use crate::token::{Token, TokenKind, Tokenized};
-use crate::{IteratorExt as _, SliceExt as _, Terminals};
+use crate::{SliceExt as _, Terminals};
+
+trait IteratorExt: Iterator + Sized {
+    fn adjacent(self) -> Adjacent<Self>
+    where
+        Self::Item: Clone;
+}
+
+impl<I> IteratorExt for I
+where
+    I: Iterator,
+{
+    fn adjacent(self) -> Adjacent<Self>
+    where
+        Self::Item: Clone,
+    {
+        Adjacent::new(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Adjacency<T> {
+    Only { item: T },
+    First { item: T, right: T },
+    Middle { left: T, item: T, right: T },
+    Last { left: T, item: T },
+}
+
+impl<T> Adjacency<T> {
+    pub fn into_tuple(self) -> (Option<T>, T, Option<T>) {
+        match self {
+            Adjacency::Only { item } => (None, item, None),
+            Adjacency::First { item, right } => (None, item, Some(right)),
+            Adjacency::Middle { left, item, right } => (Some(left), item, Some(right)),
+            Adjacency::Last { left, item } => (Some(left), item, None),
+        }
+    }
+}
+
+struct Adjacent<I>
+where
+    I: Iterator,
+{
+    input: Fuse<I>,
+    adjacency: Option<Adjacency<I::Item>>,
+}
+
+impl<I> Adjacent<I>
+where
+    I: Iterator,
+{
+    fn new(input: I) -> Self {
+        let mut input = input.fuse();
+        let adjacency = match (input.next(), input.next()) {
+            (Some(item), Some(right)) => Some(Adjacency::First { item, right }),
+            (Some(item), None) => Some(Adjacency::Only { item }),
+            (None, None) => None,
+            // The input iterator is fused, so this cannot occur.
+            (None, Some(_)) => unreachable!(),
+        };
+        Adjacent { input, adjacency }
+    }
+}
+
+impl<I> Iterator for Adjacent<I>
+where
+    I: Iterator,
+    I::Item: Clone,
+{
+    type Item = Adjacency<I::Item>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.input.next();
+        self.adjacency.take().map(|adjacency| {
+            self.adjacency = match adjacency.clone() {
+                Adjacency::First {
+                    item: left,
+                    right: item,
+                }
+                | Adjacency::Middle {
+                    item: left,
+                    right: item,
+                    ..
+                } => {
+                    if let Some(right) = next {
+                        Some(Adjacency::Middle { left, item, right })
+                    }
+                    else {
+                        Some(Adjacency::Last { left, item })
+                    }
+                },
+                Adjacency::Only { .. } | Adjacency::Last { .. } => None,
+            };
+            adjacency
+        })
+    }
+}
 
 /// Describes errors concerning rules and patterns in a glob expression.
 ///
@@ -486,4 +583,35 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         tokenized.tokens(),
         Default::default(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::rule::{Adjacency, IteratorExt as _};
+
+    #[test]
+    fn adjacent() {
+        let mut adjacent = Option::<i32>::None.into_iter().adjacent();
+        assert_eq!(adjacent.next(), None);
+
+        let mut adjacent = Some(0i32).into_iter().adjacent();
+        assert_eq!(adjacent.next(), Some(Adjacency::Only { item: 0 }));
+        assert_eq!(adjacent.next(), None);
+
+        let mut adjacent = (0i32..3).adjacent();
+        assert_eq!(
+            adjacent.next(),
+            Some(Adjacency::First { item: 0, right: 1 })
+        );
+        assert_eq!(
+            adjacent.next(),
+            Some(Adjacency::Middle {
+                left: 0,
+                item: 1,
+                right: 2
+            })
+        );
+        assert_eq!(adjacent.next(), Some(Adjacency::Last { left: 1, item: 2 }));
+        assert_eq!(adjacent.next(), None);
+    }
 }

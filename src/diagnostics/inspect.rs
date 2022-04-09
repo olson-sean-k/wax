@@ -3,7 +3,7 @@
 use crate::diagnostics::Span;
 use crate::token::Token;
 
-/// A token that captures matched text in a glob expression.
+/// Token that captures matched text in a glob expression.
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
 #[derive(Clone, Copy, Debug)]
 pub struct CapturingToken {
