@@ -623,10 +623,6 @@ impl<'t> Glob<'t> {
         }
     }
 
-    // TODO: Provide more configuration of the traversal. Consider using
-    //       `impl Into<Configuration>` with permissive conversions to allow
-    //       individual parameters to be configured, such as depth via a
-    //       conversion from `usize`.
     /// Gets an iterator over matching files in a directory tree.
     ///
     /// This function matches a [`Glob`] against an entire directory tree,
