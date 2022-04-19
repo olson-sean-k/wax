@@ -239,42 +239,46 @@ pub trait IteratorExt: Iterator + Sized {
     ///
     /// The [`FilterTree`] adaptor can be used to apply additional custom
     /// filtering that avoids unnecessary directory traversals. The following
-    /// example detects and filters out files with the [hidden
-    /// attribute][attributes] on Windows and stops traversals into any such
-    /// directories.
+    /// example filters out hidden files on Unix and Windows. On Unix, hidden
+    /// files are filtered out nominally via [`not`]. On Windows, `filter_tree`
+    /// is used to detect the [hidden attribute][attributes]. In both cases, the
+    /// adaptor does not read hidden directory trees.
     ///
     /// ```rust,no_run
-    /// # #[cfg(windows)]
-    /// use std::os::windows::fs::MetadataExt as _;
+    /// #[cfg(windows)]
     /// use wax::{FilterTarget, IteratorExt as _};
     ///
-    /// const ATTRIBUTE_HIDDEN: u32 = 0x2;
+    /// let walk = wax::walk("**/*.(?i){jpg,jpeg}", "./Pictures", usize::MAX).unwrap();
+    /// // Filter out conventionally hidden files on Unix. Note that `not` will
+    /// // not perform unnecessary reads of hidden directory trees.
+    /// #[cfg(unix)]
+    /// let walk = walk.not(["**/.*/**"]).unwrap();
+    /// // Filter out files with the hidden attribute on Windows.
+    /// #[cfg(windows)]
+    /// let walk = walk.filter_tree(|entry| {
+    ///     use std::os::windows::fs::MetadataExt as _;
     ///
-    /// # #[cfg(windows)]
-    /// # {
-    /// for entry in wax::walk("**/*.(?i){jpg,jpeg}", "./Pictures", usize::MAX)
-    ///     .unwrap()
-    ///     .filter_tree(|entry| {
-    ///         let attributes = entry.metadata().unwrap().file_attributes();
-    ///         if (attributes & ATTRIBUTE_HIDDEN) == ATTRIBUTE_HIDDEN {
-    ///             // Filter out files with the hidden attribute and do not
-    ///             // descend into any such directories.
-    ///             Some(FilterTarget::Tree)
-    ///         }
-    ///         else {
-    ///             None
-    ///         }
-    ///     })
-    /// {
+    ///     const ATTRIBUTE_HIDDEN: u32 = 0x2;
+    ///
+    ///     let attributes = entry.metadata().unwrap().file_attributes();
+    ///     if (attributes & ATTRIBUTE_HIDDEN) == ATTRIBUTE_HIDDEN {
+    ///         // Do not read hidden directory trees.
+    ///         Some(FilterTarget::Tree)
+    ///     }
+    ///     else {
+    ///         None
+    ///     }
+    /// });
+    /// for entry in walk {
     ///     let entry = entry.unwrap();
     ///     println!("JPEG: {:?}", entry.path());
     /// }
-    /// # }
     /// ```
     ///
     /// [`FilterTree`]: crate::FilterTree
     /// [`Iterator`]: std::iter::Iterator
     /// [`Iterator::filter`]: std::iter::Iterator::filter
+    /// [`not`]: crate::Walk::not
     /// [`Walk`]: crate::Walk
     /// [`WalkEntry`]: crate::WalkEntry
     ///
