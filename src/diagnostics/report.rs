@@ -101,12 +101,12 @@ impl CompositeSourceSpan {
     pub fn labels(&self) -> Vec<LabeledSpan> {
         let label = self.label.map(|label| label.to_string());
         match self.kind {
-            CompositeKind::Span(ref span) => vec![LabeledSpan::new_with_span(label, span.clone())],
+            CompositeKind::Span(ref span) => vec![LabeledSpan::new_with_span(label, *span)],
             CompositeKind::Correlated {
                 ref span,
                 ref correlated,
             } => {
-                let mut labels = vec![LabeledSpan::new_with_span(label, span.clone())];
+                let mut labels = vec![LabeledSpan::new_with_span(label, *span)];
                 labels.extend(correlated.labels());
                 labels
             },
@@ -143,11 +143,11 @@ impl CorrelatedSourceSpan {
         let label = Some("here".to_string());
         match self {
             CorrelatedSourceSpan::Contiguous(ref span) => {
-                vec![LabeledSpan::new_with_span(label, span.clone())]
+                vec![LabeledSpan::new_with_span(label, *span)]
             },
             CorrelatedSourceSpan::Split(ref left, ref right) => vec![
-                LabeledSpan::new_with_span(label.clone(), left.clone()),
-                LabeledSpan::new_with_span(label, right.clone()),
+                LabeledSpan::new_with_span(label.clone(), *left),
+                LabeledSpan::new_with_span(label, *right),
             ],
         }
     }
