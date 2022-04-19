@@ -2,21 +2,103 @@ use itertools::Itertools as _;
 use regex::Regex;
 use std::borrow::Cow;
 use std::fs::{FileType, Metadata};
+use std::io;
 use std::path::{Component, Path, PathBuf};
+use thiserror::Error;
 use walkdir::{self, DirEntry, WalkDir};
 
 use crate::capture::MatchedText;
 use crate::token::{self, Boundedness, Token};
 use crate::{CandidatePath, Glob, GlobError, PositionExt as _};
 
-// TODO: Wrap this type rather than re-exporting it.
+pub type WalkItem<'e> = Result<WalkEntry<'e>, WalkError>;
+
 /// Describes errors that occur when matching a [`Glob`] against a directory
 /// tree.
 ///
+/// `WalkError` supports conversion into [`io::Error`].
+///
 /// [`Glob`]: crate::Glob
-pub use walkdir::Error as WalkError;
+/// [`io::Error`]: std::io::Error
+#[derive(Debug, Error)]
+#[error("failed to match directory tree: {kind}")]
+pub struct WalkError {
+    depth: usize,
+    kind: ErrorKind,
+}
 
-pub type WalkItem<'e> = Result<WalkEntry<'e>, WalkError>;
+impl WalkError {
+    /// Gets the path at which the error occurred.
+    ///
+    /// Returns `None` if there is no path associated with the error.
+    pub fn path(&self) -> Option<&Path> {
+        self.kind.path()
+    }
+
+    /// Gets the depth from the root at which the error occurred.
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+}
+
+impl From<walkdir::Error> for WalkError {
+    fn from(error: walkdir::Error) -> Self {
+        let depth = error.depth();
+        let path = error.path().map(From::from);
+        if error.io_error().is_some() {
+            WalkError {
+                depth,
+                kind: ErrorKind::Io {
+                    path,
+                    error: error.into_io_error().expect("incongruent error kind"),
+                },
+            }
+        }
+        else {
+            WalkError {
+                depth,
+                kind: ErrorKind::LinkCycle {
+                    root: error
+                        .loop_ancestor()
+                        .expect("incongruent error kind")
+                        .into(),
+                    leaf: path.expect("incongruent error kind"),
+                },
+            }
+        }
+    }
+}
+
+impl From<WalkError> for io::Error {
+    fn from(error: WalkError) -> Self {
+        let kind = match error.kind {
+            ErrorKind::Io { ref error, .. } => error.kind(),
+            _ => io::ErrorKind::Other,
+        };
+        io::Error::new(kind, error)
+    }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+enum ErrorKind {
+    #[error("failed to read file at `{path:?}`: {error}")]
+    Io {
+        path: Option<PathBuf>,
+        error: io::Error,
+    },
+    #[error("symbolic link cycle detected from `{root}` to `{leaf}`")]
+    LinkCycle { root: PathBuf, leaf: PathBuf },
+}
+
+impl ErrorKind {
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            ErrorKind::Io { ref path, .. } => path.as_ref().map(|path| path.as_ref()),
+            ErrorKind::LinkCycle { ref leaf, .. } => Some(leaf.as_ref()),
+        }
+    }
+}
 
 /// Traverses a directory tree via a `Walk` instance.
 ///
@@ -732,7 +814,10 @@ impl<'e> WalkEntry<'e> {
     }
 
     pub fn metadata(&self) -> Result<Metadata, GlobError<'static>> {
-        self.entry.metadata().map_err(From::from)
+        self.entry
+            .metadata()
+            .map_err(WalkError::from)
+            .map_err(From::from)
     }
 
     /// Gets the depth of the file from the root of the directory tree.
