@@ -559,7 +559,7 @@ impl<'g> Walk<'g> {
     pub fn not<'n, P>(
         self,
         patterns: impl IntoIterator<Item = P>,
-    ) -> Result<impl 'g + Iterator<Item = WalkItem<'static>>, GlobError<'n>>
+    ) -> Result<impl 'g + FileIterator<Item = WalkItem<'static>>, GlobError<'n>>
     where
         P: TryInto<Glob<'n>, Error = GlobError<'n>>,
     {
