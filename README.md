@@ -83,29 +83,29 @@ See more details below.
 ## Construction
 
 Globs are encoded as UTF-8 strings called glob expressions that resemble Unix
-paths consisting of nominal components delimited by separators. Wax exposes most
-of its APIs via the [`Glob`] type, which is constructed from a glob expression
-via inherent functions or standard conversion traits. All data is borrowed where
-possible but can be copied into owned instances using an `into_owned` method
-with most types.
+paths consisting of nominal components delimited by separators. The most
+fundamental type in the Wax API is [`Glob`], which is constructed from a glob
+expression via inherent functions or standard conversion traits. Data is
+borrowed where possible in most APIs, but can be copied into owned instances
+using an `into_owned` method with most types.
 
 ```rust
 use wax::Glob;
 
 let glob = Glob::new("site/img/logo.svg").unwrap();
-assert!(!glob.has_root());
 ```
 
 Regardless of platform or operating system, globs always use the same format and
-are distinct from paths. In particular, forward slash `/` is **always** the path
-separator and back slashes `\` are forbidden (back slash is used for escape
+**are distinct from paths**. In particular, forward slash `/` is **always** the
+path separator and back slashes `\` are forbidden (back slash is used for escape
 sequences, but the literal sequence `\\` is not supported). This means that it
 is impossible to represent `\` in nominal path components, but this character is
 generally forbidden as such and its disuse avoids confusion.
 
 Globs enforce various rules regarding meta-characters, patterns, and component
-boundaries (separators and [tree wildcards](#wildcards)) that reject [nonsense
-expressions](#errors-and-diagnostics).
+boundaries that reject [nonsense expressions](#errors-and-diagnostics). While
+these rules can sometimes make glob expressions a bit more difficult to compose,
+they also make glob expressions more consistent and easier to reason about.
 
 ## Patterns
 
@@ -123,7 +123,8 @@ assert!(glob.is_match("src/lib.rs"));
 
 Patterns form captures that can be used to extract matched text (as seen in many
 regular expression engines). In the above example, there are three patterns that
-can be queried for matched text: `**/`, `*`, and `{go,rs}`.
+can be queried for matched text: `**/`, `*`, and `{go,rs}`. Every glob
+expression has an implicit capture for the complete matched text.
 
 Globs use a consistent and opinionated format and patterns are **not**
 configurable; the semantics of a particular glob are always the same. For
@@ -135,17 +136,17 @@ Wildcards match some amount of arbitrary text in paths and are the most
 fundamental pattern provided by globs (and likely the most familiar).
 
 The zero-or-more wildcards `*` and `$` match zero or more of any character
-**except path separators**. Zero-or-more wildcards cannot be adjacent to other
-zero-or-more wildcards. The `*` wildcard is eager and will match the longest
-possible text while the `$` wildcard is lazy and will match the shortest
-possible text. When followed by a literal, `*` stops at the last occurrence of
-that literal while `$` stops at the first occurence.
+within a component (**never path separators**). Zero-or-more wildcards cannot be
+adjacent to other zero-or-more wildcards. The `*` wildcard is eager and will
+match the longest possible text while the `$` wildcard is lazy and will match
+the shortest possible text. When followed by a literal, `*` stops at the last
+occurrence of that literal while `$` stops at the first occurence.
 
-The exactly-one wildcard `?` matches any single character **except path
-separators**. Exactly-one wildcards do not group automatically, so a pattern of
-contiguous wildcards such as `???` form distinct captures for each `?` wildcard.
-[An alternative](#alternatives) can be used to group exactly-one wildcards into
-a single capture, such as `{???}`.
+The exactly-one wildcard `?` matches any single character within a component
+(**never path separators**). Exactly-one wildcards do not group automatically,
+so a pattern of contiguous wildcards such as `???` form distinct captures for
+each `?` wildcard. [An alternative](#alternatives) can be used to group
+exactly-one wildcards into a single capture, such as `{???}`.
 
 The tree wildcard `**` matches zero or more components (directories). **This is
 the only pattern that implicitly matches across arbitrary component
@@ -167,12 +168,13 @@ directory tree.
 ### Character Classes
 
 Character classes match any single character from a group of literals and ranges
-**except path separators**. Classes are delimited by square brackets `[...]`.
-Individual character literals are specified as is, such as `[ab]` to match
-either `a` or `b`. Character ranges are formed from two characters separated by
-a hyphen, such as `[x-z]` to match `x`, `y`, or `z`. Note that character classes
-match exact characters and are always case-sensitive, so the expressions `[ab]`
-and `{a,b}` are not necessarily the same.
+within a component (**never path separators**). Classes are delimited by square
+brackets `[...]`. Individual character literals are specified as is, such as
+`[ab]` to match either `a` or `b`. Character ranges are formed from two
+characters separated by a hyphen, such as `[x-z]` to match `x`, `y`, or `z`.
+Note that character classes match exact characters and are always
+case-sensitive, so the expressions `[ab]` and `{a,b}` are not necessarily the
+same.
 
 Any number of character literals and ranges can be used within a single
 character class. For example, `[qa-cX-Z]` matches any of `q`, `a`, `b`, `c`,
@@ -189,12 +191,12 @@ escaped via a backslash, such as `[a\-]` to match `a` or `-`.
 
 Character classes have notable platform-specific behavior, because they match
 arbitrary characters in native paths but never match path separators. This means
-that if a character class **only** matches path separators on a given platform,
-then the character class is considered empty and matches nothing. For example,
-in the expression `a[/]b` the character class `[/]` matches nothing on Unix and
-Windows. Such character classes are not rejected, because the role of arbitrary
-characters depends on the platform. In practice, this is rarely a concern, but
-such patterns should be avoided.
+that if a character class consists of **only** path separators on a given
+platform, then the character class is considered empty and matches nothing. For
+example, in the expression `a[/]b` the character class `[/]` matches nothing on
+Unix and Windows. Such character classes are not rejected, because the role of
+arbitrary characters depends on the platform. In practice, this is rarely a
+concern, but **such patterns should be avoided**.
 
 Character classes have limited utility on their own, but compose well with
 [repetitions](#repetitions).
@@ -225,8 +227,8 @@ trees.
 Repetitions match a sub-glob a specified number of times and more closely
 resemble general purpose regular expressions. Repetitions are delimited by angle
 brackets with a separating colon `<...:...>` where a sub-glob precedes the colon
-and a bounds specification follows it. For example, `<a*/:0,>` matches the
-sub-glob `a*/` zero or more times. Though not implicit like tree
+and an optional bounds specification follows it. For example, `<a*/:0,>` matches
+the sub-glob `a*/` zero or more times. Though not implicit like tree
 [wildcards](#wildcards), **repetitions can match across component boundaries**
 (and can themselves include tree wildcards). Repetitions may be arbitrarily
 nested and composed with [alternatives](#alternatives).
@@ -249,7 +251,7 @@ repetition `<abc/>` matches `abc/abc/`, then the captured text will be
 Repetitions compose well with [character classes](#character-classes). Most
 often, a glob expression like `{????}` is sufficient, but the more specific
 expression `<[0-9]:4>` further constrains the matched characters to digits, for
-example. Repetitions may also be more terse, such as `<?:4>`. Furthermore,
+example. Repetitions may also be more terse, such as `<?:8>`. Furthermore,
 repetitions can form tree expressions that further constrain directories, such
 as `<[!.]*/>[!.]*` to match paths that contain no leading dots `.`.
 
@@ -320,7 +322,7 @@ directory with a case-**sensitive** base and a case-**insensitive** extension
 `jpg` or `jpeg`.
 
 Wax considers literals, their configured case sensitivity, and the case
-sensitivity of the target platform's file system [when partitioning glob
+sensitivity of the target platform's file system APIs [when partitioning glob
 expressions](#partitioning-and-semantic-literals) with [`Glob::partitioned`].
 Partitioning is unaffected in glob expressions with no flags.
 
@@ -338,7 +340,7 @@ users that provide glob expressions. Diagnostic reporting, including warnings
 and help diagnostics, can be enabled with the `diagnostics-report` feature.
 
 ```
-Error: glob::rule
+Error: wax::glob::adjacent_zero_or_more
 
   x malformed glob expression: adjacent zero-or-more wildcards `*` or `$`
    ,----
@@ -388,19 +390,19 @@ corresponding components (even on Unix and Windows). For example, the glob
 
 Parent directory components have unclear meaning and far less utility when they
 follow patterns in a glob. However, such components are intuitive and are often
-important for escaping a working directory when they precede patterns (i.e., as
-a prefix). For example, the glob `../src/**/*.rs` has more obvious meaning than
-the glob `src/**/../*.rs`. As seen above though, the first glob would only match
-the literal path component `..` and not paths that replace this with a parent
-directory.
+important for escaping a working directory when they precede variant patterns
+(i.e., as a prefix). For example, the glob `../src/**/*.rs` has more obvious
+meaning than the glob `src/**/../*.rs`. As seen above though, the first glob
+would only match the literal path component `..` and not paths that replace this
+with a parent directory.
 
 [`Glob::partitioned`] can be used to parse glob expressions that contain
 semantic components that precede patterns and would be interpreted as literals
 (namely `..`). [`Glob::partitioned`] partitions a glob expression into an
 invariant [`PathBuf`] prefix and a variant [`Glob`] postfix. Here, invariant
-means that the partition contains no glob patterns and resolves the same literal
-paths on the target platform's file system. The prefix can be used as needed in
-combination with the glob.
+means that the partition contains no glob patterns that resolve differently than
+an equivalent native path using the target platform's file system APIs. The
+prefix can be used as needed in combination with the glob.
 
 ```rust
 use std::path::Path;
@@ -436,15 +438,27 @@ needed, an additional native path or working directory can be used, such as [the
 `--tree` option provided by Nym][nym]. In most contexts, globs are applied
 relative to some such working directory.
 
+### Non-nominal Constraints
+
+Globs are strictly nominal and do not support any non-nominal constraints. It is
+not possible to directly filter or otherwise select paths or files based on
+additional metadata (such as a modification timestamp) in a glob expression.
+However, it is possible for user code to query any such metadata for a matching
+path or effeciently apply such filtering when matching directory trees using
+[`IteratorExt::filter_tree`].
+
+For such additional features, including metadata filters and transformations
+using matched text, see [Nym][nym].
+
 ### Encoding
 
 Globs operate exclusively on UTF-8 encoded text. However, this encoding is not
-used for file names and paths on all platforms. Wax uses the [`CandidatePath`]
-type to re-encode native paths via lossy conversions that use Unicode
-replacement codepoints whenever a part of a path cannot be represented as valid
-UTF-8. On some platforms these conversions are always no-ops. In practice, most
-paths can be losslessly encoded in UTF-8, but this means that Wax cannot match
-some byte sequences.
+used for paths on all platforms. Wax uses the [`CandidatePath`] type to
+re-encode native paths via lossy conversions that use Unicode replacement
+codepoints whenever a part of a path cannot be represented as valid UTF-8. On
+some platforms these conversions are always no-ops. In practice, most paths can
+be losslessly encoded in UTF-8, but this means that Wax cannot match some byte
+sequences.
 
 ## Stability
 
@@ -466,5 +480,6 @@ series without warning nor deprecation.
 [`Glob::partitioned`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.partitioned
 [`GlobError`]: https://docs.rs/wax/*/wax/enum.GlobError.html
 [`IntoIterator`]: https://doc.rust-lang.org/std/iter/trait.IntoIterator.html
+[`IteratorExt::filter_tree`]: https://docs.rs/wax/*/wax/trait.IteratorExt.html#tymethod.filter_tree
 [`PathBuf`]: https://doc.rust-lang.org/std/path/struct.PathBuf.html
 [`Pattern`]: https://docs.rs/wax/*/wax/trait.Pattern.html
