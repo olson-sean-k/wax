@@ -718,7 +718,7 @@ impl<'t> Glob<'t> {
         self.tokenized
             .tokens()
             .first()
-            .map(|token| token.is_rooted())
+            .map(|token| token.has_root())
             .unwrap_or(false)
     }
 

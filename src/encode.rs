@@ -228,12 +228,12 @@ fn encode<'t, A, T>(
             (_, Wildcard(One)) => grouping.push_str(pattern, nsepexpr!("{0}")),
             (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, nsepexpr!("{0}*")),
             (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, nsepexpr!("{0}*?")),
-            (First(_), Wildcard(Tree { is_rooted })) => match superposition {
+            (First(_), Wildcard(Tree { has_root })) => match superposition {
                 Some(Middle(_) | Last(_)) => {
                     encode_intermediate_tree(grouping, pattern);
                 },
                 _ => {
-                    if *is_rooted {
+                    if *has_root {
                         grouping.push_str(pattern, sepexpr!("{0}.*{0}?"));
                     }
                     else {

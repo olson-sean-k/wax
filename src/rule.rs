@@ -509,8 +509,8 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // sub-globs.
             //
             // For example, `{/**/foo,bar}`.
-            Only((inner, Wildcard(Tree { is_rooted: true })))
-            | StartEnd((inner, Wildcard(Tree { is_rooted: true })), _)
+            Only((inner, Wildcard(Tree { has_root: true })))
+            | StartEnd((inner, Wildcard(Tree { has_root: true })), _)
                 if left.is_none() =>
             {
                 Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
@@ -540,8 +540,8 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // sub-globs with a zero lower bound.
             //
             // For example, `</**/foo>`.
-            Only((inner, Wildcard(Tree { is_rooted: true })))
-            | StartEnd((inner, Wildcard(Tree { is_rooted: true })), _)
+            Only((inner, Wildcard(Tree { has_root: true })))
+            | StartEnd((inner, Wildcard(Tree { has_root: true })), _)
                 if left.is_none() && lower == 0 =>
             {
                 Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))

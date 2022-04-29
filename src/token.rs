@@ -578,11 +578,11 @@ impl<'t, A> Token<'t, A> {
         self.as_ref()
     }
 
-    pub fn is_rooted(&self) -> bool {
+    pub fn has_root(&self) -> bool {
         self.has_preceding_token_with(&mut |token| {
             matches!(
                 token.kind(),
-                TokenKind::Separator | TokenKind::Wildcard(Wildcard::Tree { is_rooted: true })
+                TokenKind::Separator | TokenKind::Wildcard(Wildcard::Tree { has_root: true })
             )
         })
     }
@@ -686,8 +686,8 @@ impl<'t, A> TokenKind<'t, A> {
 
     pub fn unroot(&mut self) -> bool {
         match self {
-            TokenKind::Wildcard(Wildcard::Tree { ref mut is_rooted }) => {
-                mem::replace(is_rooted, false)
+            TokenKind::Wildcard(Wildcard::Tree { ref mut has_root }) => {
+                mem::replace(has_root, false)
             },
             _ => false,
         }
@@ -1105,7 +1105,7 @@ impl<'t, A> Repetition<'t, A> {
 pub enum Wildcard {
     One,
     ZeroOrMore(Evaluation),
-    Tree { is_rooted: bool },
+    Tree { has_root: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -1273,7 +1273,7 @@ where
     let mut prefix = String::new();
     if tokens
         .peek()
-        .map(|token| !token.has_sub_tokens() && token.is_rooted())
+        .map(|token| !token.has_sub_tokens() && token.has_root())
         .unwrap_or(false)
     {
         // Include any rooting component boundary at the beginning of the token
@@ -1473,7 +1473,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                         .context("postfix"),
                     ),
                 )),
-                |(is_rooted, _)| Wildcard::Tree { is_rooted }.into(),
+                |(has_root, _)| Wildcard::Tree { has_root }.into(),
             )
             .context("tree"),
             combinator::map(
