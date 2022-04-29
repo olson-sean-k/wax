@@ -1444,7 +1444,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
 
     fn wildcard<'i>(
         terminator: impl Clone + Parser<Input<'i>, Input<'i>, ErrorTree<'i>>,
-    ) -> impl FnMut(Input<'i>) -> ParseResult<'i, TokenKind<Annotation>> {
+    ) -> impl FnMut(Input<'i>) -> ParseResult<'i, TokenKind<'i, Annotation>> {
         branch::alt((
             combinator::map(supreme::tag("?"), |_| TokenKind::from(Wildcard::One))
                 .context("exactly-one"),
