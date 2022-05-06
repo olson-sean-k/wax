@@ -432,7 +432,7 @@ impl From<token::Variance<'_>> for Variance {
     fn from(variance: token::Variance<'_>) -> Self {
         match variance {
             token::Variance::Invariant(text) => {
-                Variance::Invariant(PathBuf::from(text.into_owned()))
+                Variance::Invariant(PathBuf::from(text.to_string().into_owned()))
             },
             token::Variance::Variant(_) => Variance::Variant,
         }

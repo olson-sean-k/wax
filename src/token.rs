@@ -20,6 +20,7 @@ use pori::{Located, Location, Stateful};
 use smallvec::{smallvec, SmallVec};
 use std::borrow::{Borrow, Cow};
 use std::cmp;
+use std::collections::VecDeque;
 use std::fmt::{self, Display, Formatter};
 use std::mem;
 use std::ops::{Add, Bound, Deref, RangeBounds};
@@ -300,6 +301,206 @@ enum FlagToggle {
     CaseInsensitive(bool),
 }
 
+pub trait IntoInvariantText<'t> {
+    fn into_nominal_text(self) -> InvariantText<'t>;
+
+    fn into_structural_text(self) -> InvariantText<'t>;
+}
+
+impl<'t> IntoInvariantText<'t> for Cow<'t, str> {
+    fn into_nominal_text(self) -> InvariantText<'t> {
+        InvariantFragment::Nominal(self).into()
+    }
+
+    fn into_structural_text(self) -> InvariantText<'t> {
+        InvariantFragment::Structural(self).into()
+    }
+}
+
+impl IntoInvariantText<'static> for String {
+    fn into_nominal_text(self) -> InvariantText<'static> {
+        InvariantFragment::Nominal(self.into()).into()
+    }
+
+    fn into_structural_text(self) -> InvariantText<'static> {
+        InvariantFragment::Structural(self.into()).into()
+    }
+}
+
+// TODO: The derived `PartialEq` implementation is incomplete and does not
+//       detect contiguous like fragments that are equivalent to an aggregated
+//       fragment. This works, but relies on constructing `InvariantText` by
+//       appending text and fragments.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct InvariantText<'t> {
+    fragments: VecDeque<InvariantFragment<'t>>,
+}
+
+impl<'t> InvariantText<'t> {
+    pub fn new() -> Self {
+        InvariantText {
+            fragments: VecDeque::new(),
+        }
+    }
+
+    pub fn into_owned(self) -> InvariantText<'static> {
+        let InvariantText { fragments } = self;
+        InvariantText {
+            fragments: fragments
+                .into_iter()
+                .map(InvariantFragment::into_owned)
+                .collect(),
+        }
+    }
+
+    pub fn to_string(&self) -> Cow<'t, str> {
+        self.fragments
+            .iter()
+            .map(|fragment| fragment.as_string().clone())
+            .reduce(|text, fragment| text + fragment)
+            .unwrap_or(Cow::Borrowed(""))
+    }
+
+    pub fn repeat(self, n: usize) -> Self {
+        if n == 0 {
+            self
+        }
+        else {
+            let InvariantText { fragments } = self;
+            let n = (n - 1)
+                .checked_mul(fragments.len())
+                .expect("overflow repeating invariant text");
+            let first = fragments.clone();
+            InvariantText {
+                fragments: first
+                    .into_iter()
+                    .chain(fragments.into_iter().cycle().take(n))
+                    .collect(),
+            }
+        }
+    }
+}
+
+impl<'t> Add for InvariantText<'t> {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        let InvariantText {
+            fragments: mut left,
+        } = self;
+        let InvariantText {
+            fragments: mut right,
+        } = other;
+        let end = left.pop_back();
+        let start = right.pop_front();
+        let InvariantText { fragments: middle } = match (end, start) {
+            (Some(left), Some(right)) => left + right,
+            (Some(middle), None) | (None, Some(middle)) => middle.into(),
+            (None, None) => InvariantText::new(),
+        };
+        InvariantText {
+            fragments: left
+                .into_iter()
+                .chain(middle.into_iter())
+                .chain(right.into_iter())
+                .collect(),
+        }
+    }
+}
+
+impl<'t> Add<InvariantFragment<'t>> for InvariantText<'t> {
+    type Output = Self;
+
+    fn add(self, fragment: InvariantFragment<'t>) -> Self::Output {
+        self + Self::from(fragment)
+    }
+}
+
+impl<'t> Default for InvariantText<'t> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'t> From<InvariantFragment<'t>> for InvariantText<'t> {
+    fn from(fragment: InvariantFragment<'t>) -> Self {
+        InvariantText {
+            fragments: [fragment].into_iter().collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash)]
+enum InvariantFragment<'t> {
+    Nominal(Cow<'t, str>),
+    Structural(Cow<'t, str>),
+}
+
+impl<'t> InvariantFragment<'t> {
+    pub fn into_owned(self) -> InvariantFragment<'static> {
+        use InvariantFragment::{Nominal, Structural};
+
+        match self {
+            Nominal(text) => Nominal(text.into_owned().into()),
+            Structural(text) => Structural(text.into_owned().into()),
+        }
+    }
+
+    pub fn as_string(&self) -> &Cow<'t, str> {
+        match self {
+            InvariantFragment::Nominal(ref text) => text,
+            InvariantFragment::Structural(ref text) => text,
+        }
+    }
+}
+
+impl<'t> Add for InvariantFragment<'t> {
+    type Output = InvariantText<'t>;
+
+    fn add(self, other: Self) -> Self::Output {
+        use InvariantFragment::{Nominal, Structural};
+
+        match (self, other) {
+            (Nominal(left), Nominal(right)) => InvariantText {
+                fragments: [Nominal(left + right)].into_iter().collect(),
+            },
+            (Structural(left), Structural(right)) => InvariantText {
+                fragments: [Structural(left + right)].into_iter().collect(),
+            },
+            (left, right) => InvariantText {
+                fragments: [left, right].into_iter().collect(),
+            },
+        }
+    }
+}
+
+impl<'t> PartialEq for InvariantFragment<'t> {
+    fn eq(&self, other: &Self) -> bool {
+        use InvariantFragment::{Nominal, Structural};
+
+        match (self, other) {
+            (Nominal(ref left), Nominal(ref right)) => {
+                if PATHS_ARE_CASE_INSENSITIVE {
+                    // This comparison uses Unicode simple case folding. It
+                    // would be better to use full case folding (and better
+                    // still to use case folding appropriate for the language of
+                    // the text), but this approach is used to have consistent
+                    // results with the regular expression encoding of compiled
+                    // globs. A more comprehensive alternative would be to use
+                    // something like the `focaccia` crate. See also
+                    // `CharExt::has_casing`.
+                    encode::case_folded_eq(left.as_ref(), right.as_ref())
+                }
+                else {
+                    left == right
+                }
+            },
+            (Structural(ref left), Structural(ref right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Boundedness {
     Closed,
@@ -337,7 +538,7 @@ where
 
 #[derive(Clone, Debug, Eq, Hash)]
 pub enum Variance<'t> {
-    Invariant(Cow<'t, str>),
+    Invariant(InvariantText<'t>),
     // NOTE: In this context, _boundedness_ refers to whether or not a variant
     //       token or expression is _constrained_ or _unconstrained_. For
     //       example, the expression `**` is unconstrained and matches _any and
@@ -352,16 +553,16 @@ pub enum Variance<'t> {
 }
 
 impl<'t> Variance<'t> {
-    pub fn map_invariant(self, mut f: impl FnMut(Cow<'t, str>) -> Cow<'t, str>) -> Self {
+    pub fn map_invariant(self, mut f: impl FnMut(InvariantText<'t>) -> InvariantText<'t>) -> Self {
         match self {
             Variance::Invariant(text) => Variance::Invariant(f(text)),
             variance => variance,
         }
     }
 
-    pub fn to_invariant_string(&self) -> Option<Cow<'t, str>> {
+    pub fn to_invariant_text(&self) -> Option<&InvariantText<'t>> {
         match self {
-            Variance::Invariant(ref text) => Some(text.clone()),
+            Variance::Invariant(ref text) => Some(text),
             _ => None,
         }
     }
@@ -414,28 +615,7 @@ impl<'t, A> From<&'t Token<'t, A>> for Variance<'t> {
 impl<'t> PartialEq for Variance<'t> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            // TODO: This comparison relies on non-textual invariant tokens
-            //       using text that has no casing, notably separators. It may
-            //       be better to store segments or fragments that differentiate
-            //       between nominal and structural tokens rather than
-            //       accumulating all text into a string, which lacks this
-            //       information.
-            (Variance::Invariant(ref left), Variance::Invariant(ref right)) => {
-                if PATHS_ARE_CASE_INSENSITIVE {
-                    // This comparison uses Unicode simple case folding. It
-                    // would be better to use full case folding (and better
-                    // still to use case folding appropriate for the language of
-                    // the text), but this approach is used to have consistent
-                    // results with the regular expression encoding of compiled
-                    // globs. A more comprehensive alternative would be to use
-                    // something like the `focaccia` crate. See also
-                    // `CharExt::has_casing`.
-                    encode::case_folded_eq(left.as_ref(), right.as_ref())
-                }
-                else {
-                    left == right
-                }
-            },
+            (Variance::Invariant(ref left), Variance::Invariant(ref right)) => left == right,
             (Variance::Variant(ref left), Variance::Variant(ref right)) => left == right,
             _ => false,
         }
@@ -449,7 +629,7 @@ where
     fn conjunctive_variance(self) -> Variance<'t> {
         self.map(Into::into)
             .reduce(Add::add)
-            .unwrap_or_else(|| Variance::Invariant("".into()))
+            .unwrap_or_else(|| Variance::Invariant(InvariantText::new()))
     }
 }
 
@@ -474,7 +654,7 @@ where
             variances
                 .into_iter()
                 .next()
-                .unwrap_or_else(|| Variance::Invariant("".into()))
+                .unwrap_or_else(|| Variance::Invariant(InvariantText::new()))
         }
         else {
             Variance::Variant(Boundedness::Closed)
@@ -754,7 +934,9 @@ impl<'t, A> TokenKind<'t, A> {
             TokenKind::Class(ref class) => class.variance(),
             TokenKind::Literal(ref literal) => literal.variance(),
             TokenKind::Repetition(ref repetition) => repetition.variance(),
-            TokenKind::Separator => Variance::Invariant(MAIN_SEPARATOR.to_string().into()),
+            TokenKind::Separator => {
+                Variance::Invariant(MAIN_SEPARATOR.to_string().into_structural_text())
+            },
             TokenKind::Wildcard(_) => Variance::Variant(Boundedness::Open),
         }
     }
@@ -885,7 +1067,7 @@ impl Archetype {
                     Variance::Variant(Boundedness::Closed)
                 }
                 else {
-                    Variance::Invariant(x.to_string().into())
+                    Variance::Invariant(x.to_string().into_nominal_text())
                 }
             },
             Archetype::Range(a, b) => {
@@ -893,7 +1075,7 @@ impl Archetype {
                     Variance::Variant(Boundedness::Closed)
                 }
                 else {
-                    Variance::Invariant(a.to_string().into())
+                    Variance::Invariant(a.to_string().into_nominal_text())
                 }
             },
         }
@@ -963,7 +1145,7 @@ impl<'t> Literal<'t> {
             Variance::Variant(Boundedness::Closed)
         }
         else {
-            Variance::Invariant(self.text.clone())
+            Variance::Invariant(self.text.clone().into_nominal_text())
         }
     }
 
@@ -1073,7 +1255,7 @@ impl<'t, A> Repetition<'t, A> {
             // TODO: Repeating the invariant text could be unknowingly expensive
             //       and could pose a potential attack vector. Is there an
             //       alternative representation that avoids epic allocations?
-            Some(0) => variance.map_invariant(|text| text.repeat(self.lower).into()),
+            Some(0) => variance.map_invariant(|text| text.repeat(self.lower)),
             Some(_) | None => variance + Variant(Open),
         }
     }
@@ -1287,7 +1469,8 @@ where
             .map(|component| {
                 component
                     .variance()
-                    .to_invariant_string()
+                    .to_invariant_text()
+                    .map(InvariantText::to_string)
                     .map(Cow::into_owned)
             })
             .take_while(|text| text.is_some())
