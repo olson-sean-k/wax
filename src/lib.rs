@@ -37,7 +37,7 @@ use thiserror::Error;
 use crate::diagnostics::inspect;
 #[cfg(feature = "diagnostics-report")]
 use crate::diagnostics::report::{self, BoxedDiagnostic};
-use crate::token::{Annotation, IntoTokens, Token, Tokenized};
+use crate::token::{Annotation, IntoTokens, InvariantText, Token, Tokenized, UnitVariance};
 
 pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
@@ -428,8 +428,8 @@ impl Variance {
     }
 }
 
-impl From<token::Variance<'_>> for Variance {
-    fn from(variance: token::Variance<'_>) -> Self {
+impl From<token::Variance<InvariantText<'_>>> for Variance {
+    fn from(variance: token::Variance<InvariantText<'_>>) -> Self {
         match variance {
             token::Variance::Invariant(text) => {
                 Variance::Invariant(PathBuf::from(text.to_string().into_owned()))
@@ -843,7 +843,7 @@ impl<'t> Pattern<'t> for Any<'t> {
     }
 
     fn variance(&self) -> Variance {
-        self.token.variance().into()
+        self.token.unit_variance().into()
     }
 }
 
