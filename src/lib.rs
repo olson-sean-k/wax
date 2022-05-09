@@ -37,7 +37,7 @@ use thiserror::Error;
 use crate::diagnostics::inspect;
 #[cfg(feature = "diagnostics-report")]
 use crate::diagnostics::report::{self, BoxedDiagnostic};
-use crate::token::{Annotation, IntoTokens, InvariantText, Token, Tokenized, UnitVariance};
+use crate::token::{Annotation, IntoTokens, InvariantText, Token, Tokenized};
 
 pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
@@ -843,7 +843,7 @@ impl<'t> Pattern<'t> for Any<'t> {
     }
 
     fn variance(&self) -> Variance {
-        self.token.unit_variance().into()
+        self.token.variance::<InvariantText>().into()
     }
 }
 

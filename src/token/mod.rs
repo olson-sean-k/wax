@@ -10,12 +10,12 @@ use std::ops::{Bound, Deref, RangeBounds};
 use std::path::{PathBuf, MAIN_SEPARATOR};
 
 use crate::token::variance::{
-    ConjunctiveVariance, Depth, DisjunctiveVariance, IntoInvariantText, Invariance,
+    ConjunctiveVariance, Depth, DisjunctiveVariance, IntoInvariantText, Invariance, UnitVariance,
 };
 use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
 
 pub use crate::token::parse::{parse, Annotation, ParseError};
-pub use crate::token::variance::{Boundedness, InvariantText, UnitVariance, Variance};
+pub use crate::token::variance::{Boundedness, InvariantSize, InvariantText, Variance};
 
 pub trait IntoTokens<'t>: Sized {
     type Annotation;
@@ -120,7 +120,7 @@ impl<'t, A> Token<'t, A> {
         self.has_preceding_token_with(&mut |token| {
             matches!(
                 token.kind(),
-                TokenKind::Separator | TokenKind::Wildcard(Wildcard::Tree { has_root: true })
+                TokenKind::Separator(_) | TokenKind::Wildcard(Wildcard::Tree { has_root: true })
             )
         })
     }
@@ -183,9 +183,13 @@ impl<'t> From<TokenKind<'t, ()>> for Token<'t, ()> {
     }
 }
 
-impl<'i, 't, A> UnitVariance<InvariantText<'t>> for &'i Token<'t, A> {
-    fn unit_variance(self) -> Variance<InvariantText<'t>> {
-        self.kind().unit_variance()
+impl<'i, 't, A, T> UnitVariance<T> for &'i Token<'t, A>
+where
+    &'i TokenKind<'t, A>: UnitVariance<T>,
+    T: Invariance,
+{
+    fn unit_variance(self) -> Variance<T> {
+        self.kind.unit_variance()
     }
 }
 
@@ -195,7 +199,7 @@ pub enum TokenKind<'t, A = ()> {
     Class(Class),
     Literal(Literal<'t>),
     Repetition(Repetition<'t, A>),
-    Separator,
+    Separator(Separator),
     Wildcard(Wildcard),
 }
 
@@ -212,7 +216,7 @@ impl<'t, A> TokenKind<'t, A> {
                 is_case_insensitive,
             }),
             TokenKind::Repetition(repetition) => repetition.into_owned().into(),
-            TokenKind::Separator => TokenKind::Separator,
+            TokenKind::Separator(_) => TokenKind::Separator(Separator),
             TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
         }
     }
@@ -223,7 +227,7 @@ impl<'t, A> TokenKind<'t, A> {
             TokenKind::Class(class) => TokenKind::Class(class),
             TokenKind::Literal(literal) => TokenKind::Literal(literal),
             TokenKind::Repetition(repetition) => TokenKind::Repetition(repetition.unannotate()),
-            TokenKind::Separator => TokenKind::Separator,
+            TokenKind::Separator(_) => TokenKind::Separator(Separator),
             TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
         }
     }
@@ -237,12 +241,20 @@ impl<'t, A> TokenKind<'t, A> {
         }
     }
 
+    pub fn variance<T>(&self) -> Variance<T>
+    where
+        T: Invariance,
+        for<'i> &'i TokenKind<'t, A>: UnitVariance<T>,
+    {
+        self.unit_variance()
+    }
+
     pub fn depth(&self) -> Boundedness {
         use crate::token::Wildcard::{One, Tree, ZeroOrMore};
         use TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
 
         match self {
-            Class(_) | Literal(_) | Separator | Wildcard(One | ZeroOrMore(_)) => {
+            Class(_) | Literal(_) | Separator(_) | Wildcard(One | ZeroOrMore(_)) => {
                 Boundedness::Closed
             },
             Alternative(ref alternative) => {
@@ -271,7 +283,7 @@ impl<'t, A> TokenKind<'t, A> {
         use TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
 
         match self {
-            Class(_) | Literal(_) | Separator | Wildcard(One) => Boundedness::Closed,
+            Class(_) | Literal(_) | Separator(_) | Wildcard(One) => Boundedness::Closed,
             Alternative(ref alternative) => {
                 if alternative.has_token_with(&mut |token| token.breadth().is_open()) {
                     Boundedness::Open
@@ -300,7 +312,7 @@ impl<'t, A> TokenKind<'t, A> {
     pub fn is_component_boundary(&self) -> bool {
         matches!(
             self,
-            TokenKind::Separator | TokenKind::Wildcard(Wildcard::Tree { .. })
+            TokenKind::Separator(_) | TokenKind::Wildcard(Wildcard::Tree { .. })
         )
     }
 
@@ -339,16 +351,20 @@ impl<A> From<Wildcard> for TokenKind<'static, A> {
     }
 }
 
-impl<'i, 't, A> UnitVariance<InvariantText<'t>> for &'i TokenKind<'t, A> {
-    fn unit_variance(self) -> Variance<InvariantText<'t>> {
+impl<'i, 't, A, T> UnitVariance<T> for &'i TokenKind<'t, A>
+where
+    &'i Class: UnitVariance<T>,
+    &'i Literal<'t>: UnitVariance<T>,
+    &'i Separator: UnitVariance<T>,
+    T: Invariance,
+{
+    fn unit_variance(self) -> Variance<T> {
         match self {
             TokenKind::Alternative(ref alternative) => alternative.unit_variance(),
             TokenKind::Class(ref class) => class.unit_variance(),
             TokenKind::Literal(ref literal) => literal.unit_variance(),
             TokenKind::Repetition(ref repetition) => repetition.unit_variance(),
-            TokenKind::Separator => {
-                Variance::Invariant(MAIN_SEPARATOR.to_string().into_structural_text())
-            },
+            TokenKind::Separator(ref separator) => separator.unit_variance(),
             TokenKind::Wildcard(_) => Variance::Variant(Boundedness::Open),
         }
     }
@@ -431,6 +447,29 @@ pub enum Archetype {
     Range(char, char),
 }
 
+impl Archetype {
+    fn domain_variance(&self) -> Variance<char> {
+        match self {
+            Archetype::Character(x) => {
+                if PATHS_ARE_CASE_INSENSITIVE {
+                    Variance::Variant(Boundedness::Closed)
+                }
+                else {
+                    Variance::Invariant(*x)
+                }
+            },
+            Archetype::Range(a, b) => {
+                if (a != b) || PATHS_ARE_CASE_INSENSITIVE {
+                    Variance::Variant(Boundedness::Closed)
+                }
+                else {
+                    Variance::Invariant(*a)
+                }
+            },
+        }
+    }
+}
+
 impl From<char> for Archetype {
     fn from(literal: char) -> Self {
         Archetype::Character(literal)
@@ -443,26 +482,19 @@ impl From<(char, char)> for Archetype {
     }
 }
 
-impl<'i> UnitVariance<InvariantText<'static>> for &'i Archetype {
-    fn unit_variance(self) -> Variance<InvariantText<'static>> {
-        match self {
-            Archetype::Character(x) => {
-                if PATHS_ARE_CASE_INSENSITIVE {
-                    Variance::Variant(Boundedness::Closed)
-                }
-                else {
-                    Variance::Invariant(x.to_string().into_nominal_text())
-                }
-            },
-            Archetype::Range(a, b) => {
-                if (a != b) || PATHS_ARE_CASE_INSENSITIVE {
-                    Variance::Variant(Boundedness::Closed)
-                }
-                else {
-                    Variance::Invariant(a.to_string().into_nominal_text())
-                }
-            },
-        }
+impl<'i, 't> UnitVariance<InvariantText<'t>> for &'i Archetype {
+    fn unit_variance(self) -> Variance<InvariantText<'t>> {
+        self.domain_variance()
+            .map_invariance(|invariance| invariance.to_string().into_nominal_text())
+    }
+}
+
+impl<'i> UnitVariance<InvariantSize> for &'i Archetype {
+    fn unit_variance(self) -> Variance<InvariantSize> {
+        // This is pessimistic and assumes that the code point will require four
+        // bytes when encoded as UTF-8. This is technically possible, but most
+        // commonly only one or two bytes will be required.
+        self.domain_variance().map_invariance(|_| 4.into())
     }
 }
 
@@ -482,8 +514,12 @@ impl Class {
     }
 }
 
-impl<'i> UnitVariance<InvariantText<'static>> for &'i Class {
-    fn unit_variance(self) -> Variance<InvariantText<'static>> {
+impl<'i, T> UnitVariance<T> for &'i Class
+where
+    &'i Archetype: UnitVariance<T>,
+    T: Invariance,
+{
+    fn unit_variance(self) -> Variance<T> {
         if self.is_negated {
             // It is not feasible to encode a character class that matches all
             // UTF-8 text and therefore nothing when negated, and so a character
@@ -514,6 +550,15 @@ impl<'t> Literal<'t> {
         self.text.as_ref()
     }
 
+    fn domain_variance(&self) -> Variance<&Cow<'t, str>> {
+        if self.has_variant_casing() {
+            Variance::Variant(Boundedness::Closed)
+        }
+        else {
+            Variance::Invariant(&self.text)
+        }
+    }
+
     pub fn is_case_insensitive(&self) -> bool {
         self.is_case_insensitive
     }
@@ -528,12 +573,15 @@ impl<'t> Literal<'t> {
 
 impl<'i, 't> UnitVariance<InvariantText<'t>> for &'i Literal<'t> {
     fn unit_variance(self) -> Variance<InvariantText<'t>> {
-        if self.has_variant_casing() {
-            Variance::Variant(Boundedness::Closed)
-        }
-        else {
-            Variance::Invariant(self.text.clone().into_nominal_text())
-        }
+        self.domain_variance()
+            .map_invariance(|invariance| invariance.clone().into_nominal_text())
+    }
+}
+
+impl<'i, 't> UnitVariance<InvariantSize> for &'i Literal<'t> {
+    fn unit_variance(self) -> Variance<InvariantSize> {
+        self.domain_variance()
+            .map_invariance(|invariance| invariance.as_bytes().len().into())
     }
 }
 
@@ -649,8 +697,8 @@ where
                     (left.kind(), left.unit_variance()),
                     (right.kind(), right.unit_variance()),
                 ) {
-                    ((Separator, _), (_, Variant(Open))) => Ok(right),
-                    ((_, Variant(Open)), (Separator, _)) => Ok(left),
+                    ((Separator(_), _), (_, Variant(Open))) => Ok(right),
+                    ((_, Variant(Open)), (Separator(_), _)) => Ok(left),
                     _ => Err((left, right)),
                 }
             })
@@ -662,6 +710,21 @@ where
             Some(0) => variance.map_invariance(|invariance| invariance * self.lower),
             Some(_) | None => variance + Variant(Open),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Separator;
+
+impl<'i, 't> UnitVariance<InvariantText<'t>> for &'i Separator {
+    fn unit_variance(self) -> Variance<InvariantText<'t>> {
+        Variance::Invariant(MAIN_SEPARATOR.to_string().into_structural_text())
+    }
+}
+
+impl<'i> UnitVariance<InvariantSize> for &'i Separator {
+    fn unit_variance(self) -> Variance<InvariantSize> {
+        Variance::Invariant(MAIN_SEPARATOR.to_string().as_bytes().len().into())
     }
 }
 
@@ -778,7 +841,7 @@ where
 {
     tokens.into_iter().batching(|tokens| {
         let mut first = tokens.next();
-        while matches!(first.map(Token::kind), Some(TokenKind::Separator)) {
+        while matches!(first.map(Token::kind), Some(TokenKind::Separator(_))) {
             first = tokens.next();
         }
         first.map(|first| match first.kind() {
@@ -854,7 +917,7 @@ where
         &components(tokens)
             .map(|component| {
                 component
-                    .variance()
+                    .variance::<InvariantText>()
                     .as_invariance()
                     .map(InvariantText::to_string)
                     .map(Cow::into_owned)
@@ -878,14 +941,14 @@ pub fn invariant_prefix_upper_bound<A>(tokens: &[Token<A>]) -> usize {
     let mut separator = None;
     for (n, token) in tokens.iter().map(Token::kind).enumerate() {
         match token {
-            Separator => {
+            Separator(_) => {
                 separator = Some(n);
             },
             Wildcard(Tree { .. }) => {
                 return n;
             },
             _ => {
-                if token.unit_variance().is_invariant() {
+                if token.variance::<InvariantText>().is_invariant() {
                     continue;
                 }
                 else {
@@ -904,7 +967,7 @@ pub fn invariant_prefix_upper_bound<A>(tokens: &[Token<A>]) -> usize {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use crate::token::{self, Boundedness, TokenKind, Variance};
+    use crate::token::{self, Boundedness, InvariantSize, TokenKind, Variance};
 
     #[test]
     fn literal_case_insensitivity() {
@@ -957,15 +1020,30 @@ mod tests {
         use Variance::Variant;
 
         let tokenized = token::parse("**").unwrap();
-        assert!(matches!(tokenized.variance(), Variant(Open)));
+        assert!(matches!(
+            tokenized.variance::<InvariantSize>(),
+            Variant(Open)
+        ));
         let tokenized = token::parse("<*/>*").unwrap();
-        assert!(matches!(tokenized.variance(), Variant(Open)));
+        assert!(matches!(
+            tokenized.variance::<InvariantSize>(),
+            Variant(Open)
+        ));
         let tokenized = token::parse("<<?>/>*").unwrap();
-        assert!(matches!(tokenized.variance(), Variant(Open)));
+        assert!(matches!(
+            tokenized.variance::<InvariantSize>(),
+            Variant(Open)
+        ));
 
         let tokenized = token::parse("foo/**").unwrap();
-        assert!(matches!(tokenized.variance(), Variant(Closed)));
+        assert!(matches!(
+            tokenized.variance::<InvariantSize>(),
+            Variant(Closed)
+        ));
         let tokenized = token::parse("<foo*/>*").unwrap();
-        assert!(matches!(tokenized.variance(), Variant(Closed)));
+        assert!(matches!(
+            tokenized.variance::<InvariantSize>(),
+            Variant(Closed)
+        ));
     }
 }

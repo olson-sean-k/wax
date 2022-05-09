@@ -406,7 +406,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // separators.
             //
             // For example, `foo/{bar,/}`.
-            Only((inner, Separator)) | StartEnd((inner, Separator), _)
+            Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _)
                 if has_terminating_component_boundary(left) =>
             {
                 Err(CorrelatedError::new(
@@ -419,7 +419,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // separators.
             //
             // For example, `{foo,/}/bar`.
-            Only((inner, Separator)) | StartEnd(_, (inner, Separator))
+            Only((inner, Separator(_))) | StartEnd(_, (inner, Separator(_)))
                 if has_preceding_component_boundary(right) =>
             {
                 Err(CorrelatedError::new(
@@ -502,7 +502,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // sub-globs.
             //
             // For example, `{foo,/}` or `{foo,/bar}`.
-            Only((inner, Separator)) | StartEnd((inner, Separator), _) if left.is_none() => {
+            Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _) if left.is_none() => {
                 Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
             },
             // The alternative is preceded by a termination; disallow rooted
@@ -531,7 +531,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // sub-globs with a zero lower bound.
             //
             // For example, `</foo:0,>`.
-            Only((inner, Separator)) | StartEnd((inner, Separator), _)
+            Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _)
                 if left.is_none() && lower == 0 =>
             {
                 Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
@@ -561,7 +561,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // The repetition is a singular separator.
             //
             // For example, `</:1,>`.
-            Only((token, Separator)) => Err(CorrelatedError::new(
+            Only((token, Separator(_))) => Err(CorrelatedError::new(
                 ErrorKind::AdjacentBoundary,
                 None,
                 token,

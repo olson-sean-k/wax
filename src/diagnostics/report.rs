@@ -201,7 +201,7 @@ pub fn diagnostics<'i, 't>(
                 }),
         )
         .chain(tokenized.tokens().last().into_iter().flat_map(|token| {
-            matches!(token.kind(), TokenKind::Separator).then(|| {
+            matches!(token.kind(), TokenKind::Separator(_)).then(|| {
                 Box::new(TerminatingSeparatorWarning {
                     expression: tokenized.expression().clone(),
                     span: (*token.annotation()).into(),

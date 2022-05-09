@@ -8,7 +8,7 @@ use thiserror::Error;
 use walkdir::{self, DirEntry, WalkDir};
 
 use crate::capture::MatchedText;
-use crate::token::{self, Boundedness, Token};
+use crate::token::{self, Boundedness, InvariantText, Token};
 use crate::{CandidatePath, Glob, GlobError, PositionExt as _};
 
 pub type WalkItem<'e> = Result<WalkEntry<'e>, WalkError>;
@@ -899,7 +899,12 @@ pub fn walk<'g>(
 fn is_terminal(glob: &Glob<'_>) -> bool {
     let component = token::components(glob.tokenized.tokens()).last();
     matches!(
-        component.map(|component| { (component.depth(), component.variance().boundedness(),) }),
+        component.map(|component| {
+            (
+                component.depth(),
+                component.variance::<InvariantText>().boundedness(),
+            )
+        }),
         Some((Boundedness::Open, Boundedness::Open)),
     )
 }

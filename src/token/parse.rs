@@ -25,8 +25,8 @@ use thiserror::Error;
 #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 use crate::diagnostics::Span;
 use crate::token::{
-    Alternative, Archetype, Class, Evaluation, Literal, Repetition, Token, TokenKind, Tokenized,
-    Wildcard,
+    Alternative, Archetype, Class, Evaluation, Literal, Repetition, Separator, Token, TokenKind,
+    Tokenized, Wildcard,
 };
 use crate::PATHS_ARE_CASE_INSENSITIVE;
 
@@ -399,7 +399,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     }
 
     fn separator(input: Input) -> ParseResult<TokenKind<Annotation>> {
-        combinator::value(TokenKind::Separator, supreme::tag("/"))(input)
+        combinator::value(TokenKind::Separator(Separator), supreme::tag("/"))(input)
     }
 
     fn wildcard<'i>(

@@ -8,7 +8,7 @@ use crate::token::Token;
 use crate::PATHS_ARE_CASE_INSENSITIVE;
 
 pub trait Invariance:
-    Add<Self, Output = Self> + Mul<usize, Output = Self> + PartialEq<Self> + Sized
+    Add<Self, Output = Self> + Eq + Mul<usize, Output = Self> + PartialEq<Self> + Sized
 {
     fn empty() -> Self;
 }
@@ -119,11 +119,48 @@ impl IntoInvariantText<'static> for String {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InvariantSize(usize);
+
+impl Add for InvariantSize {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        InvariantSize(self.0 + other.0)
+    }
+}
+
+impl From<InvariantSize> for usize {
+    fn from(size: InvariantSize) -> Self {
+        size.0
+    }
+}
+
+impl From<usize> for InvariantSize {
+    fn from(n: usize) -> Self {
+        InvariantSize(n)
+    }
+}
+
+impl Invariance for InvariantSize {
+    fn empty() -> Self {
+        InvariantSize(0)
+    }
+}
+
+impl Mul<usize> for InvariantSize {
+    type Output = Self;
+
+    fn mul(self, n: usize) -> Self::Output {
+        InvariantSize(self.0 * n)
+    }
+}
+
 // TODO: The derived `PartialEq` implementation is incomplete and does not
 //       detect contiguous like fragments that are equivalent to an aggregated
 //       fragment. This works, but relies on constructing `InvariantText` by
-//       appending text and fragments.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+//       consistently appending fragments.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvariantText<'t> {
     fragments: VecDeque<InvariantFragment<'t>>,
 }
@@ -236,7 +273,7 @@ impl<'t> Mul<usize> for InvariantText<'t> {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash)]
+#[derive(Clone, Debug, Eq)]
 enum InvariantFragment<'t> {
     Nominal(Cow<'t, str>),
     Structural(Cow<'t, str>),
@@ -323,7 +360,7 @@ impl Boundedness {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash)]
+#[derive(Clone, Debug, Eq)]
 pub enum Variance<T> {
     Invariant(T),
     // NOTE: In this context, _boundedness_ refers to whether or not a variant
@@ -340,10 +377,10 @@ pub enum Variance<T> {
 }
 
 impl<T> Variance<T> {
-    pub fn map_invariance(self, mut f: impl FnMut(T) -> T) -> Self {
+    pub fn map_invariance<U>(self, mut f: impl FnMut(T) -> U) -> Variance<U> {
         match self {
             Variance::Invariant(invariant) => Variance::Invariant(f(invariant)),
-            variance => variance,
+            Variance::Variant(boundedness) => Variance::Variant(boundedness),
         }
     }
 

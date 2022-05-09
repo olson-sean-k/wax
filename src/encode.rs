@@ -151,7 +151,7 @@ fn encode<'t, A, T>(
                 }
                 pattern.push_str(&literal.text().escaped());
             },
-            (_, Separator) => pattern.push_str(sepexpr!("{0}")),
+            (_, Separator(_)) => pattern.push_str(sepexpr!("{0}")),
             (position, Alternative(alternative)) => {
                 let encodings: Vec<_> = alternative
                     .branches()
