@@ -15,7 +15,9 @@ use crate::token::variance::{
 use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
 
 pub use crate::token::parse::{parse, Annotation, ParseError};
-pub use crate::token::variance::{Boundedness, InvariantSize, InvariantText, Variance};
+pub use crate::token::variance::{
+    invariant_text_prefix, Boundedness, InvariantSize, InvariantText, Variance,
+};
 
 pub trait IntoTokens<'t>: Sized {
     type Annotation;
@@ -40,12 +42,12 @@ impl<'t, A> Tokenized<'t, A> {
 
     pub fn partition(mut self) -> (PathBuf, Self) {
         // Get the invariant prefix for the token sequence.
-        let prefix = invariant_prefix_path(self.tokens.iter()).unwrap_or_else(PathBuf::new);
+        let prefix = variance::invariant_text_prefix(self.tokens.iter()).into();
 
         // Drain invariant tokens from the beginning of the token sequence and
         // unroot any tokens at the beginning of the sequence (tree wildcards).
         self.tokens
-            .drain(0..invariant_prefix_upper_bound(&self.tokens));
+            .drain(0..variance::invariant_text_prefix_upper_bound(&self.tokens));
         self.tokens.first_mut().map(Token::unroot);
 
         (prefix, self)
@@ -716,15 +718,21 @@ where
 #[derive(Clone, Copy, Debug)]
 pub struct Separator;
 
+impl Separator {
+    pub fn invariant_text() -> String {
+        MAIN_SEPARATOR.to_string()
+    }
+}
+
 impl<'i, 't> UnitVariance<InvariantText<'t>> for &'i Separator {
     fn unit_variance(self) -> Variance<InvariantText<'t>> {
-        Variance::Invariant(MAIN_SEPARATOR.to_string().into_structural_text())
+        Variance::Invariant(Separator::invariant_text().into_structural_text())
     }
 }
 
 impl<'i> UnitVariance<InvariantSize> for &'i Separator {
     fn unit_variance(self) -> Variance<InvariantSize> {
-        Variance::Invariant(MAIN_SEPARATOR.to_string().as_bytes().len().into())
+        Variance::Invariant(Separator::invariant_text().as_bytes().len().into())
     }
 }
 
@@ -891,80 +899,9 @@ where
     })
 }
 
-// TODO: Is there some way to unify this with `invariant_prefix_upper_bound`?
-pub fn invariant_prefix_path<'t, A, I>(tokens: I) -> Option<PathBuf>
-where
-    A: 't,
-    I: IntoIterator<Item = &'t Token<'t, A>>,
-{
-    let mut tokens = tokens.into_iter().peekable();
-    let mut prefix = String::new();
-    if tokens
-        .peek()
-        .map(|token| !token.has_sub_tokens() && token.has_root())
-        .unwrap_or(false)
-    {
-        // Include any rooting component boundary at the beginning of the token
-        // sequence.
-        prefix.push(MAIN_SEPARATOR);
-    }
-    // TODO: Replace `map`, `take_while`, and `flatten` with `map_while`
-    //       when it stabilizes.
-    prefix.push_str(
-        &components(tokens)
-            .map(|component| {
-                component
-                    .variance::<InvariantText>()
-                    .as_invariance()
-                    .map(InvariantText::to_string)
-                    .map(Cow::into_owned)
-            })
-            .take_while(|text| text.is_some())
-            .flatten()
-            .join(&MAIN_SEPARATOR.to_string()),
-    );
-    if prefix.is_empty() {
-        None
-    }
-    else {
-        Some(prefix.into())
-    }
-}
-
-pub fn invariant_prefix_upper_bound<A>(tokens: &[Token<A>]) -> usize {
-    use crate::token::TokenKind::{Separator, Wildcard};
-    use crate::token::Wildcard::Tree;
-
-    let mut separator = None;
-    for (n, token) in tokens.iter().map(Token::kind).enumerate() {
-        match token {
-            Separator(_) => {
-                separator = Some(n);
-            },
-            Wildcard(Tree { .. }) => {
-                return n;
-            },
-            _ => {
-                if token.variance::<InvariantText>().is_invariant() {
-                    continue;
-                }
-                else {
-                    return match separator {
-                        Some(n) => n + 1,
-                        None => 0,
-                    };
-                }
-            },
-        }
-    }
-    tokens.len()
-}
-
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
-    use crate::token::{self, Boundedness, InvariantSize, TokenKind, Variance};
+    use crate::token::{self, TokenKind};
 
     #[test]
     fn literal_case_insensitivity() {
@@ -983,64 +920,5 @@ mod tests {
         assert!(literals[2].is_case_insensitive); // `bar`
         assert!(!literals[3].is_case_insensitive); // `baz`
         assert!(literals[4].is_case_insensitive); // `qux`
-    }
-
-    #[test]
-    fn invariant_prefix_path() {
-        fn invariant_prefix_path(expression: &str) -> Option<PathBuf> {
-            token::invariant_prefix_path(token::parse(expression).unwrap().tokens())
-        }
-
-        assert_eq!(invariant_prefix_path("/a/b").unwrap(), Path::new("/a/b"));
-        assert_eq!(invariant_prefix_path("a/b").unwrap(), Path::new("a/b"));
-        assert_eq!(invariant_prefix_path("a/*").unwrap(), Path::new("a/"));
-        assert_eq!(invariant_prefix_path("a/*b").unwrap(), Path::new("a/"));
-        assert_eq!(invariant_prefix_path("a/b*").unwrap(), Path::new("a/"));
-        assert_eq!(invariant_prefix_path("a/b/*/c").unwrap(), Path::new("a/b/"));
-
-        #[cfg(any(unix, windows))]
-        let prefix = invariant_prefix_path("../foo/(?i)bar/(?-i)baz").unwrap();
-        #[cfg(unix)]
-        assert_eq!(prefix, Path::new("../foo"));
-        #[cfg(windows)]
-        assert_eq!(prefix, Path::new("../foo/bar"));
-
-        assert!(invariant_prefix_path("**").is_none());
-        assert!(invariant_prefix_path("a*").is_none());
-        assert!(invariant_prefix_path("*/b").is_none());
-        assert!(invariant_prefix_path("a?/b").is_none());
-    }
-
-    #[test]
-    fn tree_expression_variance() {
-        use Boundedness::{Closed, Open};
-        use Variance::Variant;
-
-        let tokenized = token::parse("**").unwrap();
-        assert!(matches!(
-            tokenized.variance::<InvariantSize>(),
-            Variant(Open)
-        ));
-        let tokenized = token::parse("<*/>*").unwrap();
-        assert!(matches!(
-            tokenized.variance::<InvariantSize>(),
-            Variant(Open)
-        ));
-        let tokenized = token::parse("<<?>/>*").unwrap();
-        assert!(matches!(
-            tokenized.variance::<InvariantSize>(),
-            Variant(Open)
-        ));
-
-        let tokenized = token::parse("foo/**").unwrap();
-        assert!(matches!(
-            tokenized.variance::<InvariantSize>(),
-            Variant(Closed)
-        ));
-        let tokenized = token::parse("<foo*/>*").unwrap();
-        assert!(matches!(
-            tokenized.variance::<InvariantSize>(),
-            Variant(Closed)
-        ));
     }
 }

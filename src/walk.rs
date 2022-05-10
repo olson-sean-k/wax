@@ -846,7 +846,7 @@ pub fn walk<'g>(
     // invariant prefix from the glob pattern. `Walk` patterns are only
     // applied to path components following the `prefix` (distinct from the
     // glob pattern prefix) in `root`.
-    let (root, prefix, depth) = token::invariant_prefix_path(glob.tokenized.tokens())
+    let (root, prefix, depth) = invariant_path_prefix(glob.tokenized.tokens())
         .map(|prefix| {
             let root = directory.join(&prefix).into();
             if prefix.is_absolute() {
@@ -882,6 +882,20 @@ pub fn walk<'g>(
             })
             .max_depth(depth)
             .into_iter(),
+    }
+}
+
+fn invariant_path_prefix<'t, A, I>(tokens: I) -> Option<PathBuf>
+where
+    A: 't,
+    I: IntoIterator<Item = &'t Token<'t, A>>,
+{
+    let prefix = token::invariant_text_prefix(tokens);
+    if prefix.is_empty() {
+        None
+    }
+    else {
+        Some(prefix.into())
     }
 }
 
