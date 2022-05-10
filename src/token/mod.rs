@@ -837,9 +837,8 @@ where
     't: 'i,
     A: 't,
     I: IntoIterator<Item = &'i Token<'t, A>>,
-    I::IntoIter: Clone,
 {
-    tokens.into_iter().batching(|tokens| {
+    tokens.into_iter().peekable().batching(|tokens| {
         let mut first = tokens.next();
         while matches!(first.map(Token::kind), Some(TokenKind::Separator(_))) {
             first = tokens.next();
@@ -849,7 +848,7 @@ where
             _ => Component(
                 Some(first)
                     .into_iter()
-                    .chain(tokens.take_while_ref(|token| !token.is_component_boundary()))
+                    .chain(tokens.peeking_take_while(|token| !token.is_component_boundary()))
                     .collect(),
             ),
         })
@@ -864,7 +863,6 @@ where
     't: 'i,
     A: 't,
     I: IntoIterator<Item = &'i Token<'t, A>>,
-    I::IntoIter: Clone,
 {
     components(tokens).flat_map(|component| {
         if let Some(literal) = component.literal() {
@@ -898,7 +896,6 @@ pub fn invariant_prefix_path<'t, A, I>(tokens: I) -> Option<PathBuf>
 where
     A: 't,
     I: IntoIterator<Item = &'t Token<'t, A>>,
-    I::IntoIter: Clone,
 {
     let mut tokens = tokens.into_iter().peekable();
     let mut prefix = String::new();
