@@ -8,6 +8,7 @@ use thiserror::Error;
 use walkdir::{self, DirEntry, WalkDir};
 
 use crate::capture::MatchedText;
+use crate::encode::CompileError;
 use crate::token::{self, Boundedness, InvariantText, Token};
 use crate::{CandidatePath, Glob, GlobError, PositionExt as _};
 
@@ -341,26 +342,37 @@ impl Negation {
     ///
     /// [`Glob`]: crate::Glob
     /// [`IntoIterator`]: std::iter::IntoIterator
-    pub fn try_from_patterns<'n, P>(
+    pub fn try_from_patterns<'t, P>(
         patterns: impl IntoIterator<Item = P>,
-    ) -> Result<Self, GlobError<'n>>
+    ) -> Result<Self, GlobError<'t>>
     where
-        P: TryInto<Glob<'n>, Error = GlobError<'n>>,
+        GlobError<'t>: From<P::Error>,
+        P: TryInto<Glob<'t>>,
     {
+        // TODO: Inlining the code in this function causes E0271 in the call to
+        //       `crate::any` claiming that `Infallible` was expected but
+        //       `<P as TryInto<Glob<'t>>>::Error` was found instead. This may
+        //       be a bug in the compiler. In this case, these types are the
+        //       same, but it's unclear why the compiler requires this, as
+        //       `crate::any` has no such requirement.
+        fn from_globs(globs: Vec<Glob>) -> Negation {
+            // Partition the negation globs into terminals and nonterminals. A
+            // terminal glob matches all sub-paths once it has matched and so
+            // arrests the traversal into sub-directories. This is determined by
+            // whether or not a glob is terminated by a component with unbounded
+            // depth and unbounded variance.
+            let (terminals, nonterminals) = globs.into_iter().partition::<Vec<_>, _>(is_terminal);
+            Negation {
+                terminal: crate::any::<Glob, _>(terminals).unwrap().regex,
+                nonterminal: crate::any::<Glob, _>(nonterminals).unwrap().regex,
+            }
+        }
+
         let globs: Vec<_> = patterns
             .into_iter()
             .map(TryInto::try_into)
             .collect::<Result<_, _>>()?;
-        // Partition the negation globs into terminals and nonterminals. A
-        // terminal glob matches all sub-paths once it has matched and so
-        // arrests the traversal into sub-directories. This is determined by
-        // whether or not a glob is terminated by a component with unbounded
-        // depth and unbounded variance.
-        let (terminals, nonterminals) = globs.into_iter().partition::<Vec<_>, _>(is_terminal);
-        Ok(Negation {
-            terminal: crate::any::<Glob, _>(terminals).unwrap().regex,
-            nonterminal: crate::any::<Glob, _>(nonterminals).unwrap().regex,
-        })
+        Ok(from_globs(globs))
     }
 
     /// Gets the appropriate [`FilterTarget`] for the given [`WalkEntry`].
@@ -543,7 +555,7 @@ pub struct Walk<'g> {
 }
 
 impl<'g> Walk<'g> {
-    fn compile<'t, I>(tokens: I) -> Vec<Regex>
+    fn compile<'t, I>(tokens: I) -> Result<Vec<Regex>, CompileError>
     where
         I: IntoIterator<Item = &'t Token<'t>>,
         I::IntoIter: Clone,
@@ -556,14 +568,14 @@ impl<'g> Walk<'g> {
                 .any(|token| token.has_component_boundary())
             {
                 // Stop at component boundaries, such as tree wildcards or any
-                // boundary within an alternative token.
+                // boundary within a group token.
                 break;
             }
             else {
-                regexes.push(Glob::compile(component.tokens().iter().cloned()));
+                regexes.push(Glob::compile(component.tokens().iter().cloned())?);
             }
         }
-        regexes
+        Ok(regexes)
     }
 
     /// Clones any borrowed data into an owning instance.
@@ -870,7 +882,8 @@ pub fn walk<'g>(
             let root = Cow::from(directory);
             (root.clone(), root, depth)
         });
-    let components = Walk::compile(glob.tokenized.tokens());
+    let components =
+        Walk::compile(glob.tokenized.tokens()).expect("failed to compile glob sub-expressions");
     Walk {
         pattern: Cow::Borrowed(&glob.regex),
         components,

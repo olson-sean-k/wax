@@ -507,7 +507,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
             ))(input)
         }
 
-        combinator::map_opt(
+        combinator::map(
             sequence::delimited(
                 supreme::tag("<"),
                 sequence::tuple((
@@ -519,9 +519,13 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                 )),
                 supreme::tag(">"),
             ),
-            |(tokens, (lower, upper))| match upper {
-                Some(upper) => Repetition::new(tokens, lower..=upper).map(From::from),
-                None => Repetition::new(tokens, lower..).map(From::from),
+            |(tokens, (lower, upper))| {
+                Repetition {
+                    tokens,
+                    lower,
+                    upper,
+                }
+                .into()
             },
         )(input)
     }

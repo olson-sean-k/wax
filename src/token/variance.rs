@@ -119,8 +119,14 @@ impl IntoInvariantText<'static> for String {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct InvariantSize(usize);
+
+impl InvariantSize {
+    pub const fn new(n: usize) -> Self {
+        InvariantSize(n)
+    }
+}
 
 impl Add for InvariantSize {
     type Output = Self;
@@ -152,7 +158,11 @@ impl Mul<usize> for InvariantSize {
     type Output = Self;
 
     fn mul(self, n: usize) -> Self::Output {
-        InvariantSize(self.0 * n)
+        InvariantSize(
+            self.0
+                .checked_mul(n)
+                .expect("overflow determining invariant size"),
+        )
     }
 }
 
@@ -198,7 +208,7 @@ impl<'t> InvariantText<'t> {
             let InvariantText { fragments } = self;
             let n = (n - 1)
                 .checked_mul(fragments.len())
-                .expect("overflow repeating invariant text");
+                .expect("overflow determining invariant text");
             let first = fragments.clone();
             InvariantText {
                 fragments: first

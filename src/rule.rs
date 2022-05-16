@@ -24,8 +24,19 @@ use thiserror::Error;
 
 #[cfg(feature = "diagnostics-report")]
 use crate::diagnostics::report::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
-use crate::token::{Token, TokenKind, Tokenized};
+use crate::token::{InvariantSize, Token, TokenKind, Tokenized};
 use crate::{SliceExt as _, Terminals};
+
+/// Maximum invariant size.
+///
+/// This size is equal to or greater than the maximum size of a path on
+/// supported platforms. The primary purpose of this limit is to mitigate
+/// malicious or mistaken expressions that encode very large invariant text,
+/// namely via repetitions.
+///
+/// This limit is independent of the back end encoding. This code does not rely
+/// on errors in the encoder by design, such as size limitations.
+const MAX_INVARIANT_SIZE: InvariantSize = InvariantSize::new(0x10000);
 
 trait IteratorExt: Iterator + Sized {
     fn adjacent(self) -> Adjacent<Self>
@@ -191,7 +202,19 @@ impl Diagnostic for RuleError<'_> {
             ErrorKind::SingularZeroOrMore => "wax::glob::singular_zero_or_more",
             ErrorKind::AdjacentBoundary => "wax::glob::adjacent_boundary",
             ErrorKind::AdjacentZeroOrMore => "wax::glob::adjacent_zero_or_more",
+            ErrorKind::OversizedInvariant => "wax::glob::oversized_invariant",
+            ErrorKind::IncompatibleBounds => "wax::glob::incompatible_bounds",
         })))
+    }
+
+    fn help<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
+        match self.kind {
+            ErrorKind::OversizedInvariant => Some(Box::new(String::from(
+                "this error typically occurs when a repetition has a convergent bound that is too \
+                 large",
+            ))),
+            _ => None,
+        }
     }
 
     fn source_code(&self) -> Option<&dyn SourceCode> {
@@ -216,11 +239,17 @@ enum ErrorKind {
     AdjacentBoundary,
     #[error("adjacent zero-or-more wildcards `*` or `$`")]
     AdjacentZeroOrMore,
+    #[error("oversized invariant expression")]
+    OversizedInvariant,
+    #[error("incompatible repetition bounds")]
+    IncompatibleBounds,
 }
 
 pub fn check<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     boundary(tokenized)?;
+    bounds(tokenized)?;
     group(tokenized)?;
+    size(tokenized)?;
     Ok(())
 }
 
@@ -290,14 +319,22 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 
     fn has_preceding_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
-            .map(|token| token.has_preceding_token_with(&mut |token| token.is_component_boundary()))
+            .map(|token| {
+                token
+                    .walk()
+                    .preceding()
+                    .any(|(_, token)| token.is_component_boundary())
+            })
             .unwrap_or(false)
     }
 
     fn has_terminating_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
-                token.has_terminating_token_with(&mut |token| token.is_component_boundary())
+                token
+                    .walk()
+                    .terminating()
+                    .any(|(_, token)| token.is_component_boundary())
             })
             .unwrap_or(false)
     }
@@ -305,9 +342,10 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     fn has_preceding_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
-                token.has_preceding_token_with(&mut |token| {
-                    matches!(token.kind(), Wildcard(ZeroOrMore(_)))
-                })
+                token
+                    .walk()
+                    .preceding()
+                    .any(|(_, token)| matches!(token.kind(), Wildcard(ZeroOrMore(_))))
             })
             .unwrap_or(false)
     }
@@ -315,9 +353,10 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     fn has_terminating_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
-                token.has_terminating_token_with(&mut |token| {
-                    matches!(token.kind(), Wildcard(ZeroOrMore(_)))
-                })
+                token
+                    .walk()
+                    .terminating()
+                    .any(|(_, token)| matches!(token.kind(), Wildcard(ZeroOrMore(_))))
             })
             .unwrap_or(false)
     }
@@ -583,6 +622,57 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         tokenized.tokens(),
         Default::default(),
     )
+}
+
+fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
+    #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
+    if let Some((_, token)) = tokenized.walk().find(|(_, token)| match token.kind() {
+        TokenKind::Repetition(ref repetition) => {
+            let (lower, upper) = repetition.bounds();
+            upper
+                .map(|upper| upper < lower || upper == 0)
+                .unwrap_or(false)
+        },
+        _ => false,
+    }) {
+        Err(RuleError::new(
+            tokenized.expression().clone(),
+            ErrorKind::IncompatibleBounds,
+            #[cfg(feature = "diagnostics-report")]
+            CompositeSourceSpan::span(Some("here"), (*token.annotation()).into()),
+        ))
+    }
+    else {
+        Ok(())
+    }
+}
+
+fn size<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
+    #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
+    if let Some((_, token)) = tokenized
+        .walk()
+        // TODO: This is expensive. For each token tree encountered, the
+        //       tree is traversed to determine its variance. If variant,
+        //       the tree is traversed and queried again, revisiting the
+        //       same tokens to recompute their local variance.
+        .find(|(_, token)| {
+            token
+                .variance::<InvariantSize>()
+                .as_invariance()
+                .map(|size| *size >= MAX_INVARIANT_SIZE)
+                .unwrap_or(false)
+        })
+    {
+        Err(RuleError::new(
+            tokenized.expression().clone(),
+            ErrorKind::OversizedInvariant,
+            #[cfg(feature = "diagnostics-report")]
+            CompositeSourceSpan::span(Some("here"), (*token.annotation()).into()),
+        ))
+    }
+    else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::cmp;
 use std::path::PathBuf;
 use thiserror::Error;
-use vec1::Vec1;
+use vec1::{vec1, Vec1};
 
 use crate::token::{self, TokenKind, Tokenized};
 
@@ -19,18 +19,97 @@ pub type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub type DiagnosticResult<'t, T> = Result<(T, Vec<BoxedDiagnostic<'t>>), Vec1<BoxedDiagnostic<'t>>>;
 
+pub trait IteratorExt<'t>: Iterator + Sized {
+    fn into_non_error_diagnostic(self) -> DiagnosticResult<'t, ()>;
+}
+
+impl<'t, I> IteratorExt<'t> for I
+where
+    I: Iterator<Item = BoxedDiagnostic<'t>>,
+{
+    fn into_non_error_diagnostic(self) -> DiagnosticResult<'t, ()> {
+        Ok(((), self.collect()))
+    }
+}
+
+pub trait ResultExt<'t, T, E> {
+    fn into_error_diagnostic(self) -> DiagnosticResult<'t, T>
+    where
+        E: 't + Diagnostic;
+}
+
+impl<'t, T, E> ResultExt<'t, T, E> for Result<T, E> {
+    fn into_error_diagnostic(self) -> DiagnosticResult<'t, T>
+    where
+        E: 't + Diagnostic,
+    {
+        match self {
+            Ok(value) => Ok((value, vec![])),
+            Err(error) => Err(vec1![Box::new(error) as Box<dyn Diagnostic + 't>]),
+        }
+    }
+}
+
 /// Extension traits for `Result`s with diagnostics.
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub trait DiagnosticResultExt<'t, T> {
+    fn ok_value(&self) -> Option<&T>;
+
     fn diagnostics(&self) -> &[BoxedDiagnostic<'t>];
+
+    fn map_value<U, F>(self, f: F) -> DiagnosticResult<'t, U>
+    where
+        F: FnOnce(T) -> U;
+
+    fn and_then_diagnose<U, F>(self, f: F) -> DiagnosticResult<'t, U>
+    where
+        F: FnOnce(T) -> DiagnosticResult<'t, U>;
 }
 
 impl<'t, T> DiagnosticResultExt<'t, T> for DiagnosticResult<'t, T> {
+    fn ok_value(&self) -> Option<&T> {
+        match self {
+            Ok((ref value, _)) => Some(value),
+            _ => None,
+        }
+    }
+
     /// Gets the diagnostics associated with the `Result`.
     fn diagnostics(&self) -> &[BoxedDiagnostic<'t>] {
         match self {
             Ok((_, ref diagnostics)) => diagnostics,
             Err(ref diagnostics) => diagnostics,
+        }
+    }
+
+    fn map_value<U, F>(self, f: F) -> DiagnosticResult<'t, U>
+    where
+        F: FnOnce(T) -> U,
+    {
+        match self {
+            Ok((value, diagnostics)) => Ok((f(value), diagnostics)),
+            Err(diagnostics) => Err(diagnostics),
+        }
+    }
+
+    fn and_then_diagnose<U, F>(self, f: F) -> DiagnosticResult<'t, U>
+    where
+        F: FnOnce(T) -> DiagnosticResult<'t, U>,
+    {
+        match self {
+            Ok((value, mut diagnostics)) => match f(value) {
+                Ok((value, tail)) => {
+                    diagnostics.extend(tail);
+                    Ok((value, diagnostics))
+                },
+                Err(tail) => {
+                    diagnostics.extend(tail);
+                    Err(diagnostics
+                        .try_into()
+                        .expect("diagnostic failure with no errors"))
+                },
+            },
+            Err(diagnostics) => Err(diagnostics),
         }
     }
 }

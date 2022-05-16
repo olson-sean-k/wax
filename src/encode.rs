@@ -1,7 +1,12 @@
 use const_format::formatcp;
 use itertools::{Itertools as _, Position};
-use regex::Regex;
+#[cfg(feature = "diagnostics-report")]
+use miette::Diagnostic;
+use regex::{Error as RegexError, Regex};
 use std::borrow::{Borrow, Cow};
+#[cfg(feature = "diagnostics-report")]
+use std::fmt::Display;
+use thiserror::Error;
 
 use crate::token::Token;
 use crate::PositionExt as _;
@@ -50,6 +55,40 @@ macro_rules! nsepexpr {
     };
 }
 
+/// Describes errors that occur when compiling a glob expression.
+///
+/// **This error only occurs when the size of the compiled program is too
+/// large.** All other compilation errors are considered internal bugs and will
+/// panic.
+///
+/// When the `diagnostics-report` feature is enabled, this error implements the
+/// [`Diagnostic`] trait and provides more detailed information about the
+/// compilation failure.
+///
+/// [`Diagnostic`]: miette::Diagnostic
+#[derive(Clone, Debug, Error)]
+#[error("failed to compile glob: {kind}")]
+pub struct CompileError {
+    kind: ErrorKind,
+}
+
+#[derive(Clone, Copy, Debug, Error)]
+#[non_exhaustive]
+enum ErrorKind {
+    #[error("oversized program")]
+    OversizedProgram,
+}
+
+#[cfg(feature = "diagnostics-report")]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+impl Diagnostic for CompileError {
+    fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
+        Some(Box::new(String::from(match self.kind {
+            ErrorKind::OversizedProgram => "wax::glob::oversized_program",
+        })))
+    }
+}
+
 trait Escaped {
     fn escaped(&self) -> String;
 }
@@ -92,7 +131,7 @@ impl Grouping {
 
 pub fn case_folded_eq(left: &str, right: &str) -> bool {
     let regex = Regex::new(&format!("(?i){}", regex::escape(left)))
-        .expect("literal regular expression compilation failed");
+        .expect("failed to compile literal regular expression");
     if let Some(matched) = regex.find(right) {
         matched.start() == 0 && matched.end() == right.len()
     }
@@ -101,7 +140,7 @@ pub fn case_folded_eq(left: &str, right: &str) -> bool {
     }
 }
 
-pub fn compile<'t, A, T>(tokens: impl IntoIterator<Item = T>) -> Regex
+pub fn compile<'t, A, T>(tokens: impl IntoIterator<Item = T>) -> Result<Regex, CompileError>
 where
     T: Borrow<Token<'t, A>>,
 {
@@ -109,7 +148,12 @@ where
     pattern.push('^');
     encode(Grouping::Capture, None, &mut pattern, tokens);
     pattern.push('$');
-    Regex::new(&pattern).expect("glob compilation failed")
+    Regex::new(&pattern).map_err(|error| match error {
+        RegexError::CompiledTooBig(_) => CompileError {
+            kind: ErrorKind::OversizedProgram,
+        },
+        _ => panic!("failed to compile glob"),
+    })
 }
 
 fn encode<'t, A, T>(

@@ -4,9 +4,9 @@ mod variance;
 use itertools::Itertools as _;
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
-use std::cmp;
+use std::collections::VecDeque;
 use std::mem;
-use std::ops::{Bound, Deref, RangeBounds};
+use std::ops::Deref;
 use std::path::{PathBuf, MAIN_SEPARATOR};
 
 use crate::token::variance::{
@@ -68,6 +68,10 @@ impl<'t, A> Tokenized<'t, A> {
     {
         self.tokens().iter().conjunctive_variance()
     }
+
+    pub fn walk(&self) -> Walk<'_, 't, A> {
+        Walk::from(&self.tokens)
+    }
 }
 
 impl<'t, A> IntoTokens<'t> for Tokenized<'t, A> {
@@ -118,41 +122,89 @@ impl<'t, A> Token<'t, A> {
         self.as_ref()
     }
 
+    // TODO: Implement depth queries per token kind (like variance queries).
+    //       This implementation requires `Alternative::walk`, which can be
+    //       removed if depth is implemented differently.
+    pub fn depth(&self) -> Boundedness {
+        use crate::token::Wildcard::{One, Tree, ZeroOrMore};
+        use TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
+
+        match self.kind() {
+            Class(_) | Literal(_) | Separator(_) | Wildcard(One | ZeroOrMore(_)) => {
+                Boundedness::Closed
+            },
+            Alternative(ref alternative) => {
+                if alternative.walk().any(|(_, token)| token.depth().is_open()) {
+                    Boundedness::Open
+                }
+                else {
+                    Boundedness::Closed
+                }
+            },
+            Repetition(ref repetition) => {
+                let (_, upper) = repetition.bounds();
+                if upper.is_none() && self.has_component_boundary() {
+                    Boundedness::Open
+                }
+                else {
+                    Boundedness::Closed
+                }
+            },
+            Wildcard(Tree { .. }) => Boundedness::Open,
+        }
+    }
+
+    // TODO: Implement breadth queries per token kind (like variance queries).
+    //       This implementation requires `Alternative::walk` and
+    //       `Repetition::walk` , which can be removed if depth is implemented
+    //       differently.
+    pub fn breadth(&self) -> Boundedness {
+        use crate::token::Wildcard::{One, Tree, ZeroOrMore};
+        use TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
+
+        match self.kind() {
+            Class(_) | Literal(_) | Separator(_) | Wildcard(One) => Boundedness::Closed,
+            Alternative(ref alternative) => {
+                if alternative
+                    .walk()
+                    .any(|(_, token)| token.breadth().is_open())
+                {
+                    Boundedness::Open
+                }
+                else {
+                    Boundedness::Closed
+                }
+            },
+            Repetition(ref repetition) => {
+                if repetition
+                    .walk()
+                    .any(|(_, token)| token.breadth().is_open())
+                {
+                    Boundedness::Open
+                }
+                else {
+                    Boundedness::Closed
+                }
+            },
+            Wildcard(Tree { .. } | ZeroOrMore(_)) => Boundedness::Open,
+        }
+    }
+
+    pub fn walk(&self) -> Walk<'_, 't, A> {
+        Walk::from(self)
+    }
+
     pub fn has_root(&self) -> bool {
-        self.has_preceding_token_with(&mut |token| {
+        self.walk().preceding().any(|(_, token)| {
             matches!(
                 token.kind(),
-                TokenKind::Separator(_) | TokenKind::Wildcard(Wildcard::Tree { has_root: true })
+                TokenKind::Separator(_) | TokenKind::Wildcard(Wildcard::Tree { has_root: true }),
             )
         })
     }
 
     pub fn has_component_boundary(&self) -> bool {
-        self.has_token_with(&mut |token| token.is_component_boundary())
-    }
-
-    pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
-        match self.kind() {
-            TokenKind::Alternative(ref alternative) => alternative.has_token_with(f),
-            TokenKind::Repetition(ref repetition) => repetition.has_token_with(f),
-            _ => f(self),
-        }
-    }
-
-    pub fn has_preceding_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
-        match self.kind() {
-            TokenKind::Alternative(ref alternative) => alternative.has_preceding_token_with(f),
-            TokenKind::Repetition(ref repetition) => repetition.has_preceding_token_with(f),
-            _ => f(self),
-        }
-    }
-
-    pub fn has_terminating_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
-        match self.kind() {
-            TokenKind::Alternative(ref alternative) => alternative.has_terminating_token_with(f),
-            TokenKind::Repetition(ref repetition) => repetition.has_terminating_token_with(f),
-            _ => f(self),
-        }
+        self.walk().any(|(_, token)| token.is_component_boundary())
     }
 }
 
@@ -251,61 +303,6 @@ impl<'t, A> TokenKind<'t, A> {
         self.unit_variance()
     }
 
-    pub fn depth(&self) -> Boundedness {
-        use crate::token::Wildcard::{One, Tree, ZeroOrMore};
-        use TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
-
-        match self {
-            Class(_) | Literal(_) | Separator(_) | Wildcard(One | ZeroOrMore(_)) => {
-                Boundedness::Closed
-            },
-            Alternative(ref alternative) => {
-                if alternative.has_token_with(&mut |token| token.depth().is_open()) {
-                    Boundedness::Open
-                }
-                else {
-                    Boundedness::Closed
-                }
-            },
-            Repetition(ref repetition) => {
-                let (_, upper) = repetition.bounds();
-                if upper.is_none() && repetition.has_component_boundary() {
-                    Boundedness::Open
-                }
-                else {
-                    Boundedness::Closed
-                }
-            },
-            Wildcard(Tree { .. }) => Boundedness::Open,
-        }
-    }
-
-    pub fn breadth(&self) -> Boundedness {
-        use crate::token::Wildcard::{One, Tree, ZeroOrMore};
-        use TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
-
-        match self {
-            Class(_) | Literal(_) | Separator(_) | Wildcard(One) => Boundedness::Closed,
-            Alternative(ref alternative) => {
-                if alternative.has_token_with(&mut |token| token.breadth().is_open()) {
-                    Boundedness::Open
-                }
-                else {
-                    Boundedness::Closed
-                }
-            },
-            Repetition(ref repetition) => {
-                if repetition.has_token_with(&mut |token| token.breadth().is_open()) {
-                    Boundedness::Open
-                }
-                else {
-                    Boundedness::Closed
-                }
-            },
-            Wildcard(Tree { .. } | ZeroOrMore(_)) => Boundedness::Open,
-        }
-    }
-
     pub fn has_sub_tokens(&self) -> bool {
         // It is not necessary to detect empty branches or sub-expressions.
         matches!(self, TokenKind::Alternative(_) | TokenKind::Repetition(_))
@@ -399,28 +396,19 @@ impl<'t, A> Alternative<'t, A> {
         &self.0
     }
 
-    pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
-        self.0
-            .iter()
-            .any(|tokens| tokens.iter().any(|token| token.has_token_with(f)))
-    }
-
-    pub fn has_preceding_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
-        self.0.iter().any(|tokens| {
-            tokens
-                .first()
-                .map(|token| token.has_preceding_token_with(f))
-                .unwrap_or(false)
-        })
-    }
-
-    pub fn has_terminating_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
-        self.0.iter().any(|tokens| {
-            tokens
-                .last()
-                .map(|token| token.has_terminating_token_with(f))
-                .unwrap_or(false)
-        })
+    pub fn walk<'i>(&'i self) -> Walk<'i, 't, A> {
+        Walk {
+            buffer: self
+                .0
+                .iter()
+                .enumerate()
+                .flat_map(|(branch, tokens)| {
+                    tokens
+                        .iter()
+                        .map(move |token| (Position::Disjunctive { depth: 0, branch }, token))
+                })
+                .collect(),
+        }
     }
 }
 
@@ -591,45 +579,26 @@ impl<'i, 't> UnitVariance<InvariantSize> for &'i Literal<'t> {
 pub struct Repetition<'t, A = ()> {
     tokens: Vec<Token<'t, A>>,
     lower: usize,
-    step: Option<usize>,
+    // This representation is not ideal, as it does not statically enforce the
+    // invariant that the upper bound is greater than or equal to the lower
+    // bound. For example, this field could instead be a summand. However,
+    // tokens must closely resemble their glob expression representations so
+    // that errors in expressions can be deferred and presented more clearly.
+    // Failures in the parser are difficult to describe.
+    upper: Option<usize>,
 }
 
 impl<'t, A> Repetition<'t, A> {
-    fn new(tokens: Vec<Token<'t, A>>, bounds: impl RangeBounds<usize>) -> Option<Self> {
-        let lower = match bounds.start_bound() {
-            Bound::Included(lower) => *lower,
-            Bound::Excluded(lower) => *lower + 1,
-            Bound::Unbounded => 0,
-        };
-        let upper = match bounds.end_bound() {
-            Bound::Included(upper) => Some(*upper),
-            Bound::Excluded(upper) => Some(cmp::max(*upper, 1) - 1),
-            Bound::Unbounded => None,
-        };
-        match upper {
-            Some(upper) => (upper != 0 && upper >= lower).then(|| Repetition {
-                tokens,
-                lower,
-                step: Some(upper - lower),
-            }),
-            None => Some(Repetition {
-                tokens,
-                lower,
-                step: None,
-            }),
-        }
-    }
-
     pub fn into_owned(self) -> Repetition<'static, A> {
         let Repetition {
             tokens,
             lower,
-            step,
+            upper,
         } = self;
         Repetition {
             tokens: tokens.into_iter().map(Token::into_owned).collect(),
             lower,
-            step,
+            upper,
         }
     }
 
@@ -637,12 +606,12 @@ impl<'t, A> Repetition<'t, A> {
         let Repetition {
             tokens,
             lower,
-            step,
+            upper,
         } = self;
         Repetition {
             tokens: tokens.into_iter().map(|token| token.unannotate()).collect(),
             lower,
-            step,
+            upper,
         }
     }
 
@@ -651,29 +620,15 @@ impl<'t, A> Repetition<'t, A> {
     }
 
     pub fn bounds(&self) -> (usize, Option<usize>) {
-        (self.lower, self.step.map(|step| self.lower + step))
+        (self.lower, self.upper)
     }
 
-    pub fn has_component_boundary(&self) -> bool {
-        self.has_token_with(&mut |token| token.is_component_boundary())
+    pub fn walk(&self) -> Walk<'_, 't, A> {
+        Walk::from(&self.tokens)
     }
 
-    pub fn has_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
-        self.tokens.iter().any(|token| token.has_token_with(f))
-    }
-
-    pub fn has_preceding_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
-        self.tokens
-            .first()
-            .map(|token| token.has_preceding_token_with(f))
-            .unwrap_or(false)
-    }
-
-    pub fn has_terminating_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
-        self.tokens
-            .last()
-            .map(|token| token.has_terminating_token_with(f))
-            .unwrap_or(false)
+    pub fn is_converged(&self) -> bool {
+        self.upper.map(|upper| self.lower == upper).unwrap_or(false)
     }
 }
 
@@ -691,9 +646,9 @@ where
             .tokens()
             .iter()
             // Coalesce tokens with open variance with separators. This isn't
-            // destructive and doesn't affect invariant strings, because this
-            // only happens in the presence of open variance, which means that
-            // the repetition has no invariant string representation.
+            // destructive and doesn't affect invariance, because this only
+            // happens in the presence of open variance, which means that the
+            // repetition is variant (and has no invariant size or text).
             .coalesce(|left, right| {
                 match (
                     (left.kind(), left.unit_variance()),
@@ -705,12 +660,18 @@ where
                 }
             })
             .conjunctive_variance();
-        match self.step {
-            // TODO: Repeating the invariant text could be unknowingly expensive
-            //       and could pose a potential attack vector. Is there an
-            //       alternative representation that avoids epic allocations?
-            Some(0) => variance.map_invariance(|invariance| invariance * self.lower),
-            Some(_) | None => variance + Variant(Open),
+        match self.upper {
+            // Repeating invariance can cause overflows, very large allocations,
+            // and very inefficient comparisons (e.g., comparing very large
+            // strings). This is detected by both `encode::compile` and
+            // `rule::check` (in distinct but similar ways). Querying token
+            // trees for their invariance must be done with care (after using
+            // these functions) to avoid expanding pathological invariant
+            // expressions like `<long:9999999999999>`.
+            Some(_) if self.is_converged() => {
+                variance.map_invariance(|invariance| invariance * self.lower)
+            },
+            _ => variance + Variant(Open),
         }
     }
 }
@@ -741,6 +702,135 @@ pub enum Wildcard {
     One,
     ZeroOrMore(Evaluation),
     Tree { has_root: bool },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Position {
+    Conjunctive { depth: usize },
+    Disjunctive { depth: usize, branch: usize },
+}
+
+impl Position {
+    pub fn depth(&self) -> usize {
+        match self {
+            Position::Conjunctive { ref depth } => *depth,
+            Position::Disjunctive { ref depth, .. } => *depth,
+        }
+    }
+
+    fn increment(self) -> Self {
+        match self {
+            Position::Conjunctive { depth } => Position::Conjunctive { depth: depth + 1 },
+            Position::Disjunctive { depth, .. } => Position::Conjunctive { depth: depth + 1 },
+        }
+    }
+}
+
+impl Default for Position {
+    fn default() -> Self {
+        Position::Conjunctive { depth: 0 }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Walk<'i, 't, A> {
+    buffer: VecDeque<(Position, &'i Token<'t, A>)>,
+}
+
+impl<'i, 't, A> Walk<'i, 't, A>
+where
+    't: 'i,
+    A: 't,
+{
+    pub fn preceding(self) -> impl 'i + Iterator<Item = (Position, &'i Token<'t, A>)> {
+        self.peekable().batching(|tokens| {
+            if let Some((position, token)) = tokens.next() {
+                tokens
+                    .peeking_take_while(|(next, _)| *next == position)
+                    .for_each(drop);
+                Some((position, token))
+            }
+            else {
+                None
+            }
+        })
+    }
+
+    pub fn terminating(self) -> impl 'i + Iterator<Item = (Position, &'i Token<'t, A>)> {
+        self.peekable().batching(|tokens| {
+            if let Some((position, _)) = tokens.peek().cloned() {
+                tokens
+                    .peeking_take_while(|(next, _)| *next == position)
+                    .last()
+            }
+            else {
+                None
+            }
+        })
+    }
+}
+
+impl<'i, 't, A> From<&'i Token<'t, A>> for Walk<'i, 't, A> {
+    fn from(token: &'i Token<'t, A>) -> Self {
+        Walk {
+            buffer: Some((Default::default(), token)).into_iter().collect(),
+        }
+    }
+}
+
+impl<'i, 't, A> From<&'i Vec<Token<'t, A>>> for Walk<'i, 't, A> {
+    fn from(tokens: &'i Vec<Token<'t, A>>) -> Self {
+        Walk {
+            buffer: tokens
+                .iter()
+                .map(|token| (Default::default(), token))
+                .collect(),
+        }
+    }
+}
+
+impl<'i, 't, A> Iterator for Walk<'i, 't, A>
+where
+    't: 'i,
+    A: 't,
+{
+    type Item = (Position, &'i Token<'t, A>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((position, token)) = self.buffer.pop_front() {
+            match token.kind() {
+                TokenKind::Alternative(ref alternative) => {
+                    self.buffer
+                        .extend(alternative.branches().iter().enumerate().flat_map(
+                            |(branch, tokens)| {
+                                tokens.iter().map(move |token| {
+                                    (
+                                        Position::Disjunctive {
+                                            depth: position.depth() + 1,
+                                            branch,
+                                        },
+                                        token,
+                                    )
+                                })
+                            },
+                        ));
+                },
+                TokenKind::Repetition(ref repetition) => {
+                    self.buffer.extend(
+                        repetition
+                            .tokens()
+                            .iter()
+                            .map(|token| (position.increment(), token)),
+                    );
+                },
+                _ => {},
+            }
+            Some((position, token))
+        }
+        else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

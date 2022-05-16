@@ -27,6 +27,7 @@ use itertools::{Itertools as _, Position};
 use miette::Diagnostic;
 use regex::Regex;
 use std::borrow::{Borrow, Cow};
+use std::convert::Infallible;
 use std::ffi::OsStr;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::path::{Path, PathBuf};
@@ -36,7 +37,7 @@ use thiserror::Error;
 #[cfg(feature = "diagnostics-inspect")]
 use crate::diagnostics::inspect;
 #[cfg(feature = "diagnostics-report")]
-use crate::diagnostics::report::{self, BoxedDiagnostic};
+use crate::diagnostics::report::{self, IteratorExt as _, ResultExt as _};
 use crate::token::{Annotation, IntoTokens, InvariantText, Token, Tokenized};
 
 pub use crate::capture::MatchedText;
@@ -46,6 +47,7 @@ pub use crate::diagnostics::inspect::CapturingToken;
 pub use crate::diagnostics::report::{DiagnosticGlob, DiagnosticResult, DiagnosticResultExt};
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::Span;
+pub use crate::encode::CompileError;
 pub use crate::rule::RuleError;
 pub use crate::token::ParseError;
 pub use crate::walk::{
@@ -245,6 +247,16 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 #[non_exhaustive]
 #[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
 pub enum GlobError<'t> {
+    /// A glob expression failed to compile.
+    ///
+    /// This error occurs when a glob expression (or some part of a glob
+    /// expression) cannot be compiled. See the documentation for
+    /// [`CompileError`].
+    ///
+    /// [`CompileError`]: crate::CompileError
+    #[error(transparent)]
+    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+    Compile(CompileError),
     /// A glob expression failed to parse.
     ///
     /// This error occurs when attempting to construct a [`Glob`] from a glob
@@ -282,10 +294,23 @@ impl<'t> GlobError<'t> {
     /// Clones any borrowed data into an owning instance.
     pub fn into_owned(self) -> GlobError<'static> {
         match self {
+            GlobError::Compile(error) => GlobError::Compile(error),
             GlobError::Parse(error) => GlobError::Parse(error.into_owned()),
             GlobError::Rule(error) => GlobError::Rule(error.into_owned()),
             GlobError::Walk(error) => GlobError::Walk(error),
         }
+    }
+}
+
+impl From<CompileError> for GlobError<'_> {
+    fn from(error: CompileError) -> Self {
+        GlobError::Compile(error)
+    }
+}
+
+impl From<Infallible> for GlobError<'_> {
+    fn from(_: Infallible) -> Self {
+        unreachable!()
     }
 }
 
@@ -301,7 +326,7 @@ impl<'t> From<RuleError<'t>> for GlobError<'t> {
     }
 }
 
-impl From<WalkError> for GlobError<'static> {
+impl From<WalkError> for GlobError<'_> {
     fn from(error: WalkError) -> Self {
         GlobError::Walk(error)
     }
@@ -491,7 +516,7 @@ pub struct Glob<'t> {
 }
 
 impl<'t> Glob<'t> {
-    fn compile<T>(tokens: impl IntoIterator<Item = T>) -> Regex
+    fn compile<T>(tokens: impl IntoIterator<Item = T>) -> Result<Regex, CompileError>
     where
         T: Borrow<Token<'t>>,
     {
@@ -516,7 +541,7 @@ impl<'t> Glob<'t> {
     /// [`RuleError`]: crate::RuleError
     pub fn new(expression: &'t str) -> Result<Self, GlobError<'t>> {
         let tokenized = parse_and_check(expression)?;
-        let regex = Glob::compile(tokenized.tokens());
+        let regex = Glob::compile(tokenized.tokens())?;
         Ok(Glob { tokenized, regex })
     }
 
@@ -610,7 +635,7 @@ impl<'t> Glob<'t> {
     pub fn partitioned(expression: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
         let tokenized = parse_and_check(expression)?;
         let (prefix, tokenized) = tokenized.partition();
-        let regex = Glob::compile(tokenized.tokens());
+        let regex = Glob::compile(tokenized.tokens())?;
         Ok((prefix, Glob { tokenized, regex }))
     }
 
@@ -745,19 +770,21 @@ impl<'t> Glob<'t> {
 impl<'t> DiagnosticGlob<'t> for Glob<'t> {
     /// Constructs a [`Glob`] from a glob expression with diagnostics.
     fn new(expression: &'t str) -> DiagnosticResult<'t, Self> {
-        parse_and_diagnose(expression).map(|(tokenized, diagnostics)| {
-            let regex = Glob::compile(tokenized.tokens());
-            (Glob { tokenized, regex }, diagnostics)
+        parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
+            Glob::compile(tokenized.tokens())
+                .into_error_diagnostic()
+                .map_value(|regex| Glob { tokenized, regex })
         })
     }
 
     /// Partitions a glob expression into an invariant `PathBuf` prefix and
     /// variant `Glob` postfix with diagnostics.
     fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Self)> {
-        parse_and_diagnose(expression).map(|(tokenized, diagnostics)| {
+        parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
             let (prefix, tokenized) = tokenized.partition();
-            let regex = Glob::compile(tokenized.tokens());
-            ((prefix, Glob { tokenized, regex }), diagnostics)
+            Glob::compile(tokenized.tokens())
+                .into_error_diagnostic()
+                .map_value(|regex| (prefix, Glob { tokenized, regex }))
         })
     }
 }
@@ -818,7 +845,7 @@ pub struct Any<'t> {
 }
 
 impl<'t> Any<'t> {
-    fn compile(token: &Token<'t, ()>) -> Regex {
+    fn compile(token: &Token<'t, ()>) -> Result<Regex, CompileError> {
         encode::compile([token])
     }
 }
@@ -913,8 +940,9 @@ impl<'t> Pattern<'t> for Any<'t> {
 /// [`Glob`]: crate::Glob
 /// [`IntoIterator`]: std::iter::IntoIterator
 /// [`Pattern`]: crate::Pattern
-pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, <I::Item as TryInto<P>>::Error>
+pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, GlobError<'t>>
 where
+    GlobError<'t>: From<<I::Item as TryInto<P>>::Error>,
     P: Pattern<'t>,
     I: IntoIterator,
     I::Item: TryInto<P>,
@@ -931,7 +959,7 @@ where
         })
         .collect::<Result<Vec<_>, _>>()?;
     let token = token::any(tokens);
-    let regex = Any::compile(&token);
+    let regex = Any::compile(&token)?;
     Ok(Any { token, regex })
 }
 
@@ -1122,26 +1150,18 @@ fn parse_and_check(expression: &str) -> Result<Tokenized, GlobError> {
 
 #[cfg(feature = "diagnostics-report")]
 fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
-    let (tokenized, parse_error_diagnostic) = match token::parse(expression) {
-        Ok(tokenized) => (Some(tokenized), None),
-        Err(diagnostic) => (None, Some(Box::new(diagnostic) as BoxedDiagnostic)),
-    };
-    let rule_error_diagnostic = tokenized.as_ref().and_then(|tokenized| {
-        rule::check(tokenized)
-            .err()
-            .map(|diagnostic| Box::new(diagnostic) as BoxedDiagnostic)
-    });
-    let non_error_diagnostics = tokenized.as_ref().into_iter().flat_map(report::diagnostics);
-    let diagnostics = non_error_diagnostics
-        .chain(rule_error_diagnostic)
-        .chain(parse_error_diagnostic)
-        .collect();
-    if let Some(tokenized) = tokenized {
-        Ok((tokenized, diagnostics))
-    }
-    else {
-        Err(diagnostics.try_into().expect("parse failed with no error"))
-    }
+    token::parse(expression)
+        .into_error_diagnostic()
+        .and_then_diagnose(|tokenized| {
+            rule::check(&tokenized)
+                .into_error_diagnostic()
+                .map_value(|_| tokenized)
+        })
+        .and_then_diagnose(|tokenized| {
+            report::diagnostics(&tokenized)
+                .into_non_error_diagnostic()
+                .map_value(|_| tokenized)
+        })
 }
 
 // TODO: Construct paths from components in tests. In practice, using string
@@ -1151,7 +1171,7 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
 mod tests {
     use std::path::Path;
 
-    use crate::{Any, CandidatePath, Glob, Pattern};
+    use crate::{Any, CandidatePath, Glob, GlobError, Pattern};
 
     #[test]
     fn escape() {
@@ -1450,6 +1470,20 @@ mod tests {
     }
 
     #[test]
+    fn reject_glob_with_oversized_invariant_repetition_tokens() {
+        assert!(matches!(Glob::new("<a:65536>"), Err(GlobError::Rule(_))));
+        assert!(matches!(Glob::new("<long:16500>"), Err(GlobError::Rule(_))));
+        assert!(matches!(
+            Glob::new("a<long:16500>b"),
+            Err(GlobError::Rule(_)),
+        ));
+        assert!(matches!(
+            Glob::new("{<a:65536>,<long:16500>}"),
+            Err(GlobError::Rule(_)),
+        ));
+    }
+
+    #[test]
     fn reject_glob_with_invalid_flags() {
         assert!(Glob::new("(?)a").is_err());
         assert!(Glob::new("(?-)a").is_err());
@@ -1464,6 +1498,14 @@ mod tests {
         assert!(Glob::new("**(?i)?").is_err());
         assert!(Glob::new("a(?i)**").is_err());
         assert!(Glob::new("**(?i)a").is_err());
+    }
+
+    #[test]
+    fn reject_glob_with_oversized_program() {
+        assert!(matches!(
+            Glob::new("<a*:1000000>"),
+            Err(GlobError::Compile(_))
+        ));
     }
 
     #[test]
