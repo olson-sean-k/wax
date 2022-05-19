@@ -1,5 +1,5 @@
 use itertools::Itertools as _;
-use std::borrow::{Borrow, Cow};
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::ops::{Add, Mul};
 
@@ -74,17 +74,63 @@ where
 {
 }
 
-pub trait Depth<A>: Iterator + Sized {
-    fn depth(self) -> Boundedness;
+pub trait UnitDepth: Sized {
+    fn unit_depth(self) -> Boundedness {
+        Boundedness::Closed
+    }
 }
 
-impl<'t, A, I> Depth<A> for I
+impl UnitDepth for Boundedness {
+    fn unit_depth(self) -> Boundedness {
+        self
+    }
+}
+
+pub trait CompositeDepth: Iterator + Sized {
+    fn composite_depth(self) -> Boundedness;
+}
+
+impl<'t, I> CompositeDepth for I
 where
     I: Iterator,
-    I::Item: Borrow<Token<'t, A>>,
+    I::Item: UnitDepth,
 {
-    fn depth(mut self) -> Boundedness {
-        if self.any(|token| token.borrow().depth().is_open()) {
+    fn composite_depth(self) -> Boundedness {
+        if self.map(UnitDepth::unit_depth).any(|depth| depth.is_open()) {
+            Boundedness::Open
+        }
+        else {
+            Boundedness::Closed
+        }
+    }
+}
+
+pub trait UnitBreadth: Sized {
+    fn unit_breadth(self) -> Boundedness {
+        Boundedness::Closed
+    }
+}
+
+impl UnitBreadth for Boundedness {
+    fn unit_breadth(self) -> Boundedness {
+        self
+    }
+}
+
+pub trait CompositeBreadth: Iterator + Sized {
+    fn composite_breadth(self) -> Boundedness;
+}
+
+impl<'t, I> CompositeBreadth for I
+where
+    I: Iterator,
+    I::Item: UnitBreadth,
+{
+    fn composite_breadth(self) -> Boundedness {
+        if self
+            .map(UnitBreadth::unit_breadth)
+            .any(|breadth| breadth.is_open())
+        {
             Boundedness::Open
         }
         else {

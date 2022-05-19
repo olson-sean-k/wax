@@ -10,7 +10,8 @@ use std::ops::Deref;
 use std::path::{PathBuf, MAIN_SEPARATOR};
 
 use crate::token::variance::{
-    ConjunctiveVariance, Depth, DisjunctiveVariance, IntoInvariantText, Invariance, UnitVariance,
+    CompositeBreadth, CompositeDepth, ConjunctiveVariance, DisjunctiveVariance, IntoInvariantText,
+    Invariance, UnitBreadth, UnitDepth, UnitVariance,
 };
 use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
 
@@ -122,74 +123,6 @@ impl<'t, A> Token<'t, A> {
         self.as_ref()
     }
 
-    // TODO: Implement depth queries per token kind (like variance queries).
-    //       This implementation requires `Alternative::walk`, which can be
-    //       removed if depth is implemented differently.
-    pub fn depth(&self) -> Boundedness {
-        use crate::token::Wildcard::{One, Tree, ZeroOrMore};
-        use TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
-
-        match self.kind() {
-            Class(_) | Literal(_) | Separator(_) | Wildcard(One | ZeroOrMore(_)) => {
-                Boundedness::Closed
-            },
-            Alternative(ref alternative) => {
-                if alternative.walk().any(|(_, token)| token.depth().is_open()) {
-                    Boundedness::Open
-                }
-                else {
-                    Boundedness::Closed
-                }
-            },
-            Repetition(ref repetition) => {
-                let (_, upper) = repetition.bounds();
-                if upper.is_none() && self.has_component_boundary() {
-                    Boundedness::Open
-                }
-                else {
-                    Boundedness::Closed
-                }
-            },
-            Wildcard(Tree { .. }) => Boundedness::Open,
-        }
-    }
-
-    // TODO: Implement breadth queries per token kind (like variance queries).
-    //       This implementation requires `Alternative::walk` and
-    //       `Repetition::walk` , which can be removed if depth is implemented
-    //       differently.
-    pub fn breadth(&self) -> Boundedness {
-        use crate::token::Wildcard::{One, Tree, ZeroOrMore};
-        use TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
-
-        match self.kind() {
-            Class(_) | Literal(_) | Separator(_) | Wildcard(One) => Boundedness::Closed,
-            Alternative(ref alternative) => {
-                if alternative
-                    .walk()
-                    .any(|(_, token)| token.breadth().is_open())
-                {
-                    Boundedness::Open
-                }
-                else {
-                    Boundedness::Closed
-                }
-            },
-            Repetition(ref repetition) => {
-                if repetition
-                    .walk()
-                    .any(|(_, token)| token.breadth().is_open())
-                {
-                    Boundedness::Open
-                }
-                else {
-                    Boundedness::Closed
-                }
-            },
-            Wildcard(Tree { .. } | ZeroOrMore(_)) => Boundedness::Open,
-        }
-    }
-
     pub fn walk(&self) -> Walk<'_, 't, A> {
         Walk::from(self)
     }
@@ -234,6 +167,18 @@ impl<'t> From<TokenKind<'t, ()>> for Token<'t, ()> {
             kind,
             annotation: (),
         }
+    }
+}
+
+impl<'i, 't, A> UnitBreadth for &'i Token<'t, A> {
+    fn unit_breadth(self) -> Boundedness {
+        self.kind.unit_breadth()
+    }
+}
+
+impl<'i, 't, A> UnitDepth for &'i Token<'t, A> {
+    fn unit_depth(self) -> Boundedness {
+        self.kind.unit_depth()
     }
 }
 
@@ -350,6 +295,32 @@ impl<A> From<Wildcard> for TokenKind<'static, A> {
     }
 }
 
+impl<'i, 't, A> UnitBreadth for &'i TokenKind<'t, A> {
+    fn unit_breadth(self) -> Boundedness {
+        match self {
+            TokenKind::Alternative(ref alternative) => alternative.unit_breadth(),
+            TokenKind::Class(ref class) => class.unit_breadth(),
+            TokenKind::Literal(ref literal) => literal.unit_breadth(),
+            TokenKind::Repetition(ref repetition) => repetition.unit_breadth(),
+            TokenKind::Separator(ref separator) => separator.unit_breadth(),
+            TokenKind::Wildcard(ref wildcard) => wildcard.unit_breadth(),
+        }
+    }
+}
+
+impl<'i, 't, A> UnitDepth for &'i TokenKind<'t, A> {
+    fn unit_depth(self) -> Boundedness {
+        match self {
+            TokenKind::Alternative(ref alternative) => alternative.unit_depth(),
+            TokenKind::Class(ref class) => class.unit_depth(),
+            TokenKind::Literal(ref literal) => literal.unit_depth(),
+            TokenKind::Repetition(ref repetition) => repetition.unit_depth(),
+            TokenKind::Separator(ref separator) => separator.unit_depth(),
+            TokenKind::Wildcard(ref wildcard) => wildcard.unit_depth(),
+        }
+    }
+}
+
 impl<'i, 't, A, T> UnitVariance<T> for &'i TokenKind<'t, A>
 where
     &'i Class: UnitVariance<T>,
@@ -395,26 +366,29 @@ impl<'t, A> Alternative<'t, A> {
     pub fn branches(&self) -> &Vec<Vec<Token<'t, A>>> {
         &self.0
     }
-
-    pub fn walk<'i>(&'i self) -> Walk<'i, 't, A> {
-        Walk {
-            buffer: self
-                .0
-                .iter()
-                .enumerate()
-                .flat_map(|(branch, tokens)| {
-                    tokens
-                        .iter()
-                        .map(move |token| (Position::Disjunctive { depth: 0, branch }, token))
-                })
-                .collect(),
-        }
-    }
 }
 
 impl<'t, A> From<Vec<Vec<Token<'t, A>>>> for Alternative<'t, A> {
     fn from(alternatives: Vec<Vec<Token<'t, A>>>) -> Self {
         Alternative(alternatives)
+    }
+}
+
+impl<'i, 't, A> UnitBreadth for &'i Alternative<'t, A> {
+    fn unit_breadth(self) -> Boundedness {
+        self.branches()
+            .iter()
+            .map(|tokens| tokens.iter().composite_breadth())
+            .composite_breadth()
+    }
+}
+
+impl<'i, 't, A> UnitDepth for &'i Alternative<'t, A> {
+    fn unit_depth(self) -> Boundedness {
+        self.branches()
+            .iter()
+            .map(|tokens| tokens.iter().composite_depth())
+            .composite_depth()
     }
 }
 
@@ -504,6 +478,10 @@ impl Class {
     }
 }
 
+impl<'i> UnitBreadth for &'i Class {}
+
+impl<'i> UnitDepth for &'i Class {}
+
 impl<'i, T> UnitVariance<T> for &'i Class
 where
     &'i Archetype: UnitVariance<T>,
@@ -560,6 +538,10 @@ impl<'t> Literal<'t> {
         (PATHS_ARE_CASE_INSENSITIVE != self.is_case_insensitive) && self.text.has_casing()
     }
 }
+
+impl<'i, 't> UnitBreadth for &'i Literal<'t> {}
+
+impl<'i, 't> UnitDepth for &'i Literal<'t> {}
 
 impl<'i, 't> UnitVariance<InvariantText<'t>> for &'i Literal<'t> {
     fn unit_variance(self) -> Variance<InvariantText<'t>> {
@@ -623,12 +605,30 @@ impl<'t, A> Repetition<'t, A> {
         (self.lower, self.upper)
     }
 
-    pub fn walk(&self) -> Walk<'_, 't, A> {
-        Walk::from(&self.tokens)
-    }
-
     pub fn is_converged(&self) -> bool {
         self.upper.map(|upper| self.lower == upper).unwrap_or(false)
+    }
+
+    fn walk(&self) -> Walk<'_, 't, A> {
+        Walk::from(&self.tokens)
+    }
+}
+
+impl<'i, 't, A> UnitBreadth for &'i Repetition<'t, A> {
+    fn unit_breadth(self) -> Boundedness {
+        self.tokens().iter().composite_breadth()
+    }
+}
+
+impl<'i, 't, A> UnitDepth for &'i Repetition<'t, A> {
+    fn unit_depth(self) -> Boundedness {
+        let (_, upper) = self.bounds();
+        if upper.is_none() && self.walk().any(|(_, token)| token.is_component_boundary()) {
+            Boundedness::Open
+        }
+        else {
+            Boundedness::Closed
+        }
     }
 }
 
@@ -685,6 +685,10 @@ impl Separator {
     }
 }
 
+impl<'i> UnitBreadth for &'i Separator {}
+
+impl<'i> UnitDepth for &'i Separator {}
+
 impl<'i, 't> UnitVariance<InvariantText<'t>> for &'i Separator {
     fn unit_variance(self) -> Variance<InvariantText<'t>> {
         Variance::Invariant(Separator::invariant_text().into_structural_text())
@@ -702,6 +706,24 @@ pub enum Wildcard {
     One,
     ZeroOrMore(Evaluation),
     Tree { has_root: bool },
+}
+
+impl<'i> UnitBreadth for &'i Wildcard {
+    fn unit_breadth(self) -> Boundedness {
+        match self {
+            Wildcard::One => Boundedness::Closed,
+            _ => Boundedness::Open,
+        }
+    }
+}
+
+impl<'i> UnitDepth for &'i Wildcard {
+    fn unit_depth(self) -> Boundedness {
+        match self {
+            Wildcard::Tree { .. } => Boundedness::Open,
+            _ => Boundedness::Closed,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -903,7 +925,7 @@ impl<'i, 't, A> Component<'i, 't, A> {
     }
 
     pub fn depth(&self) -> Boundedness {
-        self.tokens().iter().copied().depth()
+        self.tokens().iter().copied().composite_depth()
     }
 }
 
