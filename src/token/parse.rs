@@ -134,7 +134,7 @@ impl<'i> ErrorTreeExt<Input<'i>> for ErrorTree<'i> {
                             depth: depth + 1,
                             input: location,
                             context: ErrorContext::Stack(context),
-                        })
+                        });
                     }
                     recurse(base, depth + 1, f);
                 },

@@ -823,8 +823,7 @@ impl<'t> Glob<'t> {
         self.tokenized
             .tokens()
             .first()
-            .map(|token| token.has_root())
-            .unwrap_or(false)
+            .map_or(false, Token::has_root)
     }
 
     /// Returns `true` if the glob has literals that have non-nominal semantics
@@ -1010,7 +1009,7 @@ where
             pattern
                 .into_tokens()
                 .into_iter()
-                .map(|token| token.unannotate())
+                .map(Token::unannotate)
                 .collect::<Vec<_>>()
         })
         .collect::<Result<Vec<_>, _>>()?;

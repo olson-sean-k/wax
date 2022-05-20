@@ -358,7 +358,7 @@ impl<'t, A> Alternative<'t, A> {
         Alternative(
             branches
                 .into_iter()
-                .map(|branch| branch.into_iter().map(|token| token.unannotate()).collect())
+                .map(|branch| branch.into_iter().map(Token::unannotate).collect())
                 .collect(),
         )
     }
@@ -591,7 +591,7 @@ impl<'t, A> Repetition<'t, A> {
             upper,
         } = self;
         Repetition {
-            tokens: tokens.into_iter().map(|token| token.unannotate()).collect(),
+            tokens: tokens.into_iter().map(Token::unannotate).collect(),
             lower,
             upper,
         }
@@ -606,7 +606,7 @@ impl<'t, A> Repetition<'t, A> {
     }
 
     pub fn is_converged(&self) -> bool {
-        self.upper.map(|upper| self.lower == upper).unwrap_or(false)
+        self.upper.map_or(false, |upper| self.lower == upper)
     }
 
     fn walk(&self) -> Walk<'_, 't, A> {
@@ -735,8 +735,7 @@ pub enum Position {
 impl Position {
     pub fn depth(&self) -> usize {
         match self {
-            Position::Conjunctive { ref depth } => *depth,
-            Position::Disjunctive { ref depth, .. } => *depth,
+            Position::Conjunctive { ref depth } | Position::Disjunctive { ref depth, .. } => *depth,
         }
     }
 
@@ -744,8 +743,9 @@ impl Position {
     #[must_use]
     fn converge(self) -> Self {
         match self {
-            Position::Conjunctive { depth } => Position::Conjunctive { depth: depth + 1 },
-            Position::Disjunctive { depth, .. } => Position::Conjunctive { depth: depth + 1 },
+            Position::Conjunctive { depth } | Position::Disjunctive { depth, .. } => {
+                Position::Conjunctive { depth: depth + 1 }
+            },
         }
     }
 
@@ -753,13 +753,11 @@ impl Position {
     #[must_use]
     fn diverge(self, branch: usize) -> Self {
         match self {
-            Position::Conjunctive { depth } => Position::Disjunctive {
-                depth: depth + 1,
-                branch,
-            },
-            Position::Disjunctive { depth, .. } => Position::Disjunctive {
-                depth: depth + 1,
-                branch,
+            Position::Conjunctive { depth } | Position::Disjunctive { depth, .. } => {
+                Position::Disjunctive {
+                    depth: depth + 1,
+                    branch,
+                }
             },
         }
     }
@@ -797,7 +795,7 @@ where
 
     pub fn ending(self) -> impl 'i + Iterator<Item = (Position, &'i Token<'t, A>)> {
         self.peekable().batching(|tokens| {
-            if let Some((position, _)) = tokens.peek().cloned() {
+            if let Some((position, _)) = tokens.peek().copied() {
                 tokens
                     .peeking_take_while(|(next, _)| *next == position)
                     .last()
@@ -812,7 +810,7 @@ where
 impl<'i, 't, A> From<&'i Token<'t, A>> for Walk<'i, 't, A> {
     fn from(token: &'i Token<'t, A>) -> Self {
         Walk {
-            buffer: Some((Default::default(), token)).into_iter().collect(),
+            buffer: Some((Position::default(), token)).into_iter().collect(),
         }
     }
 }
@@ -822,7 +820,7 @@ impl<'i, 't, A> From<&'i Vec<Token<'t, A>>> for Walk<'i, 't, A> {
         Walk {
             buffer: tokens
                 .iter()
-                .map(|token| (Default::default(), token))
+                .map(|token| (Position::default(), token))
                 .collect(),
         }
     }
@@ -955,7 +953,7 @@ where
         kind: Alternative(
             tokens
                 .into_iter()
-                .map(|tokens| tokens.into_iter().map(|token| token.unannotate()).collect())
+                .map(|tokens| tokens.into_iter().map(Token::unannotate).collect())
                 .collect(),
         )
         .into(),

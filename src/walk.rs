@@ -95,7 +95,7 @@ enum ErrorKind {
 impl ErrorKind {
     pub fn path(&self) -> Option<&Path> {
         match self {
-            ErrorKind::Io { ref path, .. } => path.as_ref().map(|path| path.as_ref()),
+            ErrorKind::Io { ref path, .. } => path.as_ref().map(PathBuf::as_ref),
             ErrorKind::LinkCycle { ref leaf, .. } => Some(leaf.as_ref()),
         }
     }
@@ -509,7 +509,7 @@ impl Default for WalkBehavior {
     fn default() -> Self {
         WalkBehavior {
             depth: usize::MAX,
-            link: Default::default(),
+            link: LinkBehavior::default(),
         }
     }
 }
@@ -571,9 +571,7 @@ impl<'g> Walk<'g> {
                 // boundary within a group token.
                 break;
             }
-            else {
-                regexes.push(Glob::compile(component.tokens().iter().cloned())?);
-            }
+            regexes.push(Glob::compile(component.tokens().iter().copied())?);
         }
         Ok(regexes)
     }
@@ -667,7 +665,7 @@ impl Iterator for Walk<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         walk!(self => |entry| {
-            return Some(entry.map(|entry: WalkEntry| entry.into_owned()));
+            return Some(entry.map(WalkEntry::into_owned));
         });
         None
     }
@@ -755,13 +753,9 @@ where
                         },
                     }
                 }
-                else {
-                    return Some(result);
-                }
+                return Some(result);
             }
-            else {
-                return None;
-            }
+            return None;
         }
     }
 }
@@ -772,7 +766,7 @@ where
     I: FileIterator,
 {
     fn skip_tree(&mut self) {
-        self.input.skip_tree()
+        self.input.skip_tree();
     }
 }
 
@@ -854,8 +848,12 @@ pub fn walk<'g>(
     // invariant prefix from the glob pattern. `Walk` patterns are only
     // applied to path components following the `prefix` (distinct from the
     // glob pattern prefix) in `root`.
-    let (root, prefix, depth) = invariant_path_prefix(glob.tokenized.tokens())
-        .map(|prefix| {
+    let (root, prefix, depth) = invariant_path_prefix(glob.tokenized.tokens()).map_or_else(
+        || {
+            let root = Cow::from(directory);
+            (root.clone(), root, depth)
+        },
+        |prefix| {
             let root = directory.join(&prefix).into();
             if prefix.is_absolute() {
                 // Absolute paths replace paths with which they are joined,
@@ -873,11 +871,8 @@ pub fn walk<'g>(
                 let depth = depth.saturating_sub(prefix.components().count());
                 (root, directory.into(), depth)
             }
-        })
-        .unwrap_or_else(|| {
-            let root = Cow::from(directory);
-            (root.clone(), root, depth)
-        });
+        },
+    );
     let components =
         Walk::compile(glob.tokenized.tokens()).expect("failed to compile glob sub-expressions");
     Walk {

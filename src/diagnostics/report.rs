@@ -151,7 +151,7 @@ impl CompositeSourceSpan {
     }
 
     pub fn labels(&self) -> Vec<LabeledSpan> {
-        let label = self.label.map(|label| label.to_string());
+        let label = self.label.map(str::to_string);
         match self.kind {
             CompositeKind::Span(ref span) => vec![LabeledSpan::new_with_span(label, *span)],
             CompositeKind::Correlated {
@@ -252,7 +252,7 @@ pub fn diagnostics<'i, 't>(
                     }) as BoxedDiagnostic
                 }),
         )
-        .chain(tokenized.tokens().last().into_iter().flat_map(|token| {
+        .chain(tokenized.tokens().last().into_iter().filter_map(|token| {
             matches!(token.kind(), TokenKind::Separator(_)).then(|| {
                 Box::new(TerminatingSeparatorWarning {
                     expression: tokenized.expression().clone(),

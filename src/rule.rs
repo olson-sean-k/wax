@@ -303,7 +303,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 kind,
                 #[cfg(feature = "diagnostics-report")]
                 span: CorrelatedSourceSpan::split_some(
-                    outer.map(Token::annotation).cloned().map(From::from),
+                    outer.map(Token::annotation).copied().map(From::from),
                     (*inner.annotation()).into(),
                 ),
             }
@@ -326,47 +326,39 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     }
 
     fn has_starting_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token
-            .map(|token| {
-                token
-                    .walk()
-                    .starting()
-                    .any(|(_, token)| token.is_component_boundary())
-            })
-            .unwrap_or(false)
+        token.map_or(false, |token| {
+            token
+                .walk()
+                .starting()
+                .any(|(_, token)| token.is_component_boundary())
+        })
     }
 
     fn has_ending_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token
-            .map(|token| {
-                token
-                    .walk()
-                    .ending()
-                    .any(|(_, token)| token.is_component_boundary())
-            })
-            .unwrap_or(false)
+        token.map_or(false, |token| {
+            token
+                .walk()
+                .ending()
+                .any(|(_, token)| token.is_component_boundary())
+        })
     }
 
     fn has_starting_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token
-            .map(|token| {
-                token
-                    .walk()
-                    .starting()
-                    .any(|(_, token)| matches!(token.kind(), Wildcard(ZeroOrMore(_))))
-            })
-            .unwrap_or(false)
+        token.map_or(false, |token| {
+            token
+                .walk()
+                .starting()
+                .any(|(_, token)| matches!(token.kind(), Wildcard(ZeroOrMore(_))))
+        })
     }
 
     fn has_ending_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token
-            .map(|token| {
-                token
-                    .walk()
-                    .ending()
-                    .any(|(_, token)| matches!(token.kind(), Wildcard(ZeroOrMore(_))))
-            })
-            .unwrap_or(false)
+        token.map_or(false, |token| {
+            token
+                .walk()
+                .ending()
+                .any(|(_, token)| matches!(token.kind(), Wildcard(ZeroOrMore(_))))
+        })
     }
 
     #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
@@ -409,11 +401,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         I: IntoIterator<Item = &'i Token<'t>>,
         't: 'i,
     {
-        for (left, token, right) in tokens
-            .into_iter()
-            .adjacent()
-            .map(|adjacency| adjacency.into_tuple())
-        {
+        for (left, token, right) in tokens.into_iter().adjacent().map(Adjacency::into_tuple) {
             match token.kind() {
                 TokenKind::Alternative(ref alternative) => {
                     let outer = outer.push(left, right);
@@ -623,11 +611,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         }
     }
 
-    recurse(
-        tokenized.expression(),
-        tokenized.tokens(),
-        Default::default(),
-    )
+    recurse(tokenized.expression(), tokenized.tokens(), Outer::default())
 }
 
 fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
@@ -635,9 +619,7 @@ fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     if let Some((_, token)) = tokenized.walk().find(|(_, token)| match token.kind() {
         TokenKind::Repetition(ref repetition) => {
             let (lower, upper) = repetition.bounds();
-            upper
-                .map(|upper| upper < lower || upper == 0)
-                .unwrap_or(false)
+            upper.map_or(false, |upper| upper < lower || upper == 0)
         },
         _ => false,
     }) {
@@ -665,8 +647,7 @@ fn size<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             token
                 .variance::<InvariantSize>()
                 .as_invariance()
-                .map(|size| *size >= MAX_INVARIANT_SIZE)
-                .unwrap_or(false)
+                .map_or(false, |size| *size >= MAX_INVARIANT_SIZE)
         })
     {
         Err(RuleError::new(

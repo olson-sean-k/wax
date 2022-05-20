@@ -347,8 +347,7 @@ impl<'t> InvariantFragment<'t> {
 
     pub fn as_string(&self) -> &Cow<'t, str> {
         match self {
-            InvariantFragment::Nominal(ref text) => text,
-            InvariantFragment::Structural(ref text) => text,
+            InvariantFragment::Nominal(ref text) | InvariantFragment::Structural(ref text) => text,
         }
     }
 }
@@ -476,9 +475,7 @@ where
         match (self, rhs) {
             (Invariant(left), Invariant(right)) => Invariant(left + right),
             (Variant(Open), Variant(Open)) => Variant(Open),
-            (Invariant(_), Variant(_)) | (Variant(_), Invariant(_)) | (Variant(_), Variant(_)) => {
-                Variant(Closed)
-            },
+            (Invariant(_) | Variant(_), Variant(_)) | (Variant(_), Invariant(_)) => Variant(Closed),
         }
     }
 }
@@ -508,8 +505,7 @@ where
     let mut prefix = String::new();
     if tokens
         .peek()
-        .map(|token| !token.has_sub_tokens() && token.has_root())
-        .unwrap_or(false)
+        .map_or(false, |token| !token.has_sub_tokens() && token.has_root())
     {
         // Push a preceding separator if the first token has a root and is not a
         // group. This ensures that initiating separators and tree wildcards
@@ -527,7 +523,7 @@ where
                     .map(InvariantText::to_string)
                     .map(Cow::into_owned)
             })
-            .take_while(|text| text.is_some())
+            .take_while(Option::is_some)
             .flatten()
             .join(separator),
     );
@@ -557,12 +553,10 @@ where
                 if token.variance::<InvariantText>().is_invariant() {
                     continue;
                 }
-                else {
-                    return match separator {
-                        Some(n) => n + 1,
-                        None => 0,
-                    };
-                }
+                return match separator {
+                    Some(n) => n + 1,
+                    None => 0,
+                };
             },
         }
     }

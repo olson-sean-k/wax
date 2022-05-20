@@ -272,33 +272,31 @@ fn encode<'t, A, T>(
             (_, Wildcard(One)) => grouping.push_str(pattern, nsepexpr!("{0}")),
             (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, nsepexpr!("{0}*")),
             (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, nsepexpr!("{0}*?")),
-            (First(_), Wildcard(Tree { has_root })) => match superposition {
-                Some(Middle(_) | Last(_)) => {
+            (First(_), Wildcard(Tree { has_root })) => {
+                if let Some(Middle(_) | Last(_)) = superposition {
                     encode_intermediate_tree(grouping, pattern);
-                },
-                _ => {
-                    if *has_root {
-                        grouping.push_str(pattern, sepexpr!("{0}.*{0}?"));
-                    }
-                    else {
-                        pattern.push_str(sepexpr!("(?:{0}?|"));
-                        grouping.push_str(pattern, sepexpr!(".*{0}"));
-                        pattern.push(')');
-                    }
-                },
+                }
+                else if *has_root {
+                    grouping.push_str(pattern, sepexpr!("{0}.*{0}?"));
+                }
+                else {
+                    pattern.push_str(sepexpr!("(?:{0}?|"));
+                    grouping.push_str(pattern, sepexpr!(".*{0}"));
+                    pattern.push(')');
+                }
             },
             (Middle(_), Wildcard(Tree { .. })) => {
                 encode_intermediate_tree(grouping, pattern);
             },
-            (Last(_), Wildcard(Tree { .. })) => match superposition {
-                Some(First(_) | Middle(_)) => {
+            (Last(_), Wildcard(Tree { .. })) => {
+                if let Some(First(_) | Middle(_)) = superposition {
                     encode_intermediate_tree(grouping, pattern);
-                },
-                _ => {
+                }
+                else {
                     pattern.push_str(sepexpr!("(?:{0}?|{0}"));
                     grouping.push_str(pattern, ".*");
                     pattern.push(')');
-                },
+                }
             },
             (Only(_), Wildcard(Tree { .. })) => grouping.push_str(pattern, ".*"),
         }
