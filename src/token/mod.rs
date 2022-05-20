@@ -905,24 +905,25 @@ impl<'i, 't, A> Component<'i, 't, A> {
     }
 
     pub fn literal(&self) -> Option<LiteralSequence<'i, 't>> {
-        // This predicate is more easily expressed with `all`, but `any` is used
-        // here, because it returns `false` for empty iterators and in that case
-        // this function should return `None`.
-        (!self
-            .tokens()
-            .iter()
-            .any(|token| !matches!(token.kind(), TokenKind::Literal(_))))
-        .then(|| {
-            LiteralSequence(
-                self.tokens()
-                    .iter()
-                    .map(|token| match token.kind() {
-                        TokenKind::Literal(ref literal) => literal,
-                        _ => unreachable!(), // See predicate above.
-                    })
-                    .collect(),
-            )
-        })
+        if self.0.is_empty() {
+            None
+        }
+        else {
+            self.tokens()
+                .iter()
+                .all(|token| matches!(token.kind(), TokenKind::Literal(_)))
+                .then(|| {
+                    LiteralSequence(
+                        self.tokens()
+                            .iter()
+                            .map(|token| match token.kind() {
+                                TokenKind::Literal(ref literal) => literal,
+                                _ => unreachable!(), // See predicate above.
+                            })
+                            .collect(),
+                    )
+                })
+        }
     }
 
     pub fn variance<T>(&self) -> Variance<T>
@@ -930,11 +931,11 @@ impl<'i, 't, A> Component<'i, 't, A> {
         T: Invariance,
         &'i Token<'t, A>: UnitVariance<T>,
     {
-        self.tokens().iter().copied().conjunctive_variance()
+        self.0.iter().copied().conjunctive_variance()
     }
 
     pub fn depth(&self) -> Boundedness {
-        self.tokens().iter().copied().composite_depth()
+        self.0.iter().copied().composite_depth()
     }
 }
 
