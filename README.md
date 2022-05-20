@@ -323,7 +323,7 @@ directory with a case-**sensitive** base and a case-**insensitive** extension
 
 Wax considers literals, their configured case sensitivity, and the case
 sensitivity of the target platform's file system APIs [when partitioning glob
-expressions](#partitioning-and-semantic-literals) with [`Glob::partitioned`].
+expressions](#partitioning-and-semantic-literals) with [`Glob::partition`].
 Partitioning is unaffected in glob expressions with no flags.
 
 ## Errors and Diagnostics
@@ -385,8 +385,8 @@ and additional code may be necessary to bridge this gap for some use cases.
 Globs support no notion of a current or parent directory. The path components
 `.` and `..` are interpreted as literals and only match paths with the
 corresponding components (even on Unix and Windows). For example, the glob
-`src/../*.rs` matches the path `src/../lib.rs` but does **not** match the path
-`lib.rs`.
+`src/../*.rs` matches the path `src/../lib.rs` but does **not** match the
+semantically equivalent path `lib.rs`.
 
 Parent directory components have unclear meaning and far less utility when they
 follow patterns in a glob. However, such components are intuitive and are often
@@ -396,20 +396,20 @@ meaning than the glob `src/**/../*.rs`. As seen above though, the first glob
 would only match the literal path component `..` and not paths that replace this
 with a parent directory.
 
-[`Glob::partitioned`] can be used to parse glob expressions that contain
-semantic components that precede patterns and would be interpreted as literals
-(namely `..`). [`Glob::partitioned`] partitions a glob expression into an
-invariant [`PathBuf`] prefix and a variant [`Glob`] postfix. Here, invariant
-means that the partition contains no glob patterns that resolve differently than
-an equivalent native path using the target platform's file system APIs. The
-prefix can be used as needed in combination with the glob.
+[`Glob::partition`] can be used to isolate semantic components that precede
+patterns and apply semantic path operations to them (namely `..`).
+[`Glob::partition`] partitions a glob into an invariant [`PathBuf`] prefix and a
+variant [`Glob`] postfix. Here, invariant means that the partition contains no
+glob patterns that resolve differently than an equivalent native path using the
+target platform's file system APIs. The prefix can be used as needed in
+combination with the glob.
 
 ```rust
 use std::path::Path;
 use wax::Glob;
 
 let path = Path::new("."); // Working directory.
-let (prefix, glob) = Glob::partitioned("../site/img/*.{jpg,png}").unwrap();
+let (prefix, glob) = Glob::new("../site/img/*.{jpg,png}").unwrap().partition();
 for entry in glob.walk(path.join(prefix), usize::MAX) {
     let entry = entry.unwrap();
     // ...
@@ -477,7 +477,7 @@ series without warning nor deprecation.
 [`Error`]: https://doc.rust-lang.org/std/error/trait.Error.html
 [`Glob`]: https://docs.rs/wax/*/wax/struct.Glob.html
 [`Glob::has_semantic_literals`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.has_semantic_literals
-[`Glob::partitioned`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.partitioned
+[`Glob::partition`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.partition
 [`GlobError`]: https://docs.rs/wax/*/wax/enum.GlobError.html
 [`IntoIterator`]: https://doc.rust-lang.org/std/iter/trait.IntoIterator.html
 [`IteratorExt::filter_tree`]: https://docs.rs/wax/*/wax/trait.IteratorExt.html#tymethod.filter_tree

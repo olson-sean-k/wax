@@ -132,7 +132,7 @@ fn walk_with_invariant_glob() {
 fn walk_with_invariant_partitioned_glob() {
     let (_root, path) = temptree();
 
-    let (prefix, glob) = Glob::partitioned("src/lib.rs").unwrap();
+    let (prefix, glob) = Glob::new("src/lib.rs").unwrap().partition();
     let paths: HashSet<_> = glob
         .walk(path.join(prefix), WalkBehavior::default())
         .flatten()

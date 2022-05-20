@@ -181,10 +181,10 @@ impl<T> Terminals<T> {
 ///
 /// Matching is a logical operation and does **not** interact with a file
 /// system. To handle path operations, use [`Path`] and/or [`PathBuf`] and their
-/// associated operations. See [`Glob::partitioned`] for more about globs and
-/// path operations.
+/// associated operations. See [`Glob::partition`] for more about globs and path
+/// operations.
 ///
-/// [`Glob::partitioned`]: crate::Glob::partitioned
+/// [`Glob::partition`]: crate::Glob::partition
 /// [`Path`]: std::path::Path
 /// [`PathBuf`]: std::path::PathBuf
 pub trait Pattern<'t>: IntoTokens<'t> {
@@ -545,37 +545,32 @@ impl<'t> Glob<'t> {
         Ok(Glob { tokenized, regex })
     }
 
-    /// Partitions a glob expression into an invariant [`PathBuf`] prefix and
-    /// variant [`Glob`] postfix.
+    /// Partitions a [`Glob`] into an invariant [`PathBuf`] prefix and variant
+    /// [`Glob`] postfix.
     ///
     /// The invariant prefix contains no glob patterns nor other variant
     /// components and therefore can be interpreted as a native path. The
-    /// [`Glob`] postfix is variant and contains the remaining components (in
-    /// particular, patterns) that follow the prefix. For example, the glob
-    /// expression `.local/**/*.log` would produce the path `.local` and glob
-    /// `**/*.log`. It is possible for either partition to be empty.
+    /// [`Glob`] postfix is variant and contains the remaining components that
+    /// follow the prefix. For example, the glob expression `.local/**/*.log`
+    /// would produce the path `.local` and glob `**/*.log`. It is possible for
+    /// either partition to be empty.
     ///
     /// Literal components may be considered variant if they contain characters
+    ///
     /// with casing and the configured case sensitivity differs from the target
     /// platform's file system. For example, the case-insensitive literal
     /// expression `(?i)photos` is considered variant on Unix and invariant on
     /// Windows, because the literal `photos` resolves differently in Unix file
-    /// system APIs than [`Glob`] APIs (which respect the configured
-    /// case-insensitivity).
+    /// system APIs.
     ///
-    /// Partitioning a glob expression allows any invariant prefix to be used as
-    /// a native path to establish a working directory or to interpret semantic
+    /// Partitioning a [`Glob`] allows any invariant prefix to be used as a
+    /// native path to establish a working directory or to interpret semantic
     /// components that are not recognized by globs, such as parent directory
     /// `..` components.
     ///
     /// Partitioned [`Glob`]s are never rooted. If the glob expression has a
     /// root component, then it is always included in the invariant [`PathBuf`]
     /// prefix.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the glob expression could not be parsed or is
-    /// malformed. See the documentation for [`ParseError`] and [`RuleError`].
     ///
     /// # Examples
     ///
@@ -590,7 +585,7 @@ impl<'t> Glob<'t> {
     /// use wax::{Glob, WalkBehavior};
     ///
     /// let directory = Path::new("."); // Working directory.
-    /// let (prefix, glob) = Glob::partitioned("../site/img/*.{jpg,png}").unwrap();
+    /// let (prefix, glob) = Glob::new("../site/img/*.{jpg,png}").unwrap().partition();
     /// for entry in glob.walk(directory.join(prefix), WalkBehavior::default()) {
     ///     // ...
     /// }
@@ -611,7 +606,7 @@ impl<'t> Glob<'t> {
     /// # Path::new("");
     ///     
     /// let directory = Path::new("."); // Working directory.
-    /// let (prefix, glob) = Glob::partitioned("../../src/**").unwrap();
+    /// let (prefix, glob) = Glob::new("../../src/**").unwrap().partition();
     /// let prefix = dunce::canonicalize(directory.join(&prefix)).unwrap();
     /// if dunce::canonicalize(path)
     ///     .unwrap()
@@ -632,11 +627,11 @@ impl<'t> Glob<'t> {
     /// [`PathBuf`]: std::path::PathBuf
     /// [`RuleError`]: crate::RuleError
     /// [`walk`]: crate::Glob::walk
-    pub fn partitioned(expression: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
-        let tokenized = parse_and_check(expression)?;
+    pub fn partition(self) -> (PathBuf, Self) {
+        let Glob { tokenized, .. } = self;
         let (prefix, tokenized) = tokenized.partition();
-        let regex = Glob::compile(tokenized.tokens())?;
-        Ok((prefix, Glob { tokenized, regex }))
+        let regex = Glob::compile(tokenized.tokens()).expect("failed to compile partitioned glob");
+        (prefix, Glob { tokenized, regex })
     }
 
     /// Clones any borrowed data into an owning instance.
@@ -757,9 +752,9 @@ impl<'t> Glob<'t> {
     /// exact nominal components and never paths that consider relative
     /// relationships.
     ///
-    /// See [`Glob::partitioned`].
+    /// See [`Glob::partition`].
     ///
-    /// [`Glob::partitioned`]: crate::Glob::partitioned
+    /// [`Glob::partition`]: crate::Glob::partition
     pub fn has_semantic_literals(&self) -> bool {
         token::literals(self.tokenized.tokens()).any(|(_, literal)| literal.is_semantic_literal())
     }
@@ -1052,7 +1047,7 @@ pub fn walk(
     directory: impl AsRef<Path>,
     behavior: impl Into<WalkBehavior>,
 ) -> Result<Walk<'static>, GlobError> {
-    let (prefix, glob) = Glob::partitioned(expression)?;
+    let (prefix, glob) = Glob::new(expression)?.partition();
     Ok(glob
         .walk(directory.as_ref().join(prefix), behavior)
         .into_owned())
@@ -1798,7 +1793,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_variant_and_invariant_parts() {
-        let (prefix, glob) = Glob::partitioned("a/b/x?z/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("a/b/x?z/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new("a/b"));
 
@@ -1808,7 +1803,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_only_variant_wildcard_parts() {
-        let (prefix, glob) = Glob::partitioned("x?z/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("x?z/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new(""));
 
@@ -1818,7 +1813,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_only_invariant_literal_parts() {
-        let (prefix, glob) = Glob::partitioned("a/b").unwrap();
+        let (prefix, glob) = Glob::new("a/b").unwrap().partition();
 
         assert_eq!(prefix, Path::new("a/b"));
 
@@ -1828,7 +1823,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_variant_alternative_parts() {
-        let (prefix, glob) = Glob::partitioned("{x,z}/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("{x,z}/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new(""));
 
@@ -1838,7 +1833,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_invariant_alternative_parts() {
-        let (prefix, glob) = Glob::partitioned("{a/b}/c").unwrap();
+        let (prefix, glob) = Glob::new("{a/b}/c").unwrap().partition();
 
         assert_eq!(prefix, Path::new("a/b/c"));
 
@@ -1848,7 +1843,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_invariant_repetition_parts() {
-        let (prefix, glob) = Glob::partitioned("</a/b:3>/c").unwrap();
+        let (prefix, glob) = Glob::new("</a/b:3>/c").unwrap().partition();
 
         assert_eq!(prefix, Path::new("/a/b/a/b/a/b/c"));
 
@@ -1858,7 +1853,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_literal_dots_and_tree_tokens() {
-        let (prefix, glob) = Glob::partitioned("../**/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("../**/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new(".."));
 
@@ -1868,7 +1863,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_rooted_tree_token() {
-        let (prefix, glob) = Glob::partitioned("/**/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("/**/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new("/"));
         assert!(!glob.has_root());
@@ -1879,7 +1874,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_rooted_zom_token() {
-        let (prefix, glob) = Glob::partitioned("/*/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("/*/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new("/"));
         assert!(!glob.has_root());
@@ -1890,7 +1885,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_rooted_literal_token() {
-        let (prefix, glob) = Glob::partitioned("/root/**/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("/root/**/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new("/root"));
         assert!(!glob.has_root());
