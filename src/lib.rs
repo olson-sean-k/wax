@@ -557,7 +557,7 @@ impl<'t> Glob<'t> {
     /// ```rust
     /// use wax::{DiagnosticResultExt as _, Glob};
     ///
-    /// let result = Glob::diagnose("(?i)readme.{md,mkd,markdown}");
+    /// let result = Glob::diagnosed("(?i)readme.{md,mkd,markdown}");
     /// for diagnostic in result.diagnostics() {
     ///     eprintln!("{}", diagnostic);
     /// }
@@ -569,7 +569,7 @@ impl<'t> Glob<'t> {
     /// [`Glob::new`]: crate::Glob::new
     #[cfg(feature = "diagnostics-report")]
     #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-    pub fn diagnose(expression: &'t str) -> DiagnosticResult<'t, Self> {
+    pub fn diagnosed(expression: &'t str) -> DiagnosticResult<'t, Self> {
         parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
             Glob::compile(tokenized.tokens())
                 .into_error_diagnostic()
@@ -789,11 +789,11 @@ impl<'t> Glob<'t> {
     /// error-level [`Diagnostic`]s. It can be used to get non-error diagnostics
     /// after constructing or [partitioning] a [`Glob`].
     ///
-    /// See [`Glob::diagnose`].
+    /// See [`Glob::diagnosed`].
     ///
     /// [`Diagnostic`]: miette::Diagnostic
     /// [`Glob`]: crate::Glob
-    /// [`Glob::diagnose`]: crate::Glob::diagnose
+    /// [`Glob::diagnosed`]: crate::Glob::diagnosed
     ///
     /// [partitioning]: crate::Glob::partition
     #[cfg(feature = "diagnostics-report")]
