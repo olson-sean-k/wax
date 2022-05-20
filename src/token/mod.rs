@@ -740,10 +740,27 @@ impl Position {
         }
     }
 
-    fn increment(self) -> Self {
+    // This may appear to operate in place.
+    #[must_use]
+    fn converge(self) -> Self {
         match self {
             Position::Conjunctive { depth } => Position::Conjunctive { depth: depth + 1 },
             Position::Disjunctive { depth, .. } => Position::Conjunctive { depth: depth + 1 },
+        }
+    }
+
+    // This may appear to operate in place.
+    #[must_use]
+    fn diverge(self, branch: usize) -> Self {
+        match self {
+            Position::Conjunctive { depth } => Position::Disjunctive {
+                depth: depth + 1,
+                branch,
+            },
+            Position::Disjunctive { depth, .. } => Position::Disjunctive {
+                depth: depth + 1,
+                branch,
+            },
         }
     }
 }
@@ -825,15 +842,9 @@ where
                     self.buffer
                         .extend(alternative.branches().iter().enumerate().flat_map(
                             |(branch, tokens)| {
-                                tokens.iter().map(move |token| {
-                                    (
-                                        Position::Disjunctive {
-                                            depth: position.depth() + 1,
-                                            branch,
-                                        },
-                                        token,
-                                    )
-                                })
+                                tokens
+                                    .iter()
+                                    .map(move |token| (position.diverge(branch), token))
                             },
                         ));
                 },
@@ -842,7 +853,7 @@ where
                         repetition
                             .tokens()
                             .iter()
-                            .map(|token| (position.increment(), token)),
+                            .map(|token| (position.converge(), token)),
                     );
                 },
                 _ => {},
