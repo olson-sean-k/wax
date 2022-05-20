@@ -249,7 +249,7 @@ pub trait IteratorExt: Iterator + Sized {
     /// #[cfg(windows)]
     /// use wax::{FilterTarget, IteratorExt as _};
     ///
-    /// let walk = wax::walk("**/*.(?i){jpg,jpeg}", "./Pictures", usize::MAX).unwrap();
+    /// let walk = wax::walk("**/*.(?i){jpg,jpeg}", "./Pictures").unwrap();
     /// // Filter out conventionally hidden files on Unix. Note that `not` will
     /// // not perform unnecessary reads of hidden directory trees.
     /// #[cfg(unix)]
@@ -458,7 +458,7 @@ impl Default for LinkBehavior {
 /// ```rust
 /// use wax::LinkBehavior;
 ///
-/// for entry in wax::walk("**", ".", LinkBehavior::ReadTarget).unwrap() {
+/// for entry in wax::walk_with_behavior("**", ".", LinkBehavior::ReadTarget).unwrap() {
 ///     let entry = entry.unwrap();
 ///     // ...
 /// }
@@ -639,11 +639,7 @@ impl<'g> Walk<'g> {
     /// // Find image files, but not if they are beneath a directory with a name that
     /// // suggests that they are private.
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg,png}").unwrap();
-    /// for entry in glob
-    ///     .walk(".", usize::MAX)
-    ///     .not(["**/(?i)<.:0,1>private/**"])
-    ///     .unwrap()
-    /// {
+    /// for entry in glob.walk(".").not(["**/(?i)<.:0,1>private/**"]).unwrap() {
     ///     let entry = entry.unwrap();
     ///     // ...
     /// }

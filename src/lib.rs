@@ -501,7 +501,7 @@ impl From<token::Variance<InvariantText<'_>>> for Variance {
 /// use wax::Glob;
 ///
 /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
-/// for entry in glob.walk("./Pictures", usize::MAX) {
+/// for entry in glob.walk("./Pictures") {
 ///     let entry = entry.unwrap();
 ///     println!("JPEG: {:?}", entry.path());
 /// }
@@ -614,11 +614,11 @@ impl<'t> Glob<'t> {
     ///
     /// ```rust,no_run
     /// use std::path::Path;
-    /// use wax::{Glob, WalkBehavior};
+    /// use wax::Glob;
     ///
     /// let directory = Path::new("."); // Working directory.
     /// let (prefix, glob) = Glob::new("../site/img/*.{jpg,png}").unwrap().partition();
-    /// for entry in glob.walk(directory.join(prefix), WalkBehavior::default()) {
+    /// for entry in glob.walk(directory.join(prefix)) {
     ///     // ...
     /// }
     /// ```
@@ -689,16 +689,19 @@ impl<'t> Glob<'t> {
     /// `/mnt/media/**/*.mp4`. The [`has_root`] function can be used to check if
     /// a [`Glob`] is rooted.
     ///
-    /// Unlike functions in [`Pattern`], this operation interacts with the file
-    /// system.
+    /// This function uses the default [`WalkBehavior`]. To configure the
+    /// behavior of the traversal, see [`Glob::walk_with_behavior`].
+    ///
+    /// Unlike functions in [`Pattern`], **this operation is semantic and
+    /// interacts with the file system**.
     ///
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use wax::{Glob, WalkBehavior};
+    /// use wax::Glob;
     ///
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
-    /// for entry in glob.walk("./Pictures", WalkBehavior::default()) {
+    /// for entry in glob.walk("./Pictures") {
     ///     let entry = entry.unwrap();
     ///     println!("JPEG: {:?}", entry.path());
     /// }
@@ -715,7 +718,7 @@ impl<'t> Glob<'t> {
     ///
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg,png}").unwrap();
     /// for entry in glob
-    ///     .walk("./Pictures", usize::MAX)
+    ///     .walk("./Pictures")
     ///     .not(["**/(i?){background<s:0,1>,wallpaper<s:0,1>}/**"])
     ///     .unwrap()
     /// {
@@ -725,13 +728,58 @@ impl<'t> Glob<'t> {
     /// ```
     ///
     /// [`Glob`]: crate::Glob
+    /// [`Glob::walk_with_behavior`]: crate::Glob::walk_with_behavior
     /// [`has_root`]: crate::Glob::has_root
     /// [`not`]: crate::Walk::not
     /// [`Path::join`]: std::path::Path::join
     /// [`PathBuf::push`]: std::path::PathBuf::push
     /// [`Pattern`]: crate::Pattern
+    /// [`WalkBehavior`]: crate::WalkBehavior
     /// [`WalkEntry`]: crate::WalkEntry
-    pub fn walk(&self, directory: impl AsRef<Path>, behavior: impl Into<WalkBehavior>) -> Walk {
+    pub fn walk(&self, directory: impl AsRef<Path>) -> Walk {
+        self.walk_with_behavior(directory, WalkBehavior::default())
+    }
+
+    /// Gets an iterator over matching files in a directory tree.
+    ///
+    /// This function is the same as [`Glob::walk`], but it additionally accepts
+    /// a [`WalkBehavior`]. This can be used to configure how the traversal
+    /// interacts with symbolic links, the maximum depth from the root, etc.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use wax::{Glob, WalkBehavior};
+    ///
+    /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
+    /// for entry in glob.walk_with_behavior("./Pictures", WalkBehavior::default()) {
+    ///     let entry = entry.unwrap();
+    ///     println!("JPEG: {:?}", entry.path());
+    /// }
+    /// ```
+    ///
+    /// By default, symbolic links are read as normal files and their targets
+    /// are ignored. To follow symbolic links and traverse any directories that
+    /// they reference, specify a [`LinkBehavior`].
+    ///
+    /// ```rust,no_run
+    /// use wax::{Glob, LinkBehavior};
+    ///
+    /// let glob = Glob::new("**/*.txt").unwrap();
+    /// for entry in glob.walk_with_behavior("/var/log", LinkBehavior::ReadTarget) {
+    ///     let entry = entry.unwrap();
+    ///     println!("Log: {:?}", entry.path());
+    /// }
+    /// ```
+    ///
+    /// [`Glob::walk`]: crate::Glob::walk
+    /// [`LinkBehavior`]: crate::LinkBehavior
+    /// [`WalkBehavior`]: crate::WalkBehavior
+    pub fn walk_with_behavior(
+        &self,
+        directory: impl AsRef<Path>,
+        behavior: impl Into<WalkBehavior>,
+    ) -> Walk {
         walk::walk(self, directory, behavior)
     }
 
@@ -1039,13 +1087,13 @@ pub fn matched<'i, 'p>(
 ///
 /// # Errors
 ///
-/// Returns an error if the glob expression could not be parsed or is
-/// malformed. See the documentation for [`ParseError`] and [`RuleError`].
+/// Returns an error if the glob expression could not be parsed or is malformed.
+/// See the documentation for [`ParseError`] and [`RuleError`].
 ///
 /// # Examples
 ///
 /// ```rust,no_run
-/// for entry in wax::walk("**/*.(?i){jpg,jpeg}", "./Pictures", usize::MAX).unwrap() {
+/// for entry in wax::walk("**/*.(?i){jpg,jpeg}", "./Pictures").unwrap() {
 ///     let entry = entry.unwrap();
 ///     println!("JPEG: {:?}", entry.path());
 /// }
@@ -1055,14 +1103,45 @@ pub fn matched<'i, 'p>(
 /// [`ParseError`]: crate::ParseError
 /// [`RuleError`]: crate::RuleError
 /// [`WalkEntry`]: crate::WalkEntry
-pub fn walk(
+pub fn walk(expression: &str, directory: impl AsRef<Path>) -> Result<Walk<'static>, GlobError> {
+    walk_with_behavior(expression, directory, WalkBehavior::default())
+}
+
+/// Gets an iterator over matching files in a directory tree.
+///
+/// This function is the same as [`walk`], but it additionally accepts a
+/// [`WalkBehavior`]. This can be used to configure how the traversal interacts
+/// with symbolic links, the maximum depth from the root, etc.
+///
+/// # Errors
+///
+/// Returns an error if the glob expression could not be parsed or is malformed.
+/// See the documentation for [`ParseError`] and [`RuleError`].
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use wax::LinkBehavior;
+///
+/// for entry in wax::walk_with_behavior("**/*.txt", "/var/log", LinkBehavior::ReadTarget).unwrap()
+/// {
+///     let entry = entry.unwrap();
+///     println!("Log: {:?}", entry.path());
+/// }
+/// ```
+///
+/// [`ParseError`]: crate::ParseError
+/// [`RuleError`]: crate::RuleError
+/// [`walk`]: crate::walk()
+/// [`WalkBehavior`]: crate::WalkBehavior
+pub fn walk_with_behavior(
     expression: &str,
     directory: impl AsRef<Path>,
     behavior: impl Into<WalkBehavior>,
 ) -> Result<Walk<'static>, GlobError> {
     let (prefix, glob) = Glob::new(expression)?.partition();
     Ok(glob
-        .walk(directory.as_ref().join(prefix), behavior)
+        .walk_with_behavior(directory.as_ref().join(prefix), behavior)
         .into_owned())
 }
 

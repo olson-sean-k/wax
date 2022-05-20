@@ -39,10 +39,10 @@ assert_eq!("main.go", matched.get(2).unwrap());
 Match files in a directory tree against a glob:
 
 ```rust
-use wax::{Glob, WalkBehavior};
+use wax::Glob;
 
 let glob = Glob::new("**/*.{md,txt}").unwrap();
-for entry in glob.walk("doc", WalkBehavior::default()) {
+for entry in glob.walk("doc") {
     let entry = entry.unwrap();
     // ...
 }
@@ -51,11 +51,11 @@ for entry in glob.walk("doc", WalkBehavior::default()) {
 Match files in a directory tree against a glob with negations:
 
 ```rust
-use wax::Glob;
+use wax::{Glob, LinkBehavior};
 
 let glob = Glob::new("**/*.{md,txt}").unwrap();
 for entry in glob
-    .walk("doc", usize::MAX)
+    .walk_with_behavior("doc", LinkBehavior::ReadTarget)
     .not(["**/secret/**"])
     .unwrap()
 {
@@ -410,7 +410,7 @@ use wax::Glob;
 
 let path = Path::new("."); // Working directory.
 let (prefix, glob) = Glob::new("../site/img/*.{jpg,png}").unwrap().partition();
-for entry in glob.walk(path.join(prefix), usize::MAX) {
+for entry in glob.walk(path.join(prefix)) {
     let entry = entry.unwrap();
     // ...
 }

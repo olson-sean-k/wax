@@ -60,7 +60,7 @@ fn walk_with_tree() {
 
     let glob = Glob::new("**").unwrap();
     let paths: HashSet<_> = glob
-        .walk(&path, WalkBehavior::default())
+        .walk(&path)
         .flatten()
         .map(|entry| entry.into_path())
         .collect();
@@ -89,7 +89,7 @@ fn walk_with_invariant_terminating_component() {
 
     let glob = Glob::new("**/*.md").unwrap();
     let paths: HashSet<_> = glob
-        .walk(&path, WalkBehavior::default())
+        .walk(&path)
         .flatten()
         .map(|entry| entry.into_path())
         .collect();
@@ -105,7 +105,7 @@ fn walk_with_invariant_intermediate_component() {
 
     let glob = Glob::new("**/src/**/*.rs").unwrap();
     let paths: HashSet<_> = glob
-        .walk(&path, WalkBehavior::default())
+        .walk(&path)
         .flatten()
         .map(|entry| entry.into_path())
         .collect();
@@ -121,7 +121,7 @@ fn walk_with_invariant_glob() {
 
     let glob = Glob::new("src/lib.rs").unwrap();
     let paths: HashSet<_> = glob
-        .walk(&path, WalkBehavior::default())
+        .walk(&path)
         .flatten()
         .map(|entry| entry.into_path())
         .collect();
@@ -134,7 +134,7 @@ fn walk_with_invariant_partitioned_glob() {
 
     let (prefix, glob) = Glob::new("src/lib.rs").unwrap().partition();
     let paths: HashSet<_> = glob
-        .walk(path.join(prefix), WalkBehavior::default())
+        .walk(path.join(prefix))
         .flatten()
         .map(|entry| entry.into_path())
         .collect();
@@ -147,7 +147,7 @@ fn walk_with_not() {
 
     let glob = Glob::new("**/*.{md,rs}").unwrap();
     let paths: HashSet<_> = glob
-        .walk(&path, WalkBehavior::default())
+        .walk(&path)
         .not(["tests/**"])
         .unwrap()
         .flatten()
@@ -172,7 +172,7 @@ fn walk_with_depth() {
 
     let glob = Glob::new("**").unwrap();
     let paths: HashSet<_> = glob
-        .walk(
+        .walk_with_behavior(
             &path,
             WalkBehavior {
                 depth: 1,
@@ -218,7 +218,7 @@ fn walk_with_cyclic_link_file() {
 
     let glob = Glob::new("**").unwrap();
     let paths: HashSet<_> = glob
-        .walk(&path, LinkBehavior::ReadFile)
+        .walk_with_behavior(&path, LinkBehavior::ReadFile)
         .flatten()
         .map(|entry| entry.into_path())
         .collect();
@@ -262,7 +262,7 @@ fn walk_with_cyclic_link_target() {
     ];
     let glob = Glob::new("**").unwrap();
     let mut paths: Vec<_> = glob
-        .walk(&path, LinkBehavior::ReadTarget)
+        .walk_with_behavior(&path, LinkBehavior::ReadTarget)
         .flatten()
         // Take an additional item. This prevents an infinite loop if there is a
         // problem with detecting the cycle while also introducing unexpected
