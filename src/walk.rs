@@ -594,12 +594,12 @@ impl<'g> Walk<'g> {
 
     /// Calls a closure on each matched file or error.
     ///
-    /// This function does not clone the contents of paths and captures when
-    /// emitting entries and so may be more efficient than external iteration
-    /// via [`Iterator::for_each`], which must clone text.
+    /// This function does not clone paths and matched text when emitting
+    /// entries and so may be somewhat more efficient than external iteration or
+    /// [`for_each`], which must clone the contents of each entry.
     ///
-    /// [`Iterator::for_each`]: std::iter::Iterator::for_each
-    pub fn for_each(mut self, mut f: impl FnMut(WalkItem)) {
+    /// [`for_each`]: std::iter::Iterator::for_each
+    pub fn for_each_ref(mut self, mut f: impl FnMut(WalkItem)) {
         walk!(self => |entry| {
             f(entry);
         });
