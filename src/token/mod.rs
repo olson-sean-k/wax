@@ -260,7 +260,7 @@ impl<'t, A> TokenKind<'t, A> {
         )
     }
 
-    #[cfg_attr(not(feature = "diagnostics-inspect"), allow(unused))]
+    #[cfg(feature = "diagnostics-inspect")]
     pub fn is_capturing(&self) -> bool {
         use TokenKind::{Alternative, Class, Repetition, Wildcard};
 

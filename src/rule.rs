@@ -361,13 +361,12 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         })
     }
 
-    #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
     fn diagnose<'i, 't>(
         // This is a somewhat unusual API, but it allows the lifetime `'t` of
         // the `Cow` to be properly forwarded to output values (`RuleError`).
         #[allow(clippy::ptr_arg)] expression: &'i Cow<'t, str>,
-        token: &'i Token<'t>,
-        label: &'static str,
+        #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))] token: &'i Token<'t>,
+        #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))] label: &'static str,
     ) -> impl 'i + Copy + Fn(CorrelatedError) -> RuleError<'t>
     where
         't: 'i,
