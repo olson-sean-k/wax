@@ -256,11 +256,19 @@ pub fn check<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
     if let Some((left, right)) = tokenized
-        .tokens()
-        .iter()
-        .tuple_windows::<(_, _)>()
-        .find(|(left, right)| left.is_component_boundary() && right.is_component_boundary())
-        .map(|(left, right)| (*left.annotation(), *right.annotation()))
+        .walk()
+        .group_by(|(position, _)| *position)
+        .into_iter()
+        .flat_map(|(_, group)| {
+            group
+                .map(|(_, token)| token)
+                .tuple_windows::<(_, _)>()
+                .filter(|(left, right)| {
+                    left.is_component_boundary() && right.is_component_boundary()
+                })
+                .map(|(left, right)| (*left.annotation(), *right.annotation()))
+        })
+        .next()
     {
         Err(RuleError::new(
             tokenized.expression().clone(),

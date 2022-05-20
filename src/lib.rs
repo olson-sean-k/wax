@@ -1439,6 +1439,8 @@ mod tests {
         assert!(Glob::new("a//b").is_err());
         assert!(Glob::new("a/b//").is_err());
         assert!(Glob::new("a//**").is_err());
+        assert!(Glob::new("{//}a").is_err());
+        assert!(Glob::new("{**//}").is_err());
     }
 
     #[test]
@@ -1450,6 +1452,8 @@ mod tests {
         assert!(Glob::new("**/*/***").is_err());
         assert!(Glob::new("**$").is_err());
         assert!(Glob::new("**/$**").is_err());
+        assert!(Glob::new("{*$}").is_err());
+        assert!(Glob::new("<*$:1,>").is_err());
     }
 
     #[test]
