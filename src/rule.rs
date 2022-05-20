@@ -317,45 +317,45 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         }
     }
 
-    fn has_preceding_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
+    fn has_starting_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
                 token
                     .walk()
-                    .preceding()
+                    .starting()
                     .any(|(_, token)| token.is_component_boundary())
             })
             .unwrap_or(false)
     }
 
-    fn has_terminating_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
+    fn has_ending_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
                 token
                     .walk()
-                    .terminating()
+                    .ending()
                     .any(|(_, token)| token.is_component_boundary())
             })
             .unwrap_or(false)
     }
 
-    fn has_preceding_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
+    fn has_starting_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
                 token
                     .walk()
-                    .preceding()
+                    .starting()
                     .any(|(_, token)| matches!(token.kind(), Wildcard(ZeroOrMore(_))))
             })
             .unwrap_or(false)
     }
 
-    fn has_terminating_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
+    fn has_ending_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
                 token
                     .walk()
-                    .terminating()
+                    .ending()
                     .any(|(_, token)| matches!(token.kind(), Wildcard(ZeroOrMore(_))))
             })
             .unwrap_or(false)
@@ -446,7 +446,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             //
             // For example, `foo/{bar,/}`.
             Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _)
-                if has_terminating_component_boundary(left) =>
+                if has_ending_component_boundary(left) =>
             {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentBoundary,
@@ -459,7 +459,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             //
             // For example, `{foo,/}/bar`.
             Only((inner, Separator(_))) | StartEnd(_, (inner, Separator(_)))
-                if has_preceding_component_boundary(right) =>
+                if has_starting_component_boundary(right) =>
             {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentBoundary,
@@ -477,9 +477,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // tree tokens.
             //
             // For example, `foo/{bar,**/baz}`.
-            StartEnd((inner, Wildcard(Tree { .. })), _)
-                if has_terminating_component_boundary(left) =>
-            {
+            StartEnd((inner, Wildcard(Tree { .. })), _) if has_ending_component_boundary(left) => {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentBoundary,
                     left,
@@ -491,7 +489,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             //
             // For example, `{foo,bar/**}/baz`.
             StartEnd(_, (inner, Wildcard(Tree { .. })))
-                if has_preceding_component_boundary(right) =>
+                if has_starting_component_boundary(right) =>
             {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentBoundary,
@@ -505,7 +503,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // For example, `foo*{bar,*,baz}`.
             Only((inner, Wildcard(ZeroOrMore(_))))
             | StartEnd((inner, Wildcard(ZeroOrMore(_))), _)
-                if has_terminating_zom_token(left) =>
+                if has_ending_zom_token(left) =>
             {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentZeroOrMore,
@@ -519,7 +517,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // For example, `{foo,*,bar}*baz`.
             Only((inner, Wildcard(ZeroOrMore(_))))
             | StartEnd(_, (inner, Wildcard(ZeroOrMore(_))))
-                if has_preceding_zom_token(right) =>
+                if has_starting_zom_token(right) =>
             {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentZeroOrMore,

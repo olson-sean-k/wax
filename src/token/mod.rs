@@ -128,7 +128,7 @@ impl<'t, A> Token<'t, A> {
     }
 
     pub fn has_root(&self) -> bool {
-        self.walk().preceding().any(|(_, token)| {
+        self.walk().starting().any(|(_, token)| {
             matches!(
                 token.kind(),
                 TokenKind::Separator(_) | TokenKind::Wildcard(Wildcard::Tree { has_root: true }),
@@ -764,7 +764,7 @@ where
     't: 'i,
     A: 't,
 {
-    pub fn preceding(self) -> impl 'i + Iterator<Item = (Position, &'i Token<'t, A>)> {
+    pub fn starting(self) -> impl 'i + Iterator<Item = (Position, &'i Token<'t, A>)> {
         self.peekable().batching(|tokens| {
             if let Some((position, token)) = tokens.next() {
                 tokens
@@ -778,7 +778,7 @@ where
         })
     }
 
-    pub fn terminating(self) -> impl 'i + Iterator<Item = (Position, &'i Token<'t, A>)> {
+    pub fn ending(self) -> impl 'i + Iterator<Item = (Position, &'i Token<'t, A>)> {
         self.peekable().batching(|tokens| {
             if let Some((position, _)) = tokens.peek().cloned() {
                 tokens
