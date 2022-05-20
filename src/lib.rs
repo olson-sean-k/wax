@@ -44,7 +44,7 @@ pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::inspect::CapturingToken;
 #[cfg(feature = "diagnostics-report")]
-pub use crate::diagnostics::report::{DiagnosticGlob, DiagnosticResult, DiagnosticResultExt};
+pub use crate::diagnostics::report::{DiagnosticResult, DiagnosticResultExt};
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::Span;
 pub use crate::encode::CompileError;
@@ -545,6 +545,38 @@ impl<'t> Glob<'t> {
         Ok(Glob { tokenized, regex })
     }
 
+    /// Constructs a [`Glob`] from a glob expression with diagnostics.
+    ///
+    /// This function is the same as [`Glob::new`], but additionally returns
+    /// detailed diagnostics on both success and failure.
+    ///
+    /// See [`Glob::diagnostics`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use wax::{DiagnosticResultExt as _, Glob};
+    ///
+    /// let result = Glob::diagnose("(?i)readme.{md,mkd,markdown}");
+    /// for diagnostic in result.diagnostics() {
+    ///     eprintln!("{}", diagnostic);
+    /// }
+    /// if let Some(glob) = result.ok_value() { /* ... */ }
+    /// ```
+    ///
+    /// [`Glob`]: crate::Glob
+    /// [`Glob::diagnostics`]: crate::Glob::diagnostics
+    /// [`Glob::new`]: crate::Glob::new
+    #[cfg(feature = "diagnostics-report")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+    pub fn diagnose(expression: &'t str) -> DiagnosticResult<'t, Self> {
+        parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
+            Glob::compile(tokenized.tokens())
+                .into_error_diagnostic()
+                .map_value(|regex| Glob { tokenized, regex })
+        })
+    }
+
     /// Partitions a [`Glob`] into an invariant [`PathBuf`] prefix and variant
     /// [`Glob`] postfix.
     ///
@@ -706,11 +738,16 @@ impl<'t> Glob<'t> {
     /// Gets non-error [`Diagnostic`]s.
     ///
     /// This function requires a receiving [`Glob`] and so does not report
-    /// error-level [`Diagnostic`]s. See the [`DiagnosticGlob`] trait for
-    /// constructing a [`Glob`] with complete diagnostic information.
+    /// error-level [`Diagnostic`]s. It can be used to get non-error diagnostics
+    /// after constructing or [partitioning] a [`Glob`].
+    ///
+    /// See [`Glob::diagnose`].
     ///
     /// [`Diagnostic`]: miette::Diagnostic
     /// [`Glob`]: crate::Glob
+    /// [`Glob::diagnose`]: crate::Glob::diagnose
+    ///
+    /// [partitioning]: crate::Glob::partition
     #[cfg(feature = "diagnostics-report")]
     #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
     pub fn diagnostics(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
@@ -757,30 +794,6 @@ impl<'t> Glob<'t> {
     /// [`Glob::partition`]: crate::Glob::partition
     pub fn has_semantic_literals(&self) -> bool {
         token::literals(self.tokenized.tokens()).any(|(_, literal)| literal.is_semantic_literal())
-    }
-}
-
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-#[cfg(feature = "diagnostics-report")]
-impl<'t> DiagnosticGlob<'t> for Glob<'t> {
-    /// Constructs a [`Glob`] from a glob expression with diagnostics.
-    fn new(expression: &'t str) -> DiagnosticResult<'t, Self> {
-        parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
-            Glob::compile(tokenized.tokens())
-                .into_error_diagnostic()
-                .map_value(|regex| Glob { tokenized, regex })
-        })
-    }
-
-    /// Partitions a glob expression into an invariant `PathBuf` prefix and
-    /// variant `Glob` postfix with diagnostics.
-    fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Self)> {
-        parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
-            let (prefix, tokenized) = tokenized.partition();
-            Glob::compile(tokenized.tokens())
-                .into_error_diagnostic()
-                .map_value(|regex| (prefix, Glob { tokenized, regex }))
-        })
     }
 }
 

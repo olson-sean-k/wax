@@ -3,7 +3,6 @@
 use miette::{Diagnostic, LabeledSpan, SourceSpan};
 use std::borrow::Cow;
 use std::cmp;
-use std::path::PathBuf;
 use thiserror::Error;
 use vec1::{vec1, Vec1};
 
@@ -53,7 +52,7 @@ impl<'t, T, E> ResultExt<'t, T, E> for Result<T, E> {
 /// Extension traits for `Result`s with diagnostics.
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub trait DiagnosticResultExt<'t, T> {
-    fn ok_value(&self) -> Option<&T>;
+    fn ok_value(self) -> Option<T>;
 
     fn diagnostics(&self) -> &[BoxedDiagnostic<'t>];
 
@@ -67,9 +66,9 @@ pub trait DiagnosticResultExt<'t, T> {
 }
 
 impl<'t, T> DiagnosticResultExt<'t, T> for DiagnosticResult<'t, T> {
-    fn ok_value(&self) -> Option<&T> {
+    fn ok_value(self) -> Option<T> {
         match self {
-            Ok((ref value, _)) => Some(value),
+            Ok((value, _)) => Some(value),
             _ => None,
         }
     }
@@ -112,32 +111,6 @@ impl<'t, T> DiagnosticResultExt<'t, T> for DiagnosticResult<'t, T> {
             Err(diagnostics) => Err(diagnostics),
         }
     }
-}
-
-/// Functions for constructing [`Glob`]s with diagnostics.
-///
-/// This trait provides functions that emit diagnostics and mirror the inherent
-/// functions used to construct [`Glob`]s. Unlike [`Glob`]'s inherent functions,
-/// these functions return diagnostics on both success and failure.
-///
-/// # Examples
-///
-/// ```rust
-/// use wax::{DiagnosticGlob, DiagnosticResultExt as _, Glob};
-///
-/// let result = <Glob as DiagnosticGlob>::new("(?i)readme.{md,mkd,markdown}");
-/// for diagnostic in result.diagnostics() {
-///     eprintln!("{}", diagnostic);
-/// }
-/// if let Ok((glob, _)) = result { /* ... */ }
-/// ```
-///
-/// [`Glob`]: crate::Glob
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-pub trait DiagnosticGlob<'t>: Sized {
-    fn new(expression: &'t str) -> DiagnosticResult<'t, Self>;
-
-    fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Self)>;
 }
 
 pub trait SourceSpanExt {
