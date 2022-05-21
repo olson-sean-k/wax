@@ -19,7 +19,6 @@ use pori::{Located, Location, Stateful};
 use std::borrow::Cow;
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
-use supreme::{BaseErrorKind, StackContext};
 use thiserror::Error;
 
 #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
@@ -37,6 +36,10 @@ pub type Annotation = Span;
     not(feature = "diagnostics-report"),
 ))]
 pub type Annotation = ();
+
+type BaseErrorKind =
+    supreme::BaseErrorKind<&'static str, Box<dyn std::error::Error + Send + Sync + 'static>>;
+type StackContext = supreme::StackContext<&'static str>;
 
 type Expression<'i> = Located<'i, str>;
 type Input<'i> = Stateful<Expression<'i>, ParserState>;
