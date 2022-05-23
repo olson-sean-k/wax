@@ -550,6 +550,7 @@ impl From<usize> for WalkBehavior {
 pub struct Walk<'g> {
     pattern: Cow<'g, Regex>,
     components: Vec<Regex>,
+    root: PathBuf,
     prefix: PathBuf,
     walk: walkdir::IntoIter,
 }
@@ -581,12 +582,14 @@ impl<'g> Walk<'g> {
         let Walk {
             pattern,
             components,
+            root,
             prefix,
             walk,
         } = self;
         Walk {
             pattern: Cow::Owned(pattern.into_owned()),
             components,
+            root,
             prefix,
             walk,
         }
@@ -657,6 +660,23 @@ impl<'g> Walk<'g> {
     {
         Negation::try_from_patterns(patterns)
             .map(|negation| self.filter_tree(move |entry| negation.target(entry)))
+    }
+
+    /// Gets the root directory of the traversal.
+    ///
+    /// The root directory is determined by joining the path in functions like
+    /// [`Glob::walk`] with any [invariant prefix](`Glob::partition`) of the
+    /// [`Glob`]. When a [`Glob`] is rooted, the root directory is the same as
+    /// the invariant prefix.
+    ///
+    /// The depth specified via [`WalkBehavior`] is relative to this path.
+    ///
+    /// [`Glob`]: crate::Glob
+    /// [`Glob::partition`]: crate::Glob::partition
+    /// [`Glob::walk`]: crate::Glob::walk
+    /// [`WalkBehavior`]: crate::WalkBehavior
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 }
 
@@ -845,31 +865,22 @@ pub fn walk<'g>(
     let directory = directory.as_ref();
     let WalkBehavior { depth, link } = behavior.into();
     // The directory tree is traversed from `root`, which may include an
-    // invariant prefix from the glob pattern. `Walk` patterns are only
-    // applied to path components following the `prefix` (distinct from the
-    // glob pattern prefix) in `root`.
-    let (root, prefix, depth) = invariant_path_prefix(glob.tokenized.tokens()).map_or_else(
+    // invariant prefix from the glob pattern. `Walk` patterns are only applied
+    // to path components following this prefix in `root`.
+    let (root, prefix) = invariant_path_prefix(glob.tokenized.tokens()).map_or_else(
         || {
             let root = Cow::from(directory);
-            (root.clone(), root, depth)
+            (root.clone(), root)
         },
         |prefix| {
             let root = directory.join(&prefix).into();
             if prefix.is_absolute() {
                 // Absolute paths replace paths with which they are joined,
                 // in which case there is no prefix.
-                (root, PathBuf::new().into(), depth)
+                (root, PathBuf::new().into())
             }
             else {
-                // TODO: If the depth is exhausted by an invariant prefix
-                //       path, then `Walk` should yield no entries. This
-                //       computes a depth of zero when this occurs, so
-                //       entries may still be yielded.
-                // `depth` is relative to the input `directory`, so count
-                // any components added by an invariant prefix path from the
-                // glob.
-                let depth = depth.saturating_sub(prefix.components().count());
-                (root, directory.into(), depth)
+                (root, directory.into())
             }
         },
     );
@@ -878,8 +889,9 @@ pub fn walk<'g>(
     Walk {
         pattern: Cow::Borrowed(&glob.regex),
         components,
+        root: root.clone().into_owned(),
         prefix: prefix.into_owned(),
-        walk: WalkDir::new(root)
+        walk: WalkDir::new(root.clone())
             .follow_links(match link {
                 LinkBehavior::ReadFile => false,
                 LinkBehavior::ReadTarget => true,

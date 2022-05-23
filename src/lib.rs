@@ -588,7 +588,6 @@ impl<'t> Glob<'t> {
     /// either partition to be empty.
     ///
     /// Literal components may be considered variant if they contain characters
-    ///
     /// with casing and the configured case sensitivity differs from the target
     /// platform's file system. For example, the case-insensitive literal
     /// expression `(?i)photos` is considered variant on Unix and invariant on
@@ -746,6 +745,10 @@ impl<'t> Glob<'t> {
     /// a [`WalkBehavior`]. This can be used to configure how the traversal
     /// interacts with symbolic links, the maximum depth from the root, etc.
     ///
+    /// Depth is relative to the root directory of the traversal, which is
+    /// determined by joining the given path and any invariant prefix of the
+    /// [`Glob`]. See [`Walk::root`].
+    ///
     /// # Examples
     ///
     /// ```rust,no_run
@@ -772,8 +775,10 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     ///
+    /// [`Glob`]: crate::Glob
     /// [`Glob::walk`]: crate::Glob::walk
     /// [`LinkBehavior`]: crate::LinkBehavior
+    /// [`Walk::root`]: crate::Walk::root
     /// [`WalkBehavior`]: crate::WalkBehavior
     pub fn walk_with_behavior(
         &self,

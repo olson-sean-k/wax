@@ -197,20 +197,6 @@ fn walk_with_depth() {
     );
 }
 
-// TODO: See `crate::walk::walk`.
-//#[test]
-//fn walk_with_exhausted_depth() {
-//    let (_root, path) = temptree();
-//
-//    let glob = Glob::new("src/lib.rs").unwrap();
-//    let paths: HashSet<_> = glob
-//        .walk(&path, 1usize)
-//        .flatten()
-//        .map(|entry| entry.into_path())
-//        .collect();
-//    assert!(paths.is_empty());
-//}
-
 #[test]
 #[cfg(any(unix, windows))]
 fn walk_with_cyclic_link_file() {
