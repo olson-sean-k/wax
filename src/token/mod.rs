@@ -1031,7 +1031,7 @@ mod tests {
         let literals: Vec<_> = tokenized
             .tokens()
             .iter()
-            .flat_map(|token| match token.kind {
+            .filter_map(|token| match token.kind {
                 TokenKind::Literal(ref literal) => Some(literal),
                 _ => None,
             })

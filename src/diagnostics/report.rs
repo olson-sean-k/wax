@@ -280,8 +280,7 @@ mod tests {
 
         assert!(diagnostics.iter().any(|diagnostic| diagnostic
             .code()
-            .map(|code| code.to_string() == CODE_SEMANTIC_LITERAL)
-            .unwrap_or(false)));
+            .map_or(false, |code| code.to_string() == CODE_SEMANTIC_LITERAL)));
     }
 
     #[test]
@@ -291,7 +290,6 @@ mod tests {
 
         assert!(diagnostics.iter().any(|diagnostic| diagnostic
             .code()
-            .map(|code| code.to_string() == CODE_TERMINATING_SEPARATOR)
-            .unwrap_or(false)));
+            .map_or(false, |code| code.to_string() == CODE_TERMINATING_SEPARATOR)));
     }
 }

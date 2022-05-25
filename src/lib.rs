@@ -6,13 +6,30 @@
 //! documentation](https://github.com/olson-sean-k/wax/blob/master/README.md)
 //! for details about glob expressions and patterns.
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/olson-sean-k/wax/master/doc/wax-favicon.svg?sanitize=true"
 )]
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/olson-sean-k/wax/master/doc/wax.svg?sanitize=true"
 )]
-#![cfg_attr(docsrs, feature(doc_cfg))]
+#![deny(
+    clippy::cast_lossless,
+    clippy::checked_conversions,
+    clippy::cloned_instead_of_copied,
+    clippy::explicit_into_iter_loop,
+    clippy::filter_map_next,
+    clippy::flat_map_option,
+    clippy::from_iter_instead_of_collect,
+    clippy::if_not_else,
+    clippy::manual_ok_or,
+    clippy::map_unwrap_or,
+    clippy::match_same_arms,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_else,
+    clippy::unreadable_literal,
+    clippy::unused_self
+)]
 
 mod capture;
 mod diagnostics;
