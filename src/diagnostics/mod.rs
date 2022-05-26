@@ -3,7 +3,7 @@
 pub mod inspect;
 pub mod report;
 
-/// Length and location of a token within a glob expression.
+/// Location and length of a token within a glob expression.
 ///
 /// Spans are encoded as a tuple of `usize`s, where the first element is the
 /// location or position and the second element is the length.

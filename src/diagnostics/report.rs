@@ -10,11 +10,16 @@ use crate::token::{self, TokenKind, Tokenized};
 
 pub type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
 
-/// `Result` that includes diagnostics on both success and failure.
+/// `Result` that includes [`Diagnostic`]s on both success and failure.
 ///
 /// On success, the `Ok` variant contains zero or more diagnostics. On failure,
 /// the `Err` variant contains one or more diagnostics, where at least one of
 /// the diagnostics is an error.
+///
+/// See [`DiagnosticResultExt`].
+///
+/// [`Diagnostic`]: miette::Diagnostic
+/// [`DiagnosticResultExt`]: crate::DiagnosticResultExt
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub type DiagnosticResult<'t, T> = Result<(T, Vec<BoxedDiagnostic<'t>>), Vec1<BoxedDiagnostic<'t>>>;
 
@@ -49,17 +54,47 @@ impl<'t, T, E> ResultExt<'t, T, E> for Result<T, E> {
     }
 }
 
-/// Extension traits for `Result`s with diagnostics.
+/// Extension methods for `Result`s with diagnostics.
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub trait DiagnosticResultExt<'t, T> {
+    /// Converts from `DiagnosticResult<'_, T>` into `Option<T>`.
+    ///
+    /// This function is similar to [`Result::ok`], but gets only the
+    /// non-diagnostic value from the `Ok` variant in [`DiagnosticResult`],
+    /// discarding diagnostics.
+    ///
+    /// [`DiagnosticResult`]: crate::DiagnosticResult
+    /// [`Result::ok`]: std::result::Result::ok
     fn ok_value(self) -> Option<T>;
 
+    /// Gets the [`Diagnostic`]s associated with the `Result`.
+    ///
+    /// Both the success and failure case may include diagnostics.
+    ///
+    /// [`Diagnostic`]: miette::Diagnostic
     fn diagnostics(&self) -> &[BoxedDiagnostic<'t>];
 
+    /// Maps `DiagnosticResult<'t, T>` into `DiagnosticResult<'t, U>` by
+    /// applying a function over the non-diagnostic value of the `Ok` variant.
+    ///
+    /// This function is similar to [`Result::map`], but maps only the
+    /// non-diagnostic value from the `Ok` variant in [`DiagnosticResult`],
+    /// ignoring diagnostics.
+    ///
+    /// [`DiagnosticResult`]: crate::DiagnosticResult
+    /// [`Result::map`]: std::result::Result::map
     fn map_value<U, F>(self, f: F) -> DiagnosticResult<'t, U>
     where
         F: FnOnce(T) -> U;
 
+    /// Calls the given function if the `DiagnosticResult` is `Ok` and otherwise
+    /// returns the `Err` variant of the `DiagnosticResult`.
+    ///
+    /// This function is similar to [`Result::and_then`], but additionally
+    /// forwards and collects diagnostics.
+    ///
+    /// [`DiagnosticResult`]: crate::DiagnosticResult
+    /// [`Result::and_then`]: std::result::Result::and_then
     fn and_then_diagnose<U, F>(self, f: F) -> DiagnosticResult<'t, U>
     where
         F: FnOnce(T) -> DiagnosticResult<'t, U>;
@@ -73,7 +108,6 @@ impl<'t, T> DiagnosticResultExt<'t, T> for DiagnosticResult<'t, T> {
         }
     }
 
-    /// Gets the diagnostics associated with the `Result`.
     fn diagnostics(&self) -> &[BoxedDiagnostic<'t>] {
         match self {
             Ok((_, ref diagnostics)) => diagnostics,

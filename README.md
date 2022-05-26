@@ -128,7 +128,9 @@ expression has an implicit capture for the complete matched text.
 
 Globs use a consistent and opinionated format and patterns are **not**
 configurable; the semantics of a particular glob are always the same. For
-example, `*` **never** matches across component boundaries.
+example, `*` **never** matches across component boundaries. Components are an
+important part of paths and file system trees, and only the tree wildcard `**`
+(see below) implicitly matches across them.
 
 ### Wildcards
 
@@ -148,22 +150,24 @@ so a pattern of contiguous wildcards such as `???` form distinct captures for
 each `?` wildcard. [An alternative](#alternatives) can be used to group
 exactly-one wildcards into a single capture, such as `{???}`.
 
-The tree wildcard `**` matches zero or more components (directories). **This is
-the only pattern that implicitly matches across arbitrary component
+The tree wildcard `**` matches any characters across zero or more components.
+**This is the only pattern that implicitly matches across arbitrary component
 boundaries**; all other patterns do **not** implicitly match across component
-(directory) boundaries. When a tree wildcard participates in a match and does
-not terminate the pattern, its captured text includes the trailing separator. If
-a tree wildcard does not participate in a match, then its captured text is an
-empty string.
+boundaries. When a tree wildcard participates in a match and does not terminate
+the pattern, its captured text includes the trailing separator. If a tree
+wildcard does not participate in a match, then its captured text is an empty
+string.
 
-Tree wildcards must be delimited by forward slashes or terminations (such as the
-beginning and/or end of a glob or sub-glob). Tree wildcards and path separators
-are distinct and any adjacent forward slashes that form a tree wildcard are
-parsed together (but rooting forward slashes are still meaningful).
+Tree wildcards must be delimited by forward slashes or terminations (the
+beginning and/or end of an expression). **Tree wildcards and path separators are
+distinct** and any adjacent forward slashes that form a tree wildcard are parsed
+together. Rooting forward slashes in tree wildcards are meaningful and the glob
+expressions `**/*.txt` and `/**/*.txt` differ in that the former is relative
+(has no root) and the latter has a root.
 
 If a glob expression consists solely of a tree wildcard, then it matches any and
-all files and directory trees. This includes the root when matching against a
-directory tree.
+all paths and the complete contents of any and all directory trees, including
+the root.
 
 ### Character Classes
 
@@ -172,9 +176,8 @@ within a component (**never path separators**). Classes are delimited by square
 brackets `[...]`. Individual character literals are specified as is, such as
 `[ab]` to match either `a` or `b`. Character ranges are formed from two
 characters separated by a hyphen, such as `[x-z]` to match `x`, `y`, or `z`.
-Note that character classes match exact characters and are always
-case-sensitive, so the expressions `[ab]` and `{a,b}` are not necessarily the
-same.
+Character classes match exact characters and are always case-sensitive, so the
+expressions `[ab]` and `{a,b}` are not necessarily the same.
 
 Any number of character literals and ranges can be used within a single
 character class. For example, `[qa-cX-Z]` matches any of `q`, `a`, `b`, `c`,
@@ -182,7 +185,7 @@ character class. For example, `[qa-cX-Z]` matches any of `q`, `a`, `b`, `c`,
 
 Character classes may be negated by including an exclamation mark `!` at the
 beginning of the class pattern. For example, `[!a]` matches any character except
-for `a`. These are the only patterns that support negation.
+for `a`. **These are the only patterns that support negation.**
 
 It is possible to escape meta-characters like `*`, `$`, etc., using character
 classes though globs also support escaping via a backslash `\`. To match the
@@ -210,11 +213,10 @@ arbitrarily nested and composed with [repetitions](#repetitions).
 
 Alternatives form a single capture group regardless of the contents of their
 sub-globs. This capture is formed from the complete match of the sub-glob, so if
-the sub-glob `a?c` matches `abc` in `{a?c,x?z}`, then the captured text will be
-`abc` (**not** `b` as it would be outside of an alternative sequence).
-Alternatives can be used to group captures using a single sub-glob, such as
-`{*.{go,rs}}` to capture an entire file name with a particular extension or
-`{???}` to group a sequence of exactly-one wildcards.
+the alternative `{a?c,x?z}` matches `abc`, then the captured text will be `abc`
+(**not** `b`). Alternatives can be used to group captures using a single
+sub-glob, such as `{*.{go,rs}}` to capture an entire file name with a particular
+extension or `{???}` to group a sequence of exactly-one wildcards.
 
 Alternatives must consider adjacency rules and neighboring patterns. For
 example, `*{a,b*}` is allowed but `*{a,*b}` is not. Additionally, they may not
@@ -224,14 +226,13 @@ trees.
 
 ### Repetitions
 
-Repetitions match a sub-glob a specified number of times and more closely
-resemble general purpose regular expressions. Repetitions are delimited by angle
-brackets with a separating colon `<...:...>` where a sub-glob precedes the colon
-and an optional bounds specification follows it. For example, `<a*/:0,>` matches
-the sub-glob `a*/` zero or more times. Though not implicit like tree
-[wildcards](#wildcards), **repetitions can match across component boundaries**
-(and can themselves include tree wildcards). Repetitions may be arbitrarily
-nested and composed with [alternatives](#alternatives).
+Repetitions match a sub-glob a specified number of times. Repetitions are
+delimited by angle brackets with a separating colon `<...:...>` where a sub-glob
+precedes the colon and an optional bounds specification follows it. For example,
+`<a*/:0,>` matches the sub-glob `a*/` zero or more times. Though not implicit
+like tree [wildcards](#wildcards), **repetitions can match across component
+boundaries** (and can themselves include tree wildcards). Repetitions may be
+arbitrarily nested and composed with [alternatives](#alternatives).
 
 Bound specifications are formed from inclusive lower and upper bounds separated
 by a comma `,`, such as `:1,4` to match between one and four times. The upper
@@ -252,8 +253,9 @@ Repetitions compose well with [character classes](#character-classes). Most
 often, a glob expression like `{????}` is sufficient, but the more specific
 expression `<[0-9]:4>` further constrains the matched characters to digits, for
 example. Repetitions may also be more terse, such as `<?:8>`. Furthermore,
-repetitions can form tree expressions that further constrain directories, such
-as `<[!.]*/>[!.]*` to match paths that contain no leading dots `.`.
+repetitions can form tree expressions that further constrain components, such as
+`<[!.]*/>[!.]*` to match paths that contain no leading dots `.` in any
+component.
 
 Repetitions must consider adjacency rules and neighboring patterns. For example,
 `a/<b/**:1,>` is allowed but `<a/**:1,>/b` is not. Additionally, they may not
@@ -328,11 +330,10 @@ Partitioning is unaffected in glob expressions with no flags.
 
 ## Errors and Diagnostics
 
-The [`GlobError`] type represents error conditions that can occur when parsing a
-glob expression, validating a glob expression, or walking a directory tree with
-a glob. [`GlobError`] and its sub-errors implement the standard [`Error`] and
-[`Display`] traits via [`thiserror`][thiserror], which express basic information
-about failures.
+The [`GlobError`] type represents error conditions that can occur when
+constructing a glob or walking a directory tree. [`GlobError`] and its
+sub-errors implement the standard [`Error`] and [`Display`] traits via
+[`thiserror`][thiserror], which express basic information about failures.
 
 Wax optionally integrates with the [`miette`][miette] crate, which can be used
 to capture and display diagnostics. This can be useful for reporting errors to
@@ -392,9 +393,9 @@ Parent directory components have unclear meaning and far less utility when they
 follow patterns in a glob. However, such components are intuitive and are often
 important for escaping a working directory when they precede variant patterns
 (i.e., as a prefix). For example, the glob `../src/**/*.rs` has more obvious
-meaning than the glob `src/**/../*.rs`. As seen above though, the first glob
-would only match the literal path component `..` and not paths that replace this
-with a parent directory.
+intended meaning than the glob `src/**/../*.rs`. As seen above though, the first
+glob would only match the literal path component `..` and not paths that replace
+this with a parent directory.
 
 [`Glob::partition`] can be used to isolate semantic components that precede
 patterns and apply semantic path operations to them (namely `..`).
@@ -405,19 +406,28 @@ target platform's file system APIs. The prefix can be used as needed in
 combination with the glob.
 
 ```rust
+use dunce; // Avoids UNC paths on Windows.
 use std::path::Path;
-use wax::Glob;
+use wax::{Glob, Pattern};
 
-let path = Path::new("."); // Working directory.
-let (prefix, glob) = Glob::new("../site/img/*.{jpg,png}").unwrap().partition();
-for entry in glob.walk(path.join(prefix)) {
-    let entry = entry.unwrap();
+let path: &Path = /* ... */ // Candidate path.
+
+let directory = Path::new("."); // Working directory.
+let (prefix, glob) = Glob::new("../../src/**").unwrap().partition();
+let prefix = dunce::canonicalize(directory.join(&prefix)).unwrap();
+if dunce::canonicalize(path)
+    .unwrap()
+    .strip_prefix(&prefix)
+    .map(|path| glob.is_match(path))
+    .unwrap_or(false)
+{
     // ...
 }
 ```
 
 Additionally, [`Glob::has_semantic_literals`] can be used to detect literal
-components in a glob that have special semantics on the target platform.
+components in a glob that have special semantics on the target platform. When
+the `diagnostics-report` feature is enabled, such literals cause warnings.
 
 ```rust
 use wax::Glob;
@@ -434,8 +444,8 @@ represented directly as a glob.
 
 This can be limiting, but the design of Wax explicitly forbids this: Windows
 prefixes and other volume components are not portable. Instead, when this is
-needed, an additional native path or working directory can be used, such as [the
-`--tree` option provided by Nym][nym]. In most contexts, globs are applied
+needed, an additional native path or working directory must be used, such as
+[the `--tree` option provided by Nym][nym]. In most contexts, globs are applied
 relative to some such working directory.
 
 ### Non-nominal Constraints

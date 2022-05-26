@@ -4,6 +4,21 @@ use crate::diagnostics::Span;
 use crate::token::Token;
 
 /// Token that captures matched text in a glob expression.
+///
+/// # Examples
+///
+/// `CapturingToken`s can be used to isolate sub-expressions.
+///
+/// ```rust
+/// use wax::Glob;
+///
+/// let expression = "**/*.txt";
+/// let glob = Glob::new(expression).unwrap();
+/// for token in glob.captures() {
+///     let (start, n) = token.span();
+///     println!("capturing sub-expression: {}", &expression[start..][..n]);
+/// }
+/// ```
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
 #[derive(Clone, Copy, Debug)]
 pub struct CapturingToken {

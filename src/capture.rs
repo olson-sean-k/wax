@@ -78,7 +78,7 @@ impl From<OwnedText> for MaybeOwnedText<'static> {
 
 /// Text that has been matched by a [`Pattern`] and its captures.
 ///
-/// To test a [`Glob`] or other [`Pattern`] against a [`CandidatePath`] and get
+/// To match a [`Glob`] or other [`Pattern`] against a [`CandidatePath`] and get
 /// the matched text, use the [`Pattern::matched`] function.
 ///
 /// All [`Pattern`]s provide an implicit capture of the complete text of a
@@ -100,9 +100,7 @@ impl From<OwnedText> for MaybeOwnedText<'static> {
 /// let candidate = CandidatePath::from("src/graph/link.rs");
 /// let matched = glob.matched(&candidate).unwrap();
 ///
-/// # assert_eq!("link.rs", matched.get(2).unwrap());
-/// // Prints `link.rs`.
-/// println!("{}", matched.get(2).unwrap());
+/// assert_eq!("link.rs", matched.get(2).unwrap());
 /// ```
 ///
 /// [`CandidatePath`]: crate::CandidatePath
