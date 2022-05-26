@@ -60,12 +60,6 @@ macro_rules! nsepexpr {
 /// **This error only occurs when the size of the compiled program is too
 /// large.** All other compilation errors are considered internal bugs and will
 /// panic.
-///
-/// When the `diagnostics-report` feature is enabled, this error implements the
-/// [`Diagnostic`] trait and provides more detailed information about the
-/// compilation failure.
-///
-/// [`Diagnostic`]: miette::Diagnostic
 #[derive(Clone, Debug, Error)]
 #[error("failed to compile glob: {kind}")]
 pub struct CompileError {

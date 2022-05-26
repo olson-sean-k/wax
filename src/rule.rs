@@ -141,12 +141,6 @@ where
 /// These rules are designed to avoid nonsense glob expressions and ambiguity.
 /// If a glob expression parses but violates these rules or is otherwise
 /// malformed, then this error is returned by some APIs.
-///
-/// When the `diagnostics-report` feature is enabled, this error implements the
-/// [`Diagnostic`] trait and provides more detailed information about the rule
-/// violation.
-///
-/// [`Diagnostic`]: miette::Diagnostic
 #[derive(Debug, Error)]
 #[error("malformed glob expression: {kind}")]
 pub struct RuleError<'t> {

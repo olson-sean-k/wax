@@ -10,7 +10,7 @@ use walkdir::{self, DirEntry, WalkDir};
 use crate::capture::MatchedText;
 use crate::encode::CompileError;
 use crate::token::{self, Boundedness, InvariantText, Token};
-use crate::{CandidatePath, Glob, GlobError, PositionExt as _};
+use crate::{BuildError, CandidatePath, Glob, PositionExt as _};
 
 pub type WalkItem<'e> = Result<WalkEntry<'e>, WalkError>;
 
@@ -347,9 +347,9 @@ impl Negation {
     /// [`IntoIterator`]: std::iter::IntoIterator
     pub fn try_from_patterns<'t, P>(
         patterns: impl IntoIterator<Item = P>,
-    ) -> Result<Self, GlobError<'t>>
+    ) -> Result<Self, BuildError<'t>>
     where
-        GlobError<'t>: From<P::Error>,
+        BuildError<'t>: From<P::Error>,
         P: TryInto<Glob<'t>>,
     {
         // TODO: Inlining the code in this function causes E0271 in the call to
@@ -661,9 +661,9 @@ impl<'g> Walk<'g> {
     pub fn not<'n, P>(
         self,
         patterns: impl IntoIterator<Item = P>,
-    ) -> Result<impl 'g + FileIterator<Item = WalkItem<'static>>, GlobError<'n>>
+    ) -> Result<impl 'g + FileIterator<Item = WalkItem<'static>>, BuildError<'n>>
     where
-        P: TryInto<Glob<'n>, Error = GlobError<'n>>,
+        P: TryInto<Glob<'n>, Error = BuildError<'n>>,
     {
         Negation::try_from_patterns(patterns)
             .map(|negation| self.filter_tree(move |entry| negation.target(entry)))
@@ -847,11 +847,8 @@ impl<'e> WalkEntry<'e> {
         self.entry.file_type()
     }
 
-    pub fn metadata(&self) -> Result<Metadata, GlobError<'static>> {
-        self.entry
-            .metadata()
-            .map_err(WalkError::from)
-            .map_err(From::from)
+    pub fn metadata(&self) -> Result<Metadata, WalkError> {
+        self.entry.metadata().map_err(WalkError::from)
     }
 
     /// Gets the depth of the file from [the root][`Walk::root`] of the

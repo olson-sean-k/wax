@@ -330,9 +330,9 @@ Partitioning is unaffected in glob expressions with no flags.
 
 ## Errors and Diagnostics
 
-The [`GlobError`] type represents error conditions that can occur when
-constructing a glob or walking a directory tree. [`GlobError`] and its
-sub-errors implement the standard [`Error`] and [`Display`] traits via
+The [`GlobError`] type represents error conditions that can occur when building
+a pattern or walking a directory tree. [`GlobError`] and its sub-errors
+implement the standard [`Error`] and [`Display`] traits via
 [`thiserror`][thiserror], which express basic information about failures.
 
 Wax optionally integrates with the [`miette`][miette] crate, which can be used
