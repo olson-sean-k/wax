@@ -308,7 +308,7 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn report_semantic_literal_warning() {
+    fn report_glob_semantic_literal_warning() {
         let glob = Glob::new("../foo").unwrap();
         let diagnostics: Vec<_> = glob.diagnostics().collect();
 
@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn report_terminating_separator_warning() {
+    fn report_glob_terminating_separator_warning() {
         let glob = Glob::new("**/foo/").unwrap();
         let diagnostics: Vec<_> = glob.diagnostics().collect();
 

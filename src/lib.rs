@@ -55,11 +55,13 @@ use thiserror::Error;
 use crate::diagnostics::inspect;
 #[cfg(feature = "diagnostics-report")]
 use crate::diagnostics::report::{self, IteratorExt as _, ResultExt as _};
-use crate::token::{Annotation, IntoTokens, InvariantText, Token, Tokenized};
+#[cfg(feature = "diagnostics-inspect")]
+use crate::token::InvariantText;
+use crate::token::{Annotation, IntoTokens, Token, Tokenized};
 
 pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
-pub use crate::diagnostics::inspect::CapturingToken;
+pub use crate::diagnostics::inspect::{CapturingToken, Variance};
 #[cfg(feature = "diagnostics-report")]
 pub use crate::diagnostics::report::{DiagnosticResult, DiagnosticResultExt};
 #[cfg(feature = "diagnostics-inspect")]
@@ -238,6 +240,8 @@ pub trait Pattern<'t>: IntoTokens<'t> {
     /// flags and the case sensitivity of literals. For example, `(?i)file.text`
     /// is invariant on Windows but is not on Unix. Variance is therefore
     /// platform dependent, as it is based on the behavior of file system APIs.
+    #[cfg(feature = "diagnostics-inspect")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
     fn variance(&self) -> Variance;
 }
 
@@ -426,71 +430,6 @@ impl<'b> From<&'b Path> for CandidatePath<'b> {
 impl<'b> From<&'b str> for CandidatePath<'b> {
     fn from(text: &'b str) -> Self {
         CandidatePath { text: text.into() }
-    }
-}
-
-/// Variance of a [`Pattern`].
-///
-/// The variance of a pattern describes the kinds of paths it can match with
-/// respect to the platform file system APIs. [`Pattern`]s are either variant or
-/// invariant.
-///
-/// [`Pattern`]: crate::Pattern
-/// [`Variance`]: crate::Variance
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum Variance {
-    /// A [`Pattern`] is invariant and equivalent to a native path.
-    ///
-    /// An invariant [`Pattern`] is equivalent to a native path and resolves the
-    /// same way as such a native path does when used with the platform's file
-    /// system APIs. These APIs may differ, so variance is platform dependent.
-    ///
-    /// Some non-literal expressions may be invariant, such as in the expression
-    /// `path/[t][o]/{file,file}.txt`, which is invariant on Unix (but not on
-    /// Windows, because the character class expressions do not consider
-    /// casing).
-    ///
-    /// [`Pattern`]: crate::Pattern
-    Invariant(
-        /// An equivalent native path that describes the invariant [`Pattern`].
-        /// For example, the invariant expression `path/to/file.txt` can be
-        /// described by the paths `path/to/file.txt` and `path\to\file.txt` on
-        /// Unix and Windows, respectively.
-        PathBuf,
-    ),
-    /// A [`Pattern`] is variant and resolves differently than any native path.
-    ///
-    /// Variant expressions may be formed from only literals or other seemingly
-    /// constant expressions. For example, the variance of literals considers
-    /// the case sensitivity of the platform's file system APIs, so the
-    /// expression `(?i)path/to/file.txt` is variant on Unix (but not on
-    /// Windows). Similarly, the expression `path/[t][o]/file.txt` is variant on
-    /// Windows (but not on Unix).
-    ///
-    /// [`Pattern`]: crate::Pattern
-    Variant,
-}
-
-impl Variance {
-    /// Returns `true` if invariant.
-    pub fn is_invariant(&self) -> bool {
-        matches!(self, Variance::Invariant(_))
-    }
-
-    /// Returns `true` if variant.
-    pub fn is_variant(&self) -> bool {
-        matches!(self, Variance::Variant)
-    }
-}
-
-impl From<token::Variance<InvariantText<'_>>> for Variance {
-    fn from(variance: token::Variance<InvariantText<'_>>) -> Self {
-        match variance {
-            token::Variance::Invariant(text) => {
-                Variance::Invariant(PathBuf::from(text.to_string().into_owned()))
-            },
-            token::Variance::Variant(_) => Variance::Variant,
-        }
     }
 }
 
@@ -905,6 +844,7 @@ impl<'t> Pattern<'t> for Glob<'t> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
 
+    #[cfg(feature = "diagnostics-inspect")]
     fn variance(&self) -> Variance {
         self.tokenized.variance().into()
     }
@@ -956,6 +896,7 @@ impl<'t> Pattern<'t> for Any<'t> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
 
+    #[cfg(feature = "diagnostics-inspect")]
     fn variance(&self) -> Variance {
         self.token.variance::<InvariantText>().into()
     }
@@ -2013,56 +1954,6 @@ mod tests {
 
         assert!(glob.is_match(Path::new("file.ext")));
         assert!(glob.is_match(Path::new("/root/file.ext").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn query_glob_variance() {
-        assert!(Glob::new("").unwrap().variance().is_invariant());
-        assert!(Glob::new("/a/file.ext").unwrap().variance().is_invariant());
-        assert!(Glob::new("/a/{file.ext}")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        assert!(Glob::new("{a/b/file.ext}")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        assert!(Glob::new("{a,a}").unwrap().variance().is_invariant());
-        #[cfg(windows)]
-        assert!(Glob::new("{a,A}").unwrap().variance().is_invariant());
-        assert!(Glob::new("<a/b:2>").unwrap().variance().is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a]/file.ext")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a-a]/file.ext")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a-aaa-a]/file.ext")
-            .unwrap()
-            .variance()
-            .is_invariant());
-
-        assert!(Glob::new("/a/{b,c}").unwrap().variance().is_variant());
-        assert!(Glob::new("<a/b:1,>").unwrap().variance().is_variant());
-        assert!(Glob::new("/[ab]/file.ext").unwrap().variance().is_variant());
-        assert!(Glob::new("**").unwrap().variance().is_variant());
-        assert!(Glob::new("/a/*.ext").unwrap().variance().is_variant());
-        assert!(Glob::new("/a/b*").unwrap().variance().is_variant());
-        #[cfg(unix)]
-        assert!(Glob::new("/a/(?i)file.ext")
-            .unwrap()
-            .variance()
-            .is_variant());
-        #[cfg(windows)]
-        assert!(Glob::new("/a/(?-i)file.ext")
-            .unwrap()
-            .variance()
-            .is_variant());
     }
 
     #[test]

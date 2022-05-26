@@ -62,6 +62,7 @@ impl<'t, A> Tokenized<'t, A> {
         &self.tokens
     }
 
+    #[cfg_attr(not(feature = "diagnostics-inspect"), allow(unused))]
     pub fn variance<T>(&self) -> Variance<T>
     where
         T: Invariance,
