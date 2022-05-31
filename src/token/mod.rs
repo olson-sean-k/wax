@@ -2,7 +2,6 @@ mod parse;
 mod variance;
 
 use itertools::Itertools as _;
-use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::mem;
@@ -869,7 +868,7 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct LiteralSequence<'i, 't>(SmallVec<[&'i Literal<'t>; 4]>);
+pub struct LiteralSequence<'i, 't>(Vec<&'i Literal<'t>>);
 
 impl<'i, 't> LiteralSequence<'i, 't> {
     pub fn literals(&self) -> &[&'i Literal<'t>] {
@@ -901,7 +900,7 @@ impl<'i, 't> LiteralSequence<'i, 't> {
 }
 
 #[derive(Debug)]
-pub struct Component<'i, 't, A = ()>(SmallVec<[&'i Token<'t, A>; 4]>);
+pub struct Component<'i, 't, A = ()>(Vec<&'i Token<'t, A>>);
 
 impl<'i, 't, A> Component<'i, 't, A> {
     pub fn tokens(&self) -> &[&'i Token<'t, A>] {
@@ -978,7 +977,7 @@ where
             first = tokens.next();
         }
         first.map(|first| match first.kind() {
-            TokenKind::Wildcard(Wildcard::Tree { .. }) => Component(smallvec![first]),
+            TokenKind::Wildcard(Wildcard::Tree { .. }) => Component(vec![first]),
             _ => Component(
                 Some(first)
                     .into_iter()
