@@ -663,7 +663,8 @@ impl<'g> Walk<'g> {
         patterns: impl IntoIterator<Item = P>,
     ) -> Result<impl 'g + FileIterator<Item = WalkItem<'static>>, BuildError>
     where
-        P: TryInto<Glob<'t>, Error = BuildError>,
+        BuildError: From<P::Error>,
+        P: TryInto<Glob<'t>>,
     {
         Negation::try_from_patterns(patterns)
             .map(|negation| self.filter_tree(move |entry| negation.target(entry)))
