@@ -38,7 +38,6 @@ diagnostics-report = [
 ]
 
 [dependencies]
-bstr = "^0.2.0"
 const_format = "^0.2.0"
 itertools = "^0.10.0"
 nom = "^7.0.0"

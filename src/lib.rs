@@ -38,7 +38,6 @@ mod rule;
 mod token;
 mod walk;
 
-use bstr::ByteVec;
 use itertools::{Itertools as _, Position};
 #[cfg(feature = "diagnostics-report")]
 use miette::Diagnostic;
@@ -474,10 +473,7 @@ impl Display for CandidatePath<'_> {
 impl<'b> From<&'b OsStr> for CandidatePath<'b> {
     fn from(text: &'b OsStr) -> Self {
         CandidatePath {
-            text: match Vec::from_os_str_lossy(text) {
-                Cow::Borrowed(bytes) => str::from_utf8(bytes).expect_encoding().into(),
-                Cow::Owned(bytes) => String::from_utf8(bytes).expect_encoding().into(),
-            },
+            text: text.to_string_lossy(),
         }
     }
 }

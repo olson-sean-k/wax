@@ -465,10 +465,9 @@ using matched text, see [Nym][nym].
 Globs operate exclusively on UTF-8 encoded text. However, this encoding is not
 used for paths on all platforms. Wax uses the [`CandidatePath`] type to
 re-encode native paths via lossy conversions that use Unicode replacement
-codepoints whenever a part of a path cannot be represented as valid UTF-8. On
-some platforms these conversions are always no-ops. In practice, most paths can
-be losslessly encoded in UTF-8, but this means that Wax cannot match some byte
-sequences.
+codepoints whenever a part of a path cannot be represented as valid UTF-8. In
+practice, most paths can be losslessly encoded in UTF-8, but this means that Wax
+cannot match nor capture some literal byte strings.
 
 ## Stability
 
