@@ -347,9 +347,9 @@ impl Negation {
     /// [`IntoIterator`]: std::iter::IntoIterator
     pub fn try_from_patterns<'t, P>(
         patterns: impl IntoIterator<Item = P>,
-    ) -> Result<Self, BuildError<'t>>
+    ) -> Result<Self, BuildError>
     where
-        BuildError<'t>: From<P::Error>,
+        BuildError: From<P::Error>,
         P: TryInto<Glob<'t>>,
     {
         // TODO: Inlining the code in this function causes E0271 in the call to
@@ -658,12 +658,12 @@ impl<'g> Walk<'g> {
     /// [`IteratorExt::filter_tree`]: crate::IteratorExt::filter_tree
     /// [`Negation`]: crate::Negation
     /// [`WalkEntry`]: crate::WalkEntry
-    pub fn not<'n, P>(
+    pub fn not<'t, P>(
         self,
         patterns: impl IntoIterator<Item = P>,
-    ) -> Result<impl 'g + FileIterator<Item = WalkItem<'static>>, BuildError<'n>>
+    ) -> Result<impl 'g + FileIterator<Item = WalkItem<'static>>, BuildError>
     where
-        P: TryInto<Glob<'n>, Error = BuildError<'n>>,
+        P: TryInto<Glob<'t>, Error = BuildError>,
     {
         Negation::try_from_patterns(patterns)
             .map(|negation| self.filter_tree(move |entry| negation.target(entry)))

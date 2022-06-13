@@ -265,7 +265,7 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 /// use std::path::Path;
 /// use wax::{Glob, GlobError};
 ///
-/// fn read_all(directory: impl AsRef<Path>) -> Result<Vec<u8>, GlobError<'static>> {
+/// fn read_all(directory: impl AsRef<Path>) -> Result<Vec<u8>, GlobError> {
 ///     let mut data = Vec::new();
 ///     let glob = Glob::new("**/*.data.bin")?;
 ///     for entry in glob.walk(directory) {
@@ -281,30 +281,20 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 #[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
 #[derive(Debug, Error)]
 #[error(transparent)]
-pub enum GlobError<'t> {
+pub enum GlobError {
     #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
-    Build(BuildError<'t>),
+    Build(BuildError),
     #[cfg_attr(feature = "diagnostics-report", diagnostic(code = "wax::glob::walk"))]
     Walk(WalkError),
 }
 
-impl<'t> GlobError<'t> {
-    /// Clones any borrowed data into an owning instance.
-    pub fn into_owned(self) -> GlobError<'static> {
-        match self {
-            GlobError::Build(error) => GlobError::Build(error.into_owned()),
-            GlobError::Walk(error) => GlobError::Walk(error),
-        }
-    }
-}
-
-impl<'t> From<BuildError<'t>> for GlobError<'t> {
-    fn from(error: BuildError<'t>) -> Self {
+impl From<BuildError> for GlobError {
+    fn from(error: BuildError) -> Self {
         GlobError::Build(error)
     }
 }
 
-impl From<WalkError> for GlobError<'_> {
+impl From<WalkError> for GlobError {
     fn from(error: WalkError) -> Self {
         GlobError::Walk(error)
     }
@@ -337,44 +327,17 @@ impl From<WalkError> for GlobError<'_> {
 #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
 #[derive(Debug, Error)]
 #[error(transparent)]
-pub struct BuildError<'t> {
-    kind: ErrorKind<'t>,
+pub struct BuildError {
+    kind: ErrorKind,
 }
 
-impl<'t> BuildError<'t> {
-    /// Clones any borrowed data into an owning instance.
-    ///
-    /// # Examples
-    ///
-    /// `BuildError` borrows data in the corresponding glob expression. To move a
-    /// `BuildError` beyond the scope of a glob expression, clone the data with
-    /// this function.
-    ///
-    /// ```rust
-    /// use wax::{BuildError, Glob};
-    ///
-    /// fn local() -> Result<(), BuildError<'static>> {
-    ///     let expression = String::from("*.txt");
-    ///     let glob = Glob::new(&expression).map_err(BuildError::into_owned)?;
-    ///     // ...
-    ///     Ok(())
-    /// }
-    /// ```
-    pub fn into_owned(self) -> BuildError<'static> {
-        let BuildError { kind } = self;
-        BuildError {
-            kind: kind.into_owned(),
-        }
-    }
-}
-
-impl<'t> From<ErrorKind<'t>> for BuildError<'t> {
-    fn from(kind: ErrorKind<'t>) -> Self {
+impl From<ErrorKind> for BuildError {
+    fn from(kind: ErrorKind) -> Self {
         BuildError { kind }
     }
 }
 
-impl From<CompileError> for BuildError<'_> {
+impl From<CompileError> for BuildError {
     fn from(error: CompileError) -> Self {
         BuildError {
             kind: ErrorKind::Compile(error),
@@ -382,24 +345,24 @@ impl From<CompileError> for BuildError<'_> {
     }
 }
 
-impl From<Infallible> for BuildError<'_> {
+impl From<Infallible> for BuildError {
     fn from(_: Infallible) -> Self {
         unreachable!()
     }
 }
 
-impl<'t> From<ParseError<'t>> for BuildError<'t> {
+impl<'t> From<ParseError<'t>> for BuildError {
     fn from(error: ParseError<'t>) -> Self {
         BuildError {
-            kind: ErrorKind::Parse(error),
+            kind: ErrorKind::Parse(error.into_owned()),
         }
     }
 }
 
-impl<'t> From<RuleError<'t>> for BuildError<'t> {
+impl<'t> From<RuleError<'t>> for BuildError {
     fn from(error: RuleError<'t>) -> Self {
         BuildError {
-            kind: ErrorKind::Rule(error),
+            kind: ErrorKind::Rule(error.into_owned()),
         }
     }
 }
@@ -407,26 +370,16 @@ impl<'t> From<RuleError<'t>> for BuildError<'t> {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 #[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
-enum ErrorKind<'t> {
+enum ErrorKind {
     #[error(transparent)]
     #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
     Compile(CompileError),
     #[error(transparent)]
     #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
-    Parse(ParseError<'t>),
+    Parse(ParseError<'static>),
     #[error(transparent)]
     #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
-    Rule(RuleError<'t>),
-}
-
-impl<'t> ErrorKind<'t> {
-    pub fn into_owned(self) -> ErrorKind<'static> {
-        match self {
-            ErrorKind::Compile(error) => ErrorKind::Compile(error),
-            ErrorKind::Parse(error) => ErrorKind::Parse(error.into_owned()),
-            ErrorKind::Rule(error) => ErrorKind::Rule(error.into_owned()),
-        }
-    }
+    Rule(RuleError<'static>),
 }
 
 /// Path that can be matched against a [`Pattern`].
@@ -564,7 +517,7 @@ impl<'t> Glob<'t> {
     ///
     /// [`Glob`]: crate::Glob
     /// [`BuildError`]: crate::BuildError
-    pub fn new(expression: &'t str) -> Result<Self, BuildError<'t>> {
+    pub fn new(expression: &'t str) -> Result<Self, BuildError> {
         let tokenized = parse_and_check(expression)?;
         let regex = Glob::compile(tokenized.tokens())?;
         Ok(Glob { tokenized, regex })
@@ -680,11 +633,9 @@ impl<'t> Glob<'t> {
     /// ```rust
     /// use wax::{BuildError, Glob};
     ///
-    /// fn local() -> Result<Glob<'static>, BuildError<'static>> {
+    /// fn local() -> Result<Glob<'static>, BuildError> {
     ///     let expression = String::from("**/*.txt");
-    ///     Glob::new(&expression)
-    ///         .map(Glob::into_owned)
-    ///         .map_err(BuildError::into_owned)
+    ///     Glob::new(&expression).map(Glob::into_owned)
     /// }
     /// ```
     pub fn into_owned(self) -> Glob<'static> {
@@ -873,12 +824,10 @@ impl<'t> Glob<'t> {
 }
 
 impl FromStr for Glob<'static> {
-    type Err = BuildError<'static>;
+    type Err = BuildError;
 
     fn from_str(expression: &str) -> Result<Self, Self::Err> {
-        Glob::new(expression)
-            .map(Glob::into_owned)
-            .map_err(BuildError::into_owned)
+        Glob::new(expression).map(Glob::into_owned)
     }
 }
 
@@ -908,7 +857,7 @@ impl<'t> Pattern<'t> for Glob<'t> {
 }
 
 impl<'t> TryFrom<&'t str> for Glob<'t> {
-    type Error = BuildError<'t>;
+    type Error = BuildError;
 
     fn try_from(expression: &'t str) -> Result<Self, Self::Error> {
         Glob::new(expression)
@@ -1000,7 +949,7 @@ impl<'t> Pattern<'t> for Any<'t> {
 /// ```rust
 /// use wax::{BuildError, Glob, Pattern};
 ///
-/// fn theirs() -> Result<Glob<'static>, BuildError<'static>> {
+/// fn theirs() -> Result<Glob<'static>, BuildError> {
 ///     /* ... */
 ///     # Glob::new("")
 /// }
@@ -1023,9 +972,9 @@ impl<'t> Pattern<'t> for Any<'t> {
 /// [`Glob`]: crate::Glob
 /// [`IntoIterator`]: std::iter::IntoIterator
 /// [`Pattern`]: crate::Pattern
-pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, BuildError<'t>>
+pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, BuildError>
 where
-    BuildError<'t>: From<<I::Item as TryInto<P>>::Error>,
+    BuildError: From<<I::Item as TryInto<P>>::Error>,
     P: Pattern<'t>,
     I: IntoIterator,
     I::Item: TryInto<P>,
@@ -1093,10 +1042,10 @@ pub fn is_match<'p>(
 /// [`Glob`]: crate::Glob
 /// [`Glob::matched`]: crate::Glob::matched
 /// [`BuildError`]: crate::BuildError
-pub fn matched<'i, 'p>(
-    expression: &'i str,
+pub fn matched<'t, 'p>(
+    expression: &'t str,
     path: &'p CandidatePath<'_>,
-) -> Result<Option<MatchedText<'p>>, BuildError<'i>> {
+) -> Result<Option<MatchedText<'p>>, BuildError> {
     let glob = Glob::new(expression)?;
     Ok(glob.matched(path))
 }
