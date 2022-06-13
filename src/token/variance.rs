@@ -90,7 +90,7 @@ pub trait CompositeDepth: Iterator + Sized {
     fn composite_depth(self) -> Boundedness;
 }
 
-impl<'t, I> CompositeDepth for I
+impl<I> CompositeDepth for I
 where
     I: Iterator,
     I::Item: UnitDepth,
@@ -121,7 +121,7 @@ pub trait CompositeBreadth: Iterator + Sized {
     fn composite_breadth(self) -> Boundedness;
 }
 
-impl<'t, I> CompositeBreadth for I
+impl<I> CompositeBreadth for I
 where
     I: Iterator,
     I::Item: UnitBreadth,
