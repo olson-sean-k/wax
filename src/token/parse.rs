@@ -13,7 +13,7 @@ mod supreme {
     pub use nom_supreme::tag::complete::tag;
 }
 
-#[cfg(feature = "diagnostics-report")]
+#[cfg(feature = "diagnostics")]
 use miette::{self, Diagnostic, LabeledSpan, SourceCode};
 use pori::{Located, Location, Stateful};
 use std::borrow::Cow;
@@ -21,21 +21,13 @@ use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 use thiserror::Error;
 
-#[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
-use crate::diagnostics::Span;
 use crate::token::{
     Alternative, Archetype, Class, Evaluation, Literal, Repetition, Separator, Token, TokenKind,
     Tokenized, Wildcard,
 };
-use crate::PATHS_ARE_CASE_INSENSITIVE;
+use crate::{Span, PATHS_ARE_CASE_INSENSITIVE};
 
-#[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 pub type Annotation = Span;
-#[cfg(all(
-    not(feature = "diagnostics-inspect"),
-    not(feature = "diagnostics-report"),
-))]
-pub type Annotation = ();
 
 type BaseErrorKind =
     supreme::BaseErrorKind<&'static str, Box<dyn std::error::Error + Send + Sync + 'static>>;
@@ -61,7 +53,7 @@ impl<'e, 'i> From<ErrorEntry<'e, Input<'i>>> for ErrorLocation {
     }
 }
 
-#[cfg(feature = "diagnostics-report")]
+#[cfg(feature = "diagnostics")]
 impl From<ErrorLocation> for LabeledSpan {
     fn from(location: ErrorLocation) -> Self {
         let ErrorLocation { location, context } = location;
@@ -181,7 +173,7 @@ impl<'i> ErrorTreeExt<Input<'i>> for ErrorTree<'i> {
 /// and repetition patterns with missing delimiters and ambiguous patterns, such
 /// as `src/***/*.rs` or `{.local,.config/**/*.toml`.
 ///
-/// When the `diagnostics-report` feature is enabled, this error implements the
+/// When the `diagnostics` feature is enabled, this error implements the
 /// [`Diagnostic`] trait and provides more detailed information about the parse
 /// failure.
 ///
@@ -234,8 +226,8 @@ impl<'t> ParseError<'t> {
     }
 }
 
-#[cfg(feature = "diagnostics-report")]
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+#[cfg(feature = "diagnostics")]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
 impl Diagnostic for ParseError<'_> {
     fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
         Some(Box::new("wax::glob::parse"))
@@ -595,7 +587,6 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     fn glob<'i>(
         terminator: impl 'i + Clone + Parser<Input<'i>, Input<'i>, ErrorTree<'i>>,
     ) -> impl Parser<Input<'i>, Vec<Token<'i, Annotation>>, ErrorTree<'i>> {
-        #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
         fn annotate<'i, F>(
             parser: F,
         ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
@@ -603,19 +594,6 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
             F: 'i + Parser<Input<'i>, TokenKind<'i, Annotation>, ErrorTree<'i>>,
         {
             combinator::map(pori::span(parser), |(span, kind)| Token::new(kind, span))
-        }
-
-        #[cfg(all(
-            not(feature = "diagnostics-inspect"),
-            not(feature = "diagnostics-report"),
-        ))]
-        fn annotate<'i, F>(
-            parser: F,
-        ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
-        where
-            F: 'i + Parser<Input<'i>, TokenKind<'i, Annotation>, ErrorTree<'i>>,
-        {
-            combinator::map(parser, |kind| Token::new(kind, ()))
         }
 
         move |mut input: Input<'i>| {

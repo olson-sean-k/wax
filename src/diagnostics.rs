@@ -1,4 +1,8 @@
-#![cfg(feature = "diagnostics-report")]
+#![cfg(feature = "diagnostics")]
+
+// TODO: Factor (most of) this module into a separate crate and depend on it
+//       optionally. This should reduce the noise in the API when diagnostic
+//       features are enabled.
 
 use miette::{Diagnostic, LabeledSpan, SourceSpan};
 use std::borrow::Cow;
@@ -20,7 +24,7 @@ pub type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
 ///
 /// [`Diagnostic`]: miette::Diagnostic
 /// [`DiagnosticResultExt`]: crate::DiagnosticResultExt
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
 pub type DiagnosticResult<'t, T> = Result<(T, Vec<BoxedDiagnostic<'t>>), Vec1<BoxedDiagnostic<'t>>>;
 
 pub trait IteratorExt<'t>: Iterator + Sized {
@@ -55,7 +59,7 @@ impl<'t, T, E> ResultExt<'t, T, E> for Result<T, E> {
 }
 
 /// Extension methods for `Result`s with diagnostics.
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
 pub trait DiagnosticResultExt<'t, T> {
     /// Converts from `DiagnosticResult<'_, T>` into `Option<T>`.
     ///
@@ -266,7 +270,7 @@ pub struct TerminatingSeparatorWarning<'t> {
     span: SourceSpan,
 }
 
-pub fn diagnostics<'i, 't>(
+pub fn diagnose<'i, 't>(
     tokenized: &'i Tokenized<'t>,
 ) -> impl 'i + Iterator<Item = BoxedDiagnostic<'t>> {
     None.into_iter()
@@ -296,7 +300,7 @@ pub fn diagnostics<'i, 't>(
         }))
 }
 
-// These tests use `Glob` APIs, which wrap functions in this module.
+// These tests exercise `Glob` APIs, which wrap functions in this module.
 #[cfg(test)]
 mod tests {
     use crate::Glob;
@@ -308,9 +312,9 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn report_glob_semantic_literal_warning() {
+    fn diagnose_glob_semantic_literal_warning() {
         let glob = Glob::new("../foo").unwrap();
-        let diagnostics: Vec<_> = glob.diagnostics().collect();
+        let diagnostics: Vec<_> = glob.diagnose().collect();
 
         assert!(diagnostics.iter().any(|diagnostic| diagnostic
             .code()
@@ -318,9 +322,9 @@ mod tests {
     }
 
     #[test]
-    fn report_glob_terminating_separator_warning() {
+    fn diagnose_glob_terminating_separator_warning() {
         let glob = Glob::new("**/foo/").unwrap();
-        let diagnostics: Vec<_> = glob.diagnostics().collect();
+        let diagnostics: Vec<_> = glob.diagnose().collect();
 
         assert!(diagnostics.iter().any(|diagnostic| diagnostic
             .code()

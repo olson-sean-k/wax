@@ -61,10 +61,6 @@ impl<'t, A> Tokenized<'t, A> {
         &self.tokens
     }
 
-    // This function is used to implement `diagnostic-inspect` features but is
-    // also used in tests. Rather than cover the complete configuration set,
-    // simply allow it to remain unused as part of the `Tokenized` API.
-    #[cfg_attr(not(feature = "diagnostics-inspect"), allow(unused))]
     pub fn variance<T>(&self) -> Variance<T>
     where
         T: Invariance,
@@ -263,7 +259,6 @@ impl<'t, A> TokenKind<'t, A> {
         )
     }
 
-    #[cfg(feature = "diagnostics-inspect")]
     pub fn is_capturing(&self) -> bool {
         use TokenKind::{Alternative, Class, Repetition, Wildcard};
 

@@ -1,10 +1,10 @@
 use const_format::formatcp;
 use itertools::{Itertools as _, Position};
-#[cfg(feature = "diagnostics-report")]
+#[cfg(feature = "diagnostics")]
 use miette::Diagnostic;
 use regex::{Error as RegexError, Regex};
 use std::borrow::{Borrow, Cow};
-#[cfg(feature = "diagnostics-report")]
+#[cfg(feature = "diagnostics")]
 use std::fmt::Display;
 use thiserror::Error;
 
@@ -73,8 +73,8 @@ enum ErrorKind {
     OversizedProgram,
 }
 
-#[cfg(feature = "diagnostics-report")]
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+#[cfg(feature = "diagnostics")]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
 impl Diagnostic for CompileError {
     fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
         Some(Box::new(String::from(match self.kind {

@@ -14,16 +14,16 @@
 //       perform an exhaustive analysis and report zero or more errors.
 
 use itertools::Itertools as _;
-#[cfg(feature = "diagnostics-report")]
+#[cfg(feature = "diagnostics")]
 use miette::{Diagnostic, LabeledSpan, SourceCode, SourceSpan};
 use std::borrow::Cow;
-#[cfg(feature = "diagnostics-report")]
+#[cfg(feature = "diagnostics")]
 use std::fmt::Display;
 use std::iter::Fuse;
 use thiserror::Error;
 
-#[cfg(feature = "diagnostics-report")]
-use crate::diagnostics::report::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
+#[cfg(feature = "diagnostics")]
+use crate::diagnostics::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
 use crate::token::{InvariantSize, Token, TokenKind, Tokenized};
 use crate::{SliceExt as _, Terminals};
 
@@ -146,7 +146,7 @@ where
 pub struct RuleError<'t> {
     expression: Cow<'t, str>,
     kind: ErrorKind,
-    #[cfg(feature = "diagnostics-report")]
+    #[cfg(feature = "diagnostics")]
     span: CompositeSourceSpan,
 }
 
@@ -154,12 +154,12 @@ impl<'t> RuleError<'t> {
     fn new(
         expression: Cow<'t, str>,
         kind: ErrorKind,
-        #[cfg(feature = "diagnostics-report")] span: CompositeSourceSpan,
+        #[cfg(feature = "diagnostics")] span: CompositeSourceSpan,
     ) -> Self {
         RuleError {
             expression,
             kind,
-            #[cfg(feature = "diagnostics-report")]
+            #[cfg(feature = "diagnostics")]
             span,
         }
     }
@@ -169,13 +169,13 @@ impl<'t> RuleError<'t> {
         let RuleError {
             expression,
             kind,
-            #[cfg(feature = "diagnostics-report")]
+            #[cfg(feature = "diagnostics")]
             span,
         } = self;
         RuleError {
             expression: expression.into_owned().into(),
             kind,
-            #[cfg(feature = "diagnostics-report")]
+            #[cfg(feature = "diagnostics")]
             span,
         }
     }
@@ -186,8 +186,8 @@ impl<'t> RuleError<'t> {
     }
 }
 
-#[cfg(feature = "diagnostics-report")]
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+#[cfg(feature = "diagnostics")]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
 impl Diagnostic for RuleError<'_> {
     fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
         Some(Box::new(String::from(match self.kind {
@@ -248,7 +248,7 @@ pub fn check<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 }
 
 fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
+    #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
     if let Some((left, right)) = tokenized
         .walk()
         .group_by(|(position, _)| *position)
@@ -267,7 +267,7 @@ fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         Err(RuleError::new(
             tokenized.expression().clone(),
             ErrorKind::AdjacentBoundary,
-            #[cfg(feature = "diagnostics-report")]
+            #[cfg(feature = "diagnostics")]
             CompositeSourceSpan::span(
                 Some("here"),
                 SourceSpan::from(left).union(&SourceSpan::from(right)),
@@ -286,16 +286,16 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 
     struct CorrelatedError {
         kind: ErrorKind,
-        #[cfg(feature = "diagnostics-report")]
+        #[cfg(feature = "diagnostics")]
         span: CorrelatedSourceSpan,
     }
 
     impl CorrelatedError {
-        #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
+        #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
         fn new(kind: ErrorKind, outer: Option<&Token>, inner: &Token) -> Self {
             CorrelatedError {
                 kind,
-                #[cfg(feature = "diagnostics-report")]
+                #[cfg(feature = "diagnostics")]
                 span: CorrelatedSourceSpan::split_some(
                     outer.map(Token::annotation).copied().map(From::from),
                     (*inner.annotation()).into(),
@@ -359,21 +359,21 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         // This is a somewhat unusual API, but it allows the lifetime `'t` of
         // the `Cow` to be properly forwarded to output values (`RuleError`).
         #[allow(clippy::ptr_arg)] expression: &'i Cow<'t, str>,
-        #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))] token: &'i Token<'t>,
-        #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))] label: &'static str,
+        #[cfg_attr(not(feature = "diagnostics"), allow(unused))] token: &'i Token<'t>,
+        #[cfg_attr(not(feature = "diagnostics"), allow(unused))] label: &'static str,
     ) -> impl 'i + Copy + Fn(CorrelatedError) -> RuleError<'t>
     where
         't: 'i,
     {
         move |CorrelatedError {
                   kind,
-                  #[cfg(feature = "diagnostics-report")]
+                  #[cfg(feature = "diagnostics")]
                   span,
               }| {
             RuleError::new(
                 expression.clone(),
                 kind,
-                #[cfg(feature = "diagnostics-report")]
+                #[cfg(feature = "diagnostics")]
                 CompositeSourceSpan::correlated(
                     Some(label),
                     SourceSpan::from(*token.annotation()),
@@ -608,7 +608,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 }
 
 fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
+    #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
     if let Some((_, token)) = tokenized.walk().find(|(_, token)| match token.kind() {
         TokenKind::Repetition(ref repetition) => {
             let (lower, upper) = repetition.bounds();
@@ -619,7 +619,7 @@ fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         Err(RuleError::new(
             tokenized.expression().clone(),
             ErrorKind::IncompatibleBounds,
-            #[cfg(feature = "diagnostics-report")]
+            #[cfg(feature = "diagnostics")]
             CompositeSourceSpan::span(Some("here"), (*token.annotation()).into()),
         ))
     }
@@ -629,7 +629,7 @@ fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 }
 
 fn size<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
+    #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
     if let Some((_, token)) = tokenized
         .walk()
         // TODO: This is expensive. For each token tree encountered, the
@@ -646,7 +646,7 @@ fn size<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         Err(RuleError::new(
             tokenized.expression().clone(),
             ErrorKind::OversizedInvariant,
-            #[cfg(feature = "diagnostics-report")]
+            #[cfg(feature = "diagnostics")]
             CompositeSourceSpan::span(Some("here"), (*token.annotation()).into()),
         ))
     }

@@ -333,12 +333,12 @@ Partitioning is unaffected in glob expressions with no flags.
 The [`GlobError`] type represents error conditions that can occur when building
 a pattern or walking a directory tree. [`GlobError`] and its sub-errors
 implement the standard [`Error`] and [`Display`] traits via
-[`thiserror`][thiserror], which express basic information about failures.
+[`thiserror`][thiserror].
 
-Wax optionally integrates with the [`miette`][miette] crate, which can be used
-to capture and display diagnostics. This can be useful for reporting errors to
-users that provide glob expressions. Diagnostic reporting, including warnings
-and help diagnostics, can be enabled with the `diagnostics-report` feature.
+Wax optionally integrates with the [`miette`][miette] crate via the
+`diagnostics` feature, which can be used to capture and display diagnostics.
+This can be useful for reporting errors to users that provide glob expressions.
+When enabled, error types implement the `Diagnostic` trait.
 
 ```
 Error: wax::glob::adjacent_zero_or_more
@@ -353,25 +353,23 @@ Error: wax::glob::adjacent_zero_or_more
    `----
 ```
 
-Wax also provides inspection APIs that allow code to query glob metadata.
-Diagnostic inspection can be enabled with the `diagnostics-inspect` feature.
+To enable this integration, the `diagnostics` feature can be enabled in a
+crate's `Cargo.toml` manifest.
+
+```toml
+[dependency.wax]
+version = "^0.x.0"
+features = ["diagnostics"]
+```
+
+Wax also provides inspection APIs that allow code to query glob metadata, such
+as captures and variance.
 
 ```rust
 use wax::Glob;
 
 let glob = Glob::new("videos/**/{*.{mp4,webm}}").unwrap();
 assert_eq!(2, glob.captures().count());
-```
-
-Diagnostics are disabled by default and can be enabled with the `diagnostics`
-meta-feature, which enables both the `diagnostics-inspect` and
-`diagnostics-report` features. This can be done via Cargo in a crate's
-`Cargo.toml` file.
-
-```toml
-[dependency.wax]
-version = "^0.0.0"
-features = ["diagnostics"]
 ```
 
 ## Unsupported Path Features
@@ -427,7 +425,7 @@ if dunce::canonicalize(path)
 
 Additionally, [`Glob::has_semantic_literals`] can be used to detect literal
 components in a glob that have special semantics on the target platform. When
-the `diagnostics-report` feature is enabled, such literals cause warnings.
+the `diagnostics` feature is enabled, such literals are reported as warnings.
 
 ```rust
 use wax::Glob;

@@ -39,7 +39,7 @@ mod token;
 mod walk;
 
 use itertools::{Itertools as _, Position};
-#[cfg(feature = "diagnostics-report")]
+#[cfg(feature = "diagnostics")]
 use miette::Diagnostic;
 use regex::Regex;
 use std::borrow::{Borrow, Cow};
@@ -50,23 +50,16 @@ use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
 use thiserror::Error;
 
-#[cfg(feature = "diagnostics-inspect")]
-use crate::diagnostics::inspect;
-#[cfg(feature = "diagnostics-report")]
-use crate::diagnostics::report::{self, IteratorExt as _, ResultExt as _};
+#[cfg(feature = "diagnostics")]
+use crate::diagnostics::{IteratorExt as _, ResultExt as _};
 use crate::encode::CompileError;
 use crate::rule::RuleError;
-#[cfg(feature = "diagnostics-inspect")]
 use crate::token::InvariantText;
 use crate::token::{Annotation, IntoTokens, ParseError, Token, Tokenized};
 
 pub use crate::capture::MatchedText;
-#[cfg(feature = "diagnostics-inspect")]
-pub use crate::diagnostics::inspect::{CapturingToken, Variance};
-#[cfg(feature = "diagnostics-report")]
-pub use crate::diagnostics::report::{DiagnosticResult, DiagnosticResultExt};
-#[cfg(feature = "diagnostics-inspect")]
-pub use crate::diagnostics::Span;
+#[cfg(feature = "diagnostics")]
+pub use crate::diagnostics::{DiagnosticResult, DiagnosticResultExt};
 pub use crate::walk::{
     FilterTarget, FilterTree, IteratorExt, LinkBehavior, Negation, Walk, WalkBehavior, WalkEntry,
     WalkError,
@@ -194,6 +187,134 @@ impl<T> Terminals<T> {
     }
 }
 
+/// Location and length of a token within a glob expression.
+///
+/// Spans are encoded as a tuple of `usize`s, where the first element is the
+/// location or position and the second element is the length.
+///
+/// # Examples
+///
+/// Spans can be used to isolate sub-expressions.
+///
+/// ```rust
+/// use wax::Glob;
+///
+/// let expression = "**/*.txt";
+/// let glob = Glob::new(expression).unwrap();
+/// for token in glob.captures() {
+///     let (start, n) = token.span();
+///     println!("capturing sub-expression: {}", &expression[start..][..n]);
+/// }
+/// ```
+pub type Span = (usize, usize);
+
+/// Token that captures matched text in a glob expression.
+///
+/// # Examples
+///
+/// `CapturingToken`s can be used to isolate sub-expressions.
+///
+/// ```rust
+/// use wax::Glob;
+///
+/// let expression = "**/*.txt";
+/// let glob = Glob::new(expression).unwrap();
+/// for token in glob.captures() {
+///     let (start, n) = token.span();
+///     println!("capturing sub-expression: {}", &expression[start..][..n]);
+/// }
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct CapturingToken {
+    index: usize,
+    span: Span,
+}
+
+impl CapturingToken {
+    /// Gets the index of the capture.
+    ///
+    /// Captures are one-indexed and the index zero always represents the
+    /// implicit capture of the complete match, so the index of
+    /// `CapturingToken`s is always one or greater. See [`MatchedText`].
+    ///
+    /// [`MatchedText`]: crate::MatchedText
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Gets the span of the token's sub-expression.
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+/// Variance of a [`Pattern`].
+///
+/// The variance of a pattern describes the kinds of paths it can match with
+/// respect to the platform file system APIs. [`Pattern`]s are either variant or
+/// invariant.
+///
+/// [`Pattern`]: crate::Pattern
+/// [`Variance`]: crate::Variance
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum Variance {
+    /// A [`Pattern`] is invariant and equivalent to a native path.
+    ///
+    /// An invariant [`Pattern`] is equivalent to a native path and resolves the
+    /// same way as such a native path does when used with the platform's file
+    /// system APIs. These APIs may differ, so variance is platform dependent.
+    ///
+    /// Some non-literal expressions may be invariant, such as in the expression
+    /// `path/[t][o]/{file,file}.txt`, which is invariant on Unix (but not on
+    /// Windows, because the character class expressions do not consider
+    /// casing).
+    ///
+    /// [`Pattern`]: crate::Pattern
+    Invariant(
+        /// An equivalent native path that describes the invariant [`Pattern`].
+        /// For example, the invariant expression `path/to/file.txt` can be
+        /// described by the paths `path/to/file.txt` and `path\to\file.txt` on
+        /// Unix and Windows, respectively.
+        ///
+        /// [`Pattern`]: crate::Pattern
+        PathBuf,
+    ),
+    /// A [`Pattern`] is variant and resolves differently than any native path.
+    ///
+    /// Variant expressions may be formed from only literals or other seemingly
+    /// constant expressions. For example, the variance of literals considers
+    /// the case sensitivity of the platform's file system APIs, so the
+    /// expression `(?i)path/to/file.txt` is variant on Unix (but not on
+    /// Windows). Similarly, the expression `path/[t][o]/file.txt` is variant on
+    /// Windows (but not on Unix).
+    ///
+    /// [`Pattern`]: crate::Pattern
+    Variant,
+}
+
+impl Variance {
+    /// Returns `true` if invariant.
+    pub fn is_invariant(&self) -> bool {
+        matches!(self, Variance::Invariant(_))
+    }
+
+    /// Returns `true` if variant.
+    pub fn is_variant(&self) -> bool {
+        matches!(self, Variance::Variant)
+    }
+}
+
+impl From<token::Variance<InvariantText<'_>>> for Variance {
+    fn from(variance: token::Variance<InvariantText<'_>>) -> Self {
+        match variance {
+            token::Variance::Invariant(text) => {
+                Variance::Invariant(PathBuf::from(text.to_string().into_owned()))
+            },
+            token::Variance::Variant(_) => Variance::Variant,
+        }
+    }
+}
+
 /// A representation of a glob expression that can be matched against paths.
 ///
 /// Matching is a logical operation and does **not** interact with a file
@@ -238,8 +359,6 @@ pub trait Pattern<'t>: IntoTokens<'t> {
     /// flags and the case sensitivity of literals. For example, `(?i)file.text`
     /// is invariant on Windows but is not on Unix. Variance is therefore
     /// platform dependent, as it is based on the behavior of file system APIs.
-    #[cfg(feature = "diagnostics-inspect")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
     fn variance(&self) -> Variance;
 }
 
@@ -252,7 +371,7 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 /// This error is not used in any Wax APIs directly, but can be used to
 /// encapsulate the more specific errors that are.
 ///
-/// When the `diagnostics-report` feature is enabled, this and other error types
+/// When the `diagnostics` feature is enabled, this and other error types
 /// implement the [`Diagnostic`] trait. Due to a technical limitation, this may
 /// not be properly annotated in API documentation.
 ///
@@ -278,13 +397,13 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 ///
 /// [`Diagnostic`]: miette::Diagnostic
 /// [`Pattern`]: crate::Pattern
-#[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
+#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub enum GlobError {
-    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
     Build(BuildError),
-    #[cfg_attr(feature = "diagnostics-report", diagnostic(code = "wax::glob::walk"))]
+    #[cfg_attr(feature = "diagnostics", diagnostic(code = "wax::glob::walk"))]
     Walk(WalkError),
 }
 
@@ -317,14 +436,14 @@ impl From<WalkError> for GlobError {
 /// large** (all other compilation errors are considered internal bugs and will
 /// panic).
 ///
-/// When the `diagnostics-report` feature is enabled, this and other error types
+/// When the `diagnostics` feature is enabled, this and other error types
 /// implement the [`Diagnostic`] trait. Due to a technical limitation, this may
 /// not be properly annotated in API documentation.
 ///
 /// [`Diagnostic`]: miette::Diagnostic
 /// [`Pattern`]: crate::Pattern
-#[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
-#[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
+#[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub struct BuildError {
@@ -369,16 +488,16 @@ impl<'t> From<RuleError<'t>> for BuildError {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-#[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
+#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
 enum ErrorKind {
     #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
     Compile(CompileError),
     #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
     Parse(ParseError<'static>),
     #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
     Rule(RuleError<'static>),
 }
 
@@ -545,8 +664,8 @@ impl<'t> Glob<'t> {
     /// [`Glob`]: crate::Glob
     /// [`Glob::diagnostics`]: crate::Glob::diagnostics
     /// [`Glob::new`]: crate::Glob::new
-    #[cfg(feature = "diagnostics-report")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+    #[cfg(feature = "diagnostics")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
     pub fn diagnosed(expression: &'t str) -> DiagnosticResult<'t, Self> {
         parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
             Glob::compile(tokenized.tokens())
@@ -761,7 +880,7 @@ impl<'t> Glob<'t> {
         walk::walk(self, directory, behavior)
     }
 
-    /// Gets non-error [`Diagnostic`]s.
+    /// Gets **non-error** [`Diagnostic`]s.
     ///
     /// This function requires a receiving [`Glob`] and so does not report
     /// error-level [`Diagnostic`]s. It can be used to get non-error diagnostics
@@ -773,10 +892,10 @@ impl<'t> Glob<'t> {
     /// [`Glob`]: crate::Glob
     /// [`Glob::diagnosed`]: crate::Glob::diagnosed
     /// [`Glob::partition`]: crate::Glob::partition
-    #[cfg(feature = "diagnostics-report")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-    pub fn diagnostics(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
-        report::diagnostics(&self.tokenized)
+    #[cfg(feature = "diagnostics")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
+    pub fn diagnose(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
+        diagnostics::diagnose(&self.tokenized)
     }
 
     /// Gets metadata for capturing sub-expressions.
@@ -788,10 +907,16 @@ impl<'t> Glob<'t> {
     /// captures.
     ///
     /// [`MatchedText`]: crate::MatchedText
-    #[cfg(feature = "diagnostics-inspect")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
     pub fn captures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
-        inspect::captures(self.tokenized.tokens())
+        self.tokenized
+            .tokens()
+            .iter()
+            .filter(|token| token.is_capturing())
+            .enumerate()
+            .map(|(index, token)| CapturingToken {
+                index: index + 1,
+                span: *token.annotation(),
+            })
     }
 
     /// Returns `true` if the glob has a root.
@@ -850,7 +975,6 @@ impl<'t> Pattern<'t> for Glob<'t> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
 
-    #[cfg(feature = "diagnostics-inspect")]
     fn variance(&self) -> Variance {
         self.tokenized.variance().into()
     }
@@ -902,7 +1026,6 @@ impl<'t> Pattern<'t> for Any<'t> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
 
-    #[cfg(feature = "diagnostics-inspect")]
     fn variance(&self) -> Variance {
         self.token.variance::<InvariantText>().into()
     }
@@ -1203,7 +1326,7 @@ fn parse_and_check(expression: &str) -> Result<Tokenized, BuildError> {
     Ok(tokenized)
 }
 
-#[cfg(feature = "diagnostics-report")]
+#[cfg(feature = "diagnostics")]
 fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
     token::parse(expression)
         .into_error_diagnostic()
@@ -1213,7 +1336,7 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
                 .map_value(|_| tokenized)
         })
         .and_then_diagnose(|tokenized| {
-            report::diagnostics(&tokenized)
+            diagnostics::diagnose(&tokenized)
                 .into_non_error_diagnostic()
                 .map_value(|_| tokenized)
         })
@@ -2005,5 +2128,69 @@ mod tests {
         assert!(Glob::new("<a/..>").unwrap().has_semantic_literals());
         assert!(Glob::new("<a/{b,..,c}/d>").unwrap().has_semantic_literals());
         assert!(Glob::new("./*.txt").unwrap().has_semantic_literals());
+    }
+
+    #[test]
+    fn query_glob_capture_indices() {
+        let glob = Glob::new("**/{foo*,bar*}/???").unwrap();
+        let indices: Vec<_> = glob.captures().map(|token| token.index()).collect();
+        assert_eq!(&indices, &[1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn query_glob_capture_spans() {
+        let glob = Glob::new("**/{foo*,bar*}/$").unwrap();
+        let spans: Vec<_> = glob.captures().map(|token| token.span()).collect();
+        assert_eq!(&spans, &[(0, 3), (3, 11), (15, 1)]);
+    }
+
+    #[test]
+    fn query_glob_variance() {
+        assert!(Glob::new("").unwrap().variance().is_invariant());
+        assert!(Glob::new("/a/file.ext").unwrap().variance().is_invariant());
+        assert!(Glob::new("/a/{file.ext}")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        assert!(Glob::new("{a/b/file.ext}")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        assert!(Glob::new("{a,a}").unwrap().variance().is_invariant());
+        #[cfg(windows)]
+        assert!(Glob::new("{a,A}").unwrap().variance().is_invariant());
+        assert!(Glob::new("<a/b:2>").unwrap().variance().is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a]/file.ext")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a-a]/file.ext")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a-aaa-a]/file.ext")
+            .unwrap()
+            .variance()
+            .is_invariant());
+
+        assert!(Glob::new("/a/{b,c}").unwrap().variance().is_variant());
+        assert!(Glob::new("<a/b:1,>").unwrap().variance().is_variant());
+        assert!(Glob::new("/[ab]/file.ext").unwrap().variance().is_variant());
+        assert!(Glob::new("**").unwrap().variance().is_variant());
+        assert!(Glob::new("/a/*.ext").unwrap().variance().is_variant());
+        assert!(Glob::new("/a/b*").unwrap().variance().is_variant());
+        #[cfg(unix)]
+        assert!(Glob::new("/a/(?i)file.ext")
+            .unwrap()
+            .variance()
+            .is_variant());
+        #[cfg(windows)]
+        assert!(Glob::new("/a/(?-i)file.ext")
+            .unwrap()
+            .variance()
+            .is_variant());
     }
 }
