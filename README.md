@@ -36,7 +36,7 @@ let matched = glob.matched(&path).unwrap();
 assert_eq!("main.go", matched.get(2).unwrap());
 ```
 
-Match files in a directory tree against a glob:
+Match a directory tree against a glob:
 
 ```rust
 use wax::Glob;
@@ -48,7 +48,7 @@ for entry in glob.walk("doc") {
 }
 ```
 
-Match files in a directory tree against a glob with negations:
+Match a directory tree against a glob with negations:
 
 ```rust
 use wax::{Glob, LinkBehavior};
@@ -335,10 +335,10 @@ a pattern or walking a directory tree. [`GlobError`] and its sub-errors
 implement the standard [`Error`] and [`Display`] traits via
 [`thiserror`][thiserror].
 
-Wax optionally integrates with the [`miette`][miette] crate via the
-`diagnostics` feature, which can be used to capture and display diagnostics.
-This can be useful for reporting errors to users that provide glob expressions.
-When enabled, error types implement the `Diagnostic` trait.
+Wax optionally integrates with the [`miette`][miette] crate, which can be used
+to capture and display diagnostics. This can be useful for reporting errors to
+users that provide glob expressions. When enabled, error types implement the
+`Diagnostic` trait.
 
 ```
 Error: wax::glob::adjacent_zero_or_more
@@ -353,15 +353,6 @@ Error: wax::glob::adjacent_zero_or_more
    `----
 ```
 
-To enable this integration, the `diagnostics` feature can be enabled in a
-crate's `Cargo.toml` manifest.
-
-```toml
-[dependency.wax]
-version = "^0.x.0"
-features = ["diagnostics"]
-```
-
 Wax also provides inspection APIs that allow code to query glob metadata, such
 as captures and variance.
 
@@ -370,6 +361,28 @@ use wax::Glob;
 
 let glob = Glob::new("videos/**/{*.{mp4,webm}}").unwrap();
 assert_eq!(2, glob.captures().count());
+```
+
+## Cargo Features
+
+Wax provides some optional integrations and features that can be toggled via
+the Cargo features described below.
+
+| Feature       | Default | Dependencies     |
+|---------------|---------|------------------|
+| `diagnostics` | No      | `miette`, `vec1` |
+| `walk`        | Yes     | `walkdir`        |
+
+Features can be configured in a crate's `Cargo.toml` manifest.
+
+```toml
+[dependency.wax]
+version = "^0.x.0"
+default-features = false
+features = [
+    "diagnostics",
+    "walk"
+]
 ```
 
 ## Unsupported Path Features

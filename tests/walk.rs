@@ -1,3 +1,5 @@
+#![cfg(feature = "walk")]
+
 use build_fs_tree::{dir, file, Build, FileSystemTree};
 use std::collections::HashSet;
 use std::path::PathBuf;

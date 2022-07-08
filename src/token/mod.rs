@@ -932,6 +932,7 @@ impl<'i, 't, A> Component<'i, 't, A> {
         self.0.iter().copied().conjunctive_variance()
     }
 
+    #[cfg(feature = "walk")]
     pub fn depth(&self) -> Boundedness {
         self.0.iter().copied().composite_depth()
     }

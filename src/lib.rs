@@ -60,6 +60,7 @@ use crate::token::{Annotation, IntoTokens, ParseError, Token, Tokenized};
 pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics")]
 pub use crate::diagnostics::{DiagnosticResult, DiagnosticResultExt};
+#[cfg(feature = "walk")]
 pub use crate::walk::{
     FilterTarget, FilterTree, IteratorExt, LinkBehavior, Negation, Walk, WalkBehavior, WalkEntry,
     WalkError,
@@ -380,7 +381,7 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 /// To encapsulate different errors in the Wax API behind a function, convert
 /// them into a `GlobError` via `?`.
 ///
-/// ```rust
+/// ```rust,no_run,ignore
 /// use std::path::Path;
 /// use wax::{Glob, GlobError};
 ///
@@ -403,6 +404,7 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 pub enum GlobError {
     #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
     Build(BuildError),
+    #[cfg(feature = "walk")]
     #[cfg_attr(feature = "diagnostics", diagnostic(code = "wax::glob::walk"))]
     Walk(WalkError),
 }
@@ -413,6 +415,7 @@ impl From<BuildError> for GlobError {
     }
 }
 
+#[cfg(feature = "walk")]
 impl From<WalkError> for GlobError {
     fn from(error: WalkError) -> Self {
         GlobError::Walk(error)
@@ -595,7 +598,7 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 /// To match a `Glob` against a directory tree, the [`walk`] function can be
 /// used to get an iterator over matching paths.
 ///
-/// ```rust,no_run
+/// ```rust,no_run,ignore
 /// use wax::Glob;
 ///
 /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
@@ -827,6 +830,8 @@ impl<'t> Glob<'t> {
     /// [`Pattern`]: crate::Pattern
     /// [`WalkBehavior`]: crate::WalkBehavior
     /// [`WalkEntry`]: crate::WalkEntry
+    #[cfg(feature = "walk")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
     pub fn walk(&self, directory: impl AsRef<Path>) -> Walk {
         self.walk_with_behavior(directory, WalkBehavior::default())
     }
@@ -872,6 +877,8 @@ impl<'t> Glob<'t> {
     /// [`LinkBehavior`]: crate::LinkBehavior
     /// [`Walk::root`]: crate::Walk::root
     /// [`WalkBehavior`]: crate::WalkBehavior
+    #[cfg(feature = "walk")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
     pub fn walk_with_behavior(
         &self,
         directory: impl AsRef<Path>,
@@ -1196,6 +1203,8 @@ pub fn matched<'t, 'p>(
 /// [`Glob`]: crate::Glob
 /// [`BuildError`]: crate::BuildError
 /// [`WalkEntry`]: crate::WalkEntry
+#[cfg(feature = "walk")]
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 pub fn walk(expression: &str, directory: impl AsRef<Path>) -> Result<Walk<'static>, BuildError> {
     walk_with_behavior(expression, directory, WalkBehavior::default())
 }
@@ -1225,6 +1234,8 @@ pub fn walk(expression: &str, directory: impl AsRef<Path>) -> Result<Walk<'stati
 /// [`BuildError`]: crate::BuildError
 /// [`walk`]: crate::walk()
 /// [`WalkBehavior`]: crate::WalkBehavior
+#[cfg(feature = "walk")]
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 pub fn walk_with_behavior(
     expression: &str,
     directory: impl AsRef<Path>,

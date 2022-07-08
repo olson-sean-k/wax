@@ -1,3 +1,5 @@
+#![cfg(feature = "walk")]
+
 use itertools::Itertools as _;
 use regex::Regex;
 use std::borrow::Cow;
@@ -21,6 +23,7 @@ pub type WalkItem<'e> = Result<WalkEntry<'e>, WalkError>;
 ///
 /// [`Glob`]: crate::Glob
 /// [`io::Error`]: std::io::Error
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[derive(Debug, Error)]
 #[error("failed to match directory tree: {kind}")]
 pub struct WalkError {
@@ -217,6 +220,7 @@ macro_rules! walk {
 ///
 /// [`Glob`]: crate::Glob
 /// [`Iterator`]: std::iter::Iterator
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 pub trait IteratorExt: Iterator + Sized {
     /// Filters items and determines the traversal of directory trees in
     /// `FileIterator`s such as [`Walk`].
@@ -327,6 +331,7 @@ impl FileIterator for walkdir::IntoIter {
 /// [`FilterTree`]: crate::FilterTree
 /// [`Pattern`]: crate::Pattern
 /// [`WalkEntry`]: crate::WalkEntry
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[derive(Clone, Debug)]
 pub struct Negation {
     terminal: Regex,
@@ -413,6 +418,7 @@ impl Negation {
 /// read as regular files and their targets are ignored.**
 ///
 /// [`Glob::walk`]: crate::Glob::walk
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[derive(Clone, Copy, Debug)]
 pub enum LinkBehavior {
     /// Read the symbolic link file itself.
@@ -469,6 +475,7 @@ impl Default for LinkBehavior {
 ///
 /// [`Glob`]: crate::Glob
 /// [`Glob::walk`]: crate::Glob::walk
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[derive(Clone, Copy, Debug)]
 pub struct WalkBehavior {
     // TODO: Consider using a dedicated type for this field. Using primitive
@@ -551,6 +558,7 @@ impl From<usize> for WalkBehavior {
 /// [`IteratorExt::filter_tree`]: crate::IteratorExt::filter_tree
 #[derive(Debug)]
 // This type is principally an iterator and is therefore lazy.
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[must_use]
 pub struct Walk<'g> {
     pattern: Cow<'g, Regex>,
@@ -708,6 +716,7 @@ impl FileIterator for Walk<'_> {
 /// Describes how files are read and discarded by [`FilterTree`].
 ///
 /// [`FilterTree`]: crate::FilterTree
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum FilterTarget {
     /// Discard the file.
@@ -750,6 +759,7 @@ pub enum FilterTarget {
 ///
 /// [`IteratorExt::filter_tree`]: crate::IteratorExt::filter_tree
 /// [`WalkEntry`]: crate::WalkEntry
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[derive(Clone, Debug)]
 pub struct FilterTree<I, F> {
     input: I,
@@ -802,6 +812,7 @@ where
 /// Describes a file matching a [`Glob`] in a directory tree.
 ///
 /// [`Glob`]: crate::Glob
+#[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[derive(Debug)]
 pub struct WalkEntry<'e> {
     entry: Cow<'e, DirEntry>,
