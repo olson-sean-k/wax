@@ -48,18 +48,16 @@ use std::ffi::OsStr;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
+#[cfg(feature = "diagnostics")]
+use tardar::{DiagnosticResult, DiagnosticResultExt as _, IteratorExt as _, ResultExt as _};
 use thiserror::Error;
 
-#[cfg(feature = "diagnostics")]
-use crate::diagnostics::{IteratorExt as _, ResultExt as _};
 use crate::encode::CompileError;
 use crate::rule::RuleError;
 use crate::token::InvariantText;
 use crate::token::{Annotation, IntoTokens, ParseError, Token, Tokenized};
 
 pub use crate::capture::MatchedText;
-#[cfg(feature = "diagnostics")]
-pub use crate::diagnostics::{DiagnosticResult, DiagnosticResultExt};
 #[cfg(feature = "walk")]
 pub use crate::walk::{
     FilterTarget, FilterTree, IteratorExt, LinkBehavior, Negation, Walk, WalkBehavior, WalkEntry,
@@ -655,13 +653,14 @@ impl<'t> Glob<'t> {
     /// # Examples
     ///
     /// ```rust
-    /// use wax::{DiagnosticResultExt as _, Glob};
+    /// use tardar::DiagnosticResultExt as _;
+    /// use wax::Glob;
     ///
     /// let result = Glob::diagnosed("(?i)readme.{md,mkd,markdown}");
     /// for diagnostic in result.diagnostics() {
     ///     eprintln!("{}", diagnostic);
     /// }
-    /// if let Some(glob) = result.ok_value() { /* ... */ }
+    /// if let Some(glob) = result.ok_output() { /* ... */ }
     /// ```
     ///
     /// [`Glob`]: crate::Glob
@@ -673,7 +672,7 @@ impl<'t> Glob<'t> {
         parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
             Glob::compile(tokenized.tokens())
                 .into_error_diagnostic()
-                .map_value(|regex| Glob { tokenized, regex })
+                .map_output(|regex| Glob { tokenized, regex })
         })
     }
 
@@ -1344,12 +1343,12 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
         .and_then_diagnose(|tokenized| {
             rule::check(&tokenized)
                 .into_error_diagnostic()
-                .map_value(|_| tokenized)
+                .map_output(|_| tokenized)
         })
         .and_then_diagnose(|tokenized| {
             diagnostics::diagnose(&tokenized)
                 .into_non_error_diagnostic()
-                .map_value(|_| tokenized)
+                .map_output(|_| tokenized)
         })
 }
 

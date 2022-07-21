@@ -368,10 +368,10 @@ assert_eq!(2, glob.captures().count());
 Wax provides some optional integrations and features that can be toggled via
 the Cargo features described below.
 
-| Feature       | Default | Dependencies     |
-|---------------|---------|------------------|
-| `diagnostics` | No      | `miette`, `vec1` |
-| `walk`        | Yes     | `walkdir`        |
+| Feature       | Default | Dependencies       | Description                                                                   |
+|---------------|---------|--------------------|-------------------------------------------------------------------------------|
+| `diagnostics` | No      | `miette`, `tardar` | Integrates with `miette` and provides `Diagnostic` error types and reporting. |
+| `walk`        | Yes     | `walkdir`          | Provides APIs for matching globs against directory trees.                     |
 
 Features can be configured in a crate's `Cargo.toml` manifest.
 
