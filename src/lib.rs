@@ -69,19 +69,6 @@ const PATHS_ARE_CASE_INSENSITIVE: bool = true;
 #[cfg(not(windows))]
 const PATHS_ARE_CASE_INSENSITIVE: bool = false;
 
-trait ResultExt<T, E> {
-    fn expect_encoding(self) -> T;
-}
-
-impl<T, E> ResultExt<T, E> for Result<T, E>
-where
-    E: Debug,
-{
-    fn expect_encoding(self) -> T {
-        self.expect("unexpected encoding")
-    }
-}
-
 trait CharExt: Sized {
     /// Returns `true` if the character (code point) has casing.
     fn has_casing(self) -> bool;
