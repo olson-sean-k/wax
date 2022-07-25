@@ -15,7 +15,7 @@
 
 use itertools::Itertools as _;
 #[cfg(feature = "diagnostics")]
-use miette::{Diagnostic, LabeledSpan, SourceCode, SourceSpan};
+use miette::{Diagnostic, LabeledSpan, SourceCode};
 use std::borrow::Cow;
 #[cfg(feature = "diagnostics")]
 use std::fmt::Display;
@@ -23,7 +23,7 @@ use std::iter::Fuse;
 use thiserror::Error;
 
 #[cfg(feature = "diagnostics")]
-use crate::diagnostics::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
+use crate::diagnostics::{CompositeSpan, CorrelatedSpan, SpanExt as _};
 use crate::token::{InvariantSize, Token, TokenKind, Tokenized};
 use crate::{SliceExt as _, Terminals};
 
@@ -147,14 +147,14 @@ pub struct RuleError<'t> {
     expression: Cow<'t, str>,
     kind: ErrorKind,
     #[cfg(feature = "diagnostics")]
-    span: CompositeSourceSpan,
+    span: CompositeSpan,
 }
 
 impl<'t> RuleError<'t> {
     fn new(
         expression: Cow<'t, str>,
         kind: ErrorKind,
-        #[cfg(feature = "diagnostics")] span: CompositeSourceSpan,
+        #[cfg(feature = "diagnostics")] span: CompositeSpan,
     ) -> Self {
         RuleError {
             expression,
@@ -268,10 +268,7 @@ fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             tokenized.expression().clone(),
             ErrorKind::AdjacentBoundary,
             #[cfg(feature = "diagnostics")]
-            CompositeSourceSpan::span(
-                Some("here"),
-                SourceSpan::from(left).union(&SourceSpan::from(right)),
-            ),
+            CompositeSpan::span(Some("here"), left.union(&right)),
         ))
     }
     else {
@@ -287,7 +284,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     struct CorrelatedError {
         kind: ErrorKind,
         #[cfg(feature = "diagnostics")]
-        span: CorrelatedSourceSpan,
+        span: CorrelatedSpan,
     }
 
     impl CorrelatedError {
@@ -296,9 +293,9 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             CorrelatedError {
                 kind,
                 #[cfg(feature = "diagnostics")]
-                span: CorrelatedSourceSpan::split_some(
+                span: CorrelatedSpan::split_some(
                     outer.map(Token::annotation).copied().map(From::from),
-                    (*inner.annotation()).into(),
+                    *inner.annotation(),
                 ),
             }
         }
@@ -374,11 +371,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 expression.clone(),
                 kind,
                 #[cfg(feature = "diagnostics")]
-                CompositeSourceSpan::correlated(
-                    Some(label),
-                    SourceSpan::from(*token.annotation()),
-                    span,
-                ),
+                CompositeSpan::correlated(Some(label), *token.annotation(), span),
             )
         }
     }
@@ -620,7 +613,7 @@ fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             tokenized.expression().clone(),
             ErrorKind::IncompatibleBounds,
             #[cfg(feature = "diagnostics")]
-            CompositeSourceSpan::span(Some("here"), (*token.annotation()).into()),
+            CompositeSpan::span(Some("here"), *token.annotation()),
         ))
     }
     else {
@@ -647,7 +640,7 @@ fn size<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             tokenized.expression().clone(),
             ErrorKind::OversizedInvariant,
             #[cfg(feature = "diagnostics")]
-            CompositeSourceSpan::span(Some("here"), (*token.annotation()).into()),
+            CompositeSpan::span(Some("here"), *token.annotation()),
         ))
     }
     else {

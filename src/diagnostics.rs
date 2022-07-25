@@ -7,39 +7,36 @@ use tardar::BoxedDiagnostic;
 use thiserror::Error;
 
 use crate::token::{self, TokenKind, Tokenized};
+use crate::Span;
 
-pub trait SourceSpanExt {
-    fn union(&self, other: &SourceSpan) -> SourceSpan;
+pub trait SpanExt {
+    fn union(&self, other: &Self) -> Self;
 }
 
-impl SourceSpanExt for SourceSpan {
-    fn union(&self, other: &SourceSpan) -> SourceSpan {
-        let start = cmp::min(self.offset(), other.offset());
-        let end = cmp::max(self.offset() + self.len(), other.offset() + other.len());
-        (start, end - start).into()
+impl SpanExt for Span {
+    fn union(&self, other: &Self) -> Self {
+        let start = cmp::min(self.0, other.0);
+        let end = cmp::max(self.0 + self.1, other.0 + other.1);
+        (start, end - start)
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct CompositeSourceSpan {
+#[derive(Clone, Copy, Debug)]
+pub struct CompositeSpan {
     label: Option<&'static str>,
     kind: CompositeKind,
 }
 
-impl CompositeSourceSpan {
-    pub fn span(label: Option<&'static str>, span: SourceSpan) -> Self {
-        CompositeSourceSpan {
+impl CompositeSpan {
+    pub fn span(label: Option<&'static str>, span: Span) -> Self {
+        CompositeSpan {
             label,
             kind: CompositeKind::Span(span),
         }
     }
 
-    pub fn correlated(
-        label: Option<&'static str>,
-        span: SourceSpan,
-        correlated: CorrelatedSourceSpan,
-    ) -> Self {
-        CompositeSourceSpan {
+    pub fn correlated(label: Option<&'static str>, span: Span, correlated: CorrelatedSpan) -> Self {
+        CompositeSpan {
             label,
             kind: CompositeKind::Correlated { span, correlated },
         }
@@ -61,38 +58,38 @@ impl CompositeSourceSpan {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 enum CompositeKind {
-    Span(SourceSpan),
+    Span(Span),
     Correlated {
-        span: SourceSpan,
-        correlated: CorrelatedSourceSpan,
+        span: Span,
+        correlated: CorrelatedSpan,
     },
 }
 
-#[derive(Clone, Debug)]
-pub enum CorrelatedSourceSpan {
-    Contiguous(SourceSpan),
-    Split(SourceSpan, SourceSpan),
+#[derive(Clone, Copy, Debug)]
+pub enum CorrelatedSpan {
+    Contiguous(Span),
+    Split(Span, Span),
 }
 
-impl CorrelatedSourceSpan {
-    pub fn split_some(left: Option<SourceSpan>, right: SourceSpan) -> Self {
+impl CorrelatedSpan {
+    pub fn split_some(left: Option<Span>, right: Span) -> Self {
         if let Some(left) = left {
-            CorrelatedSourceSpan::Split(left, right)
+            CorrelatedSpan::Split(left, right)
         }
         else {
-            CorrelatedSourceSpan::Contiguous(right)
+            CorrelatedSpan::Contiguous(right)
         }
     }
 
     pub fn labels(&self) -> Vec<LabeledSpan> {
         let label = Some("here".to_string());
         match self {
-            CorrelatedSourceSpan::Contiguous(ref span) => {
+            CorrelatedSpan::Contiguous(ref span) => {
                 vec![LabeledSpan::new_with_span(label, *span)]
             },
-            CorrelatedSourceSpan::Split(ref left, ref right) => vec![
+            CorrelatedSpan::Split(ref left, ref right) => vec![
                 LabeledSpan::new_with_span(label.clone(), *left),
                 LabeledSpan::new_with_span(label, *right),
             ],
@@ -100,9 +97,9 @@ impl CorrelatedSourceSpan {
     }
 }
 
-impl From<SourceSpan> for CorrelatedSourceSpan {
-    fn from(span: SourceSpan) -> Self {
-        CorrelatedSourceSpan::Contiguous(span)
+impl From<Span> for CorrelatedSpan {
+    fn from(span: Span) -> Self {
+        CorrelatedSpan::Contiguous(span)
     }
 }
 
@@ -141,8 +138,9 @@ pub fn diagnose<'i, 't>(
                         span: component
                             .tokens()
                             .iter()
-                            .map(|token| SourceSpan::from(*token.annotation()))
+                            .map(|token| *token.annotation())
                             .reduce(|left, right| left.union(&right))
+                            .map(SourceSpan::from)
                             .expect("no tokens in component"),
                     }) as BoxedDiagnostic
                 }),
