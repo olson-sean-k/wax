@@ -635,7 +635,7 @@ impl<'t> Glob<'t> {
     /// This function is the same as [`Glob::new`], but additionally returns
     /// detailed diagnostics on both success and failure.
     ///
-    /// See [`Glob::diagnostics`].
+    /// See [`Glob::diagnose`].
     ///
     /// # Examples
     ///
@@ -651,7 +651,7 @@ impl<'t> Glob<'t> {
     /// ```
     ///
     /// [`Glob`]: crate::Glob
-    /// [`Glob::diagnostics`]: crate::Glob::diagnostics
+    /// [`Glob::diagnose`]: crate::Glob::diagnose
     /// [`Glob::new`]: crate::Glob::new
     #[cfg(feature = "diagnostics")]
     #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
