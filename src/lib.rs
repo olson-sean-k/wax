@@ -176,7 +176,8 @@ impl<T> Terminals<T> {
 /// Location and length of a token within a glob expression.
 ///
 /// Spans are encoded as a tuple of `usize`s, where the first element is the
-/// location or position and the second element is the length.
+/// location or position and the second element is the length. Both position and
+/// length are measured in bytes and **not** code points, graphemes, etc.
 ///
 /// # Examples
 ///
@@ -938,6 +939,12 @@ impl<'t> Glob<'t> {
     /// [`Glob::partition`]: crate::Glob::partition
     pub fn has_semantic_literals(&self) -> bool {
         token::literals(self.tokenized.tokens()).any(|(_, literal)| literal.is_semantic_literal())
+    }
+}
+
+impl Display for Glob<'_> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", self.tokenized.expression())
     }
 }
 
@@ -2097,6 +2104,43 @@ mod tests {
 
         assert!(glob.is_match(Path::new("file.ext")));
         assert!(glob.is_match(Path::new("/root/file.ext").strip_prefix(prefix).unwrap()));
+    }
+
+    #[test]
+    fn partition_glob_with_invariant_expression_text() {
+        let (prefix, glob) = Glob::new("/root/file.ext").unwrap().partition();
+        assert_eq!(prefix, Path::new("/root/file.ext"));
+        assert_eq!(format!("{}", glob), "");
+
+        let (prefix, glob) = Glob::new("<a:3>/file.ext").unwrap().partition();
+        assert_eq!(prefix, Path::new("aaa/file.ext"));
+        assert_eq!(format!("{}", glob), "");
+    }
+
+    #[test]
+    fn partition_glob_with_variant_expression_text() {
+        let (prefix, glob) = Glob::new("**/file.ext").unwrap().partition();
+        assert_eq!(prefix, Path::new(""));
+        assert_eq!(format!("{}", glob), "**/file.ext");
+
+        let (prefix, glob) = Glob::new("/root/**/file.ext").unwrap().partition();
+        assert_eq!(prefix, Path::new("/root"));
+        assert_eq!(format!("{}", glob), "**/file.ext");
+
+        let (prefix, glob) = Glob::new("/root/**").unwrap().partition();
+        assert_eq!(prefix, Path::new("/root"));
+        assert_eq!(format!("{}", glob), "**");
+    }
+
+    #[test]
+    fn repartition_glob_with_variant_tokens() {
+        let (prefix, glob) = Glob::new("/root/**/file.ext").unwrap().partition();
+        assert_eq!(prefix, Path::new("/root"));
+        assert_eq!(format!("{}", glob), "**/file.ext");
+
+        let (prefix, glob) = glob.partition();
+        assert_eq!(prefix, Path::new(""));
+        assert_eq!(format!("{}", glob), "**/file.ext");
     }
 
     #[test]

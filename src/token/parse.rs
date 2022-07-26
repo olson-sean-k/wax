@@ -38,6 +38,8 @@ type Input<'i> = Stateful<Expression<'i>, ParserState>;
 type ErrorTree<'i> = supreme::ErrorTree<Input<'i>>;
 type ErrorMode<'t> = nom::Err<ErrorTree<'t>>;
 
+pub const ROOT_SEPARATOR_EXPRESSION: &str = "/";
+
 #[derive(Clone, Debug)]
 struct ErrorLocation {
     location: usize,

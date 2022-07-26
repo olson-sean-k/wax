@@ -3,10 +3,12 @@ mod variance;
 
 use itertools::Itertools as _;
 use std::borrow::Cow;
+use std::cmp;
 use std::collections::VecDeque;
 use std::mem;
 use std::ops::Deref;
 use std::path::{PathBuf, MAIN_SEPARATOR};
+use std::str;
 
 use crate::token::variance::{
     CompositeBreadth, CompositeDepth, ConjunctiveVariance, DisjunctiveVariance, IntoInvariantText,
@@ -14,7 +16,7 @@ use crate::token::variance::{
 };
 use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
 
-pub use crate::token::parse::{parse, Annotation, ParseError};
+pub use crate::token::parse::{parse, Annotation, ParseError, ROOT_SEPARATOR_EXPRESSION};
 pub use crate::token::variance::{
     invariant_text_prefix, Boundedness, InvariantSize, InvariantText, Variance,
 };
@@ -40,19 +42,6 @@ impl<'t, A> Tokenized<'t, A> {
         }
     }
 
-    pub fn partition(mut self) -> (PathBuf, Self) {
-        // Get the invariant prefix for the token sequence.
-        let prefix = variance::invariant_text_prefix(self.tokens.iter()).into();
-
-        // Drain invariant tokens from the beginning of the token sequence and
-        // unroot any tokens at the beginning of the sequence (tree wildcards).
-        self.tokens
-            .drain(0..variance::invariant_text_prefix_upper_bound(&self.tokens));
-        self.tokens.first_mut().map(Token::unroot);
-
-        (prefix, self)
-    }
-
     pub fn expression(&self) -> &Cow<'t, str> {
         &self.expression
     }
@@ -71,6 +60,57 @@ impl<'t, A> Tokenized<'t, A> {
 
     pub fn walk(&self) -> Walk<'_, 't, A> {
         Walk::from(&self.tokens)
+    }
+}
+
+impl<'t> Tokenized<'t, Annotation> {
+    pub fn partition(self) -> (PathBuf, Self) {
+        fn pop_expression_bytes(expression: &str, n: usize) -> &str {
+            let n = cmp::min(expression.len(), n);
+            str::from_utf8(&expression.as_bytes()[n..])
+                .expect("span offset split UTF-8 byte sequence")
+        }
+
+        let Tokenized {
+            expression,
+            mut tokens,
+        } = self;
+
+        // Get the invariant prefix and its upper bound for the token sequence.
+        let prefix = variance::invariant_text_prefix(tokens.iter()).into();
+        let n = variance::invariant_text_prefix_upper_bound(&tokens);
+        let mut offset: usize = tokens
+            .iter()
+            .take(n)
+            .map(|token| token.annotation().1)
+            .sum();
+
+        // Drain invariant tokens from the beginning of the token sequence and
+        // unroot any tokens at the beginning of the variant sequence (tree
+        // wildcards). Finally, translate spans and discard the corresponding
+        // invariant bytes in the expression.
+        tokens.drain(0..n);
+        if tokens.first_mut().map_or(false, Token::unroot) {
+            // TODO: The relationship between roots, the unrooting operation,
+            //       and the span in an expression that represents such a root
+            //       (if any) is not captured by these APIs very well. Perhaps
+            //       `unroot` should do more here?
+            // Pop additional bytes for the root separator expression if the
+            // initial token has lost a root.
+            offset += ROOT_SEPARATOR_EXPRESSION.len();
+        }
+        for token in tokens.iter_mut() {
+            let start = token.annotation().0.saturating_sub(offset);
+            token.annotation.0 = start;
+        }
+        let expression = match expression {
+            Cow::Borrowed(expression) => pop_expression_bytes(expression, offset).into(),
+            Cow::Owned(expression) => {
+                String::from(pop_expression_bytes(&expression, offset)).into()
+            },
+        };
+
+        (prefix, Tokenized { expression, tokens })
     }
 }
 
