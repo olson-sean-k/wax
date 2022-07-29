@@ -36,7 +36,6 @@ walk = ["walkdir"]
 const_format = "^0.2.0"
 itertools = "^0.10.0"
 nom = "^7.0.0"
-nom-supreme = "^0.8.0"
 pori = "=0.0.0"
 thiserror = "^1.0.0"
 
