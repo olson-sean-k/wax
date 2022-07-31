@@ -368,10 +368,10 @@ assert_eq!(2, glob.captures().count());
 Wax provides some optional integrations and features that can be toggled via
 the Cargo features described below.
 
-| Feature       | Default | Dependencies       | Description                                                                   |
-|---------------|---------|--------------------|-------------------------------------------------------------------------------|
-| `diagnostics` | No      | `miette`, `tardar` | Integrates with `miette` and provides `Diagnostic` error types and reporting. |
-| `walk`        | Yes     | `walkdir`          | Provides APIs for matching globs against directory trees.                     |
+| Feature  | Default | Dependencies       | Description                                                                   |
+|----------|---------|--------------------|-------------------------------------------------------------------------------|
+| `miette` | No      | `miette`, `tardar` | Integrates with `miette` and provides `Diagnostic` error types and reporting. |
+| `walk`   | Yes     | `walkdir`          | Provides APIs for matching globs against directory trees.                     |
 
 Features can be configured in a crate's `Cargo.toml` manifest.
 
@@ -380,7 +380,7 @@ Features can be configured in a crate's `Cargo.toml` manifest.
 version = "^0.x.0"
 default-features = false
 features = [
-    "diagnostics",
+    "miette",
     "walk"
 ]
 ```
@@ -438,7 +438,7 @@ if dunce::canonicalize(path)
 
 Additionally, [`Glob::has_semantic_literals`] can be used to detect literal
 components in a glob that have special semantics on the target platform. When
-the `diagnostics` feature is enabled, such literals are reported as warnings.
+the `miette` feature is enabled, such literals are reported as warnings.
 
 ```rust
 use wax::Glob;

@@ -6,7 +6,7 @@ description = "Opinionated and portable globs that can be matched against paths 
 repository = "https://github.com/olson-sean-k/wax"
 readme = "README.md"
 edition = "2021"
-rust-version = "1.56.1"
+rust-version = "1.60.0"
 license = "MIT"
 keywords = [
     "glob",
@@ -25,12 +25,12 @@ rustdoc-args = [
 [features]
 default = ["walk"]
 # Integrates with `miette` and provides `Diagnostic` error types and reporting.
-diagnostics = [
-    "miette",
-    "tardar",
+miette = [
+    "dep:miette",
+    "dep:tardar",
 ]
 # Provides APIs for matching globs against directory trees.
-walk = ["walkdir"]
+walk = ["dep:walkdir"]
 
 [dependencies]
 const_format = "^0.2.0"

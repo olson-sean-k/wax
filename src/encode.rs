@@ -1,10 +1,10 @@
 use const_format::formatcp;
 use itertools::{Itertools as _, Position};
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "miette")]
 use miette::Diagnostic;
 use regex::{Error as RegexError, Regex};
 use std::borrow::{Borrow, Cow};
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "miette")]
 use std::fmt::Display;
 use thiserror::Error;
 
@@ -63,22 +63,22 @@ macro_rules! nsepexpr {
 #[derive(Clone, Debug, Error)]
 #[error("failed to compile glob: {kind}")]
 pub struct CompileError {
-    kind: ErrorKind,
+    kind: CompileErrorKind,
 }
 
 #[derive(Clone, Copy, Debug, Error)]
 #[non_exhaustive]
-enum ErrorKind {
+enum CompileErrorKind {
     #[error("oversized program")]
     OversizedProgram,
 }
 
-#[cfg(feature = "diagnostics")]
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
+#[cfg(feature = "miette")]
+#[cfg_attr(docsrs, doc(cfg(feature = "miette")))]
 impl Diagnostic for CompileError {
     fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
         Some(Box::new(String::from(match self.kind {
-            ErrorKind::OversizedProgram => "wax::glob::oversized_program",
+            CompileErrorKind::OversizedProgram => "wax::glob::oversized_program",
         })))
     }
 }
@@ -144,7 +144,7 @@ where
     pattern.push('$');
     Regex::new(&pattern).map_err(|error| match error {
         RegexError::CompiledTooBig(_) => CompileError {
-            kind: ErrorKind::OversizedProgram,
+            kind: CompileErrorKind::OversizedProgram,
         },
         _ => panic!("failed to compile glob"),
     })

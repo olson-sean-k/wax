@@ -28,7 +28,7 @@ pub type WalkItem<'e> = Result<WalkEntry<'e>, WalkError>;
 #[error("failed to match directory tree: {kind}")]
 pub struct WalkError {
     depth: usize,
-    kind: ErrorKind,
+    kind: WalkErrorKind,
 }
 
 impl WalkError {
@@ -55,7 +55,7 @@ impl From<walkdir::Error> for WalkError {
         if error.io_error().is_some() {
             WalkError {
                 depth,
-                kind: ErrorKind::Io {
+                kind: WalkErrorKind::Io {
                     path,
                     error: error.into_io_error().expect("incongruent error kind"),
                 },
@@ -64,7 +64,7 @@ impl From<walkdir::Error> for WalkError {
         else {
             WalkError {
                 depth,
-                kind: ErrorKind::LinkCycle {
+                kind: WalkErrorKind::LinkCycle {
                     root: error
                         .loop_ancestor()
                         .expect("incongruent error kind")
@@ -79,7 +79,7 @@ impl From<walkdir::Error> for WalkError {
 impl From<WalkError> for io::Error {
     fn from(error: WalkError) -> Self {
         let kind = match error.kind {
-            ErrorKind::Io { ref error, .. } => error.kind(),
+            WalkErrorKind::Io { ref error, .. } => error.kind(),
             _ => io::ErrorKind::Other,
         };
         io::Error::new(kind, error)
@@ -88,7 +88,7 @@ impl From<WalkError> for io::Error {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-enum ErrorKind {
+enum WalkErrorKind {
     #[error("failed to read file at `{path:?}`: {error}")]
     Io {
         path: Option<PathBuf>,
@@ -98,11 +98,11 @@ enum ErrorKind {
     LinkCycle { root: PathBuf, leaf: PathBuf },
 }
 
-impl ErrorKind {
+impl WalkErrorKind {
     pub fn path(&self) -> Option<&Path> {
         match self {
-            ErrorKind::Io { ref path, .. } => path.as_ref().map(PathBuf::as_ref),
-            ErrorKind::LinkCycle { ref leaf, .. } => Some(leaf.as_ref()),
+            WalkErrorKind::Io { ref path, .. } => path.as_ref().map(PathBuf::as_ref),
+            WalkErrorKind::LinkCycle { ref leaf, .. } => Some(leaf.as_ref()),
         }
     }
 }

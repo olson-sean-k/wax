@@ -1,65 +1,89 @@
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "miette")]
 use miette::{self, Diagnostic, LabeledSpan, SourceCode};
+use nom::error::{VerboseError as NomError, VerboseErrorKind as NomErrorKind};
 use pori::{Located, Location, Stateful};
 use std::borrow::Cow;
-#[cfg(feature = "diagnostics")]
-use std::fmt::Display;
+use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 use thiserror::Error;
 
+use crate::diagnostics::{LocatedError, Span};
 use crate::token::{
     Alternative, Archetype, Class, Evaluation, Literal, Repetition, Separator, Token, TokenKind,
     Tokenized, Wildcard,
 };
-use crate::{Span, PATHS_ARE_CASE_INSENSITIVE};
+use crate::PATHS_ARE_CASE_INSENSITIVE;
 
 pub type Annotation = Span;
 
 type Expression<'i> = Located<'i, str>;
 type Input<'i> = Stateful<Expression<'i>, ParserState>;
-type ErrorEntry<'i> = (Input<'i>, nom::error::VerboseErrorKind);
-type ErrorStack<'i> = nom::error::VerboseError<Input<'i>>;
+type ErrorStack<'i> = NomError<Input<'i>>;
 type ErrorMode<'i> = nom::Err<ErrorStack<'i>>;
 
 pub const ROOT_SEPARATOR_EXPRESSION: &str = "/";
 
 #[derive(Clone, Debug)]
-struct LocatedError {
+pub struct ErrorEntry<'t> {
+    fragment: Cow<'t, str>,
     location: usize,
-    description: String,
+    kind: NomErrorKind,
 }
 
-impl From<ErrorEntry<'_>> for LocatedError {
-    fn from(entry: ErrorEntry<'_>) -> Self {
-        use nom::error::VerboseErrorKind as ErrorKind;
-
-        let (input, kind) = entry;
-        LocatedError {
-            location: input.location(),
-            description: match kind {
-                ErrorKind::Char(expectation) => {
-                    if let Some(actuality) = input.chars().next() {
-                        format!("expected `{}`, got `{}`", expectation, actuality)
-                    }
-                    else {
-                        format!("expected `{}`, got end of input", expectation)
-                    }
-                },
-                ErrorKind::Context(context) => format!("in parser context `{}`", context),
-                ErrorKind::Nom(parser) => format!("in sub-parser `{:?}`", parser),
-            },
+impl<'t> ErrorEntry<'t> {
+    pub fn into_owned(self) -> ErrorEntry<'static> {
+        let ErrorEntry {
+            fragment,
+            location,
+            kind,
+        } = self;
+        ErrorEntry {
+            fragment: fragment.into_owned().into(),
+            location,
+            kind,
         }
     }
 }
 
-#[cfg(feature = "diagnostics")]
-impl From<LocatedError> for LabeledSpan {
-    fn from(error: LocatedError) -> Self {
-        let LocatedError {
+impl<'t> From<(Input<'t>, NomErrorKind)> for ErrorEntry<'t> {
+    fn from((input, kind): (Input<'t>, NomErrorKind)) -> Self {
+        let location = input.location();
+        ErrorEntry {
+            fragment: input.into_data().into(),
             location,
-            description,
-        } = error;
-        LabeledSpan::new(Some(description), location, 1)
+            kind,
+        }
+    }
+}
+
+#[cfg(feature = "miette")]
+impl From<ErrorEntry<'_>> for LabeledSpan {
+    fn from(error: ErrorEntry<'_>) -> Self {
+        let span = error.span();
+        LabeledSpan::new_with_span(Some(format!("{}", error)), span)
+    }
+}
+
+impl Display for ErrorEntry<'_> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self.kind {
+            NomErrorKind::Char(expected) => {
+                if let Some(got) = self.fragment.chars().next() {
+                    write!(f, "expected `{}`, got `{}`", expected, got)
+                }
+                else {
+                    write!(f, "expected `{}`, got end of input", expected)
+                }
+            },
+            NomErrorKind::Context(context) => write!(f, "in context `{}`", context),
+            NomErrorKind::Nom(parser) => write!(f, "in sub-parser `{:?}`", parser),
+        }
+    }
+}
+
+impl LocatedError for ErrorEntry<'_> {
+    fn span(&self) -> Span {
+        (self.location, 1)
     }
 }
 
@@ -69,7 +93,7 @@ impl From<LocatedError> for LabeledSpan {
 /// and repetition patterns with missing delimiters and ambiguous patterns, such
 /// as `src/***/*.rs` or `{.local,.config/**/*.toml`.
 ///
-/// When the `diagnostics` feature is enabled, this error implements the
+/// When the `miette` feature is enabled, this error implements the
 /// [`Diagnostic`] trait and provides more detailed information about the parse
 /// failure.
 ///
@@ -78,7 +102,7 @@ impl From<LocatedError> for LabeledSpan {
 #[error("failed to parse glob expression")]
 pub struct ParseError<'t> {
     expression: Cow<'t, str>,
-    errors: Vec<LocatedError>,
+    locations: Vec<ErrorEntry<'t>>,
 }
 
 impl<'t> ParseError<'t> {
@@ -89,18 +113,25 @@ impl<'t> ParseError<'t> {
             },
             ErrorMode::Error(stack) | ErrorMode::Failure(stack) => ParseError {
                 expression: expression.into(),
-                errors: stack.errors.into_iter().map(From::from).collect(),
+                locations: stack.errors.into_iter().map(From::from).collect(),
             },
         }
     }
 
     /// Clones any borrowed data into an owning instance.
     pub fn into_owned(self) -> ParseError<'static> {
-        let ParseError { expression, errors } = self;
+        let ParseError {
+            expression,
+            locations,
+        } = self;
         ParseError {
             expression: expression.into_owned().into(),
-            errors,
+            locations: locations.into_iter().map(ErrorEntry::into_owned).collect(),
         }
+    }
+
+    pub fn locations(&self) -> &[ErrorEntry<'t>] {
+        &self.locations
     }
 
     /// Gets the glob expression that failed to parse.
@@ -109,8 +140,8 @@ impl<'t> ParseError<'t> {
     }
 }
 
-#[cfg(feature = "diagnostics")]
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
+#[cfg(feature = "miette")]
+#[cfg_attr(docsrs, doc(cfg(feature = "miette")))]
 impl Diagnostic for ParseError<'_> {
     fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
         Some(Box::new("wax::glob::parse"))
@@ -121,7 +152,7 @@ impl Diagnostic for ParseError<'_> {
     }
 
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
-        Some(Box::new(self.errors.iter().cloned().map(From::from)))
+        Some(Box::new(self.locations.iter().cloned().map(From::from)))
     }
 }
 
@@ -152,7 +183,7 @@ enum FlagToggle {
 pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     use nom::bytes::complete as bytes;
     use nom::character::complete as character;
-    use nom::error::{self, VerboseErrorKind};
+    use nom::error;
     use nom::{branch, combinator, multi, sequence, IResult, Parser};
 
     use crate::token::parse::FlagToggle::CaseInsensitive;
@@ -165,7 +196,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
         }
         else {
             Err(ErrorMode::Error(ErrorStack {
-                errors: vec![(input, VerboseErrorKind::Context("beginning of expression"))],
+                errors: vec![(input, NomErrorKind::Context("beginning of expression"))],
             }))
         }
     }

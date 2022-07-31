@@ -39,7 +39,7 @@ mod token;
 mod walk;
 
 use itertools::{Itertools as _, Position};
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "miette")]
 use miette::Diagnostic;
 use regex::Regex;
 use std::borrow::{Borrow, Cow};
@@ -48,16 +48,16 @@ use std::ffi::OsStr;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "miette")]
 use tardar::{DiagnosticResult, DiagnosticResultExt as _, IteratorExt as _, ResultExt as _};
 use thiserror::Error;
 
 use crate::encode::CompileError;
 use crate::rule::RuleError;
-use crate::token::InvariantText;
-use crate::token::{Annotation, IntoTokens, ParseError, Token, Tokenized};
+use crate::token::{Annotation, IntoTokens, InvariantText, ParseError, Token, Tokenized};
 
 pub use crate::capture::MatchedText;
+pub use crate::diagnostics::{LocatedError, Span};
 #[cfg(feature = "walk")]
 pub use crate::walk::{
     FilterTarget, FilterTree, IteratorExt, LinkBehavior, Negation, Walk, WalkBehavior, WalkEntry,
@@ -173,28 +173,6 @@ impl<T> Terminals<T> {
     }
 }
 
-/// Location and length of a token within a glob expression.
-///
-/// Spans are encoded as a tuple of `usize`s, where the first element is the
-/// location or position and the second element is the length. Both position and
-/// length are measured in bytes and **not** code points, graphemes, etc.
-///
-/// # Examples
-///
-/// Spans can be used to isolate sub-expressions.
-///
-/// ```rust
-/// use wax::Glob;
-///
-/// let expression = "**/*.txt";
-/// let glob = Glob::new(expression).unwrap();
-/// for token in glob.captures() {
-///     let (start, n) = token.span();
-///     println!("capturing sub-expression: {}", &expression[start..][..n]);
-/// }
-/// ```
-pub type Span = (usize, usize);
-
 /// Token that captures matched text in a glob expression.
 ///
 /// # Examples
@@ -235,6 +213,9 @@ impl CapturingToken {
     }
 }
 
+// This type is similar to `token::Variance<InvariantText<'_>>`, but is
+// simplified for the public API. Invariant text is always expressed as a path
+// and no variant bounds are provided.
 /// Variance of a [`Pattern`].
 ///
 /// The variance of a pattern describes the kinds of paths it can match with
@@ -358,9 +339,9 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 /// This error is not used in any Wax APIs directly, but can be used to
 /// encapsulate the more specific errors that are.
 ///
-/// When the `diagnostics` feature is enabled, this and other error types
-/// implement the [`Diagnostic`] trait. Due to a technical limitation, this may
-/// not be properly annotated in API documentation.
+/// When the `miette` feature is enabled, this and other error types implement
+/// the [`Diagnostic`] trait. Due to a technical limitation, this may not be
+/// properly annotated in API documentation.
 ///
 /// # Examples
 ///
@@ -384,14 +365,14 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 ///
 /// [`Diagnostic`]: miette::Diagnostic
 /// [`Pattern`]: crate::Pattern
-#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
+#[cfg_attr(feature = "miette", derive(Diagnostic))]
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub enum GlobError {
-    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
+    #[cfg_attr(feature = "miette", diagnostic(transparent))]
     Build(BuildError),
     #[cfg(feature = "walk")]
-    #[cfg_attr(feature = "diagnostics", diagnostic(code = "wax::glob::walk"))]
+    #[cfg_attr(feature = "miette", diagnostic(code = "wax::glob::walk"))]
     Walk(WalkError),
 }
 
@@ -425,22 +406,80 @@ impl From<WalkError> for GlobError {
 /// large** (all other compilation errors are considered internal bugs and will
 /// panic).
 ///
-/// When the `diagnostics` feature is enabled, this and other error types
-/// implement the [`Diagnostic`] trait. Due to a technical limitation, this may
-/// not be properly annotated in API documentation.
+/// When the `miette` feature is enabled, this and other error types implement
+/// the [`Diagnostic`] trait. Due to a technical limitation, this may not be
+/// properly annotated in API documentation.
 ///
 /// [`Diagnostic`]: miette::Diagnostic
 /// [`Pattern`]: crate::Pattern
-#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
-#[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
+#[cfg_attr(feature = "miette", derive(Diagnostic))]
+#[cfg_attr(feature = "miette", diagnostic(transparent))]
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub struct BuildError {
-    kind: ErrorKind,
+    kind: BuildErrorKind,
 }
 
-impl From<ErrorKind> for BuildError {
-    fn from(kind: ErrorKind) -> Self {
+impl BuildError {
+    /// Gets [`LocatedError`]s detailing the errors within a glob expression.
+    ///
+    /// This function returns an [`Iterator`] over the [`LocatedError`]s that
+    /// detail where and why an error occurred when the error has associated
+    /// [`Span`]s within a glob expression. For errors with no such associated
+    /// information, the [`Iterator`] yields no items, such as compilation
+    /// errors.
+    ///
+    /// # Examples
+    ///
+    /// [`LocatedError`]s can be used to provide information to users about
+    /// which parts of a glob expression are associated with an error.
+    ///
+    /// ```rust
+    /// use wax::Glob;
+    ///
+    /// // This glob expression violates rules. The error handling code prints details
+    /// // about the alternative where the violation occurred.
+    /// let expression = "**/{foo,**/bar,baz}";
+    /// match Glob::new(expression) {
+    ///     Ok(glob) => {
+    ///         // ...
+    ///     },
+    ///     Err(error) => {
+    ///         eprintln!("{}", error);
+    ///         for error in error.locations() {
+    ///             let (start, n) = error.span();
+    ///             let fragment = &expression[start..][..n];
+    ///             eprintln!("in sub-expression `{}`: {}", fragment, error);
+    ///         }
+    ///     },
+    /// }
+    /// ```
+    ///
+    /// [`Glob`]: crate::Glob
+    /// [`Glob::partition`]: crate::Glob::partition
+    /// [`Iterator`]: std::iter::Iterator
+    /// [`LocatedError`]: crate::LocatedError
+    /// [`Span`]: crate::Span
+    pub fn locations(&self) -> impl Iterator<Item = &dyn LocatedError> {
+        let locations: Vec<_> = match self.kind {
+            BuildErrorKind::Parse(ref error) => error
+                .locations()
+                .iter()
+                .map(|location| location as &dyn LocatedError)
+                .collect(),
+            BuildErrorKind::Rule(ref error) => error
+                .locations()
+                .iter()
+                .map(|location| location as &dyn LocatedError)
+                .collect(),
+            _ => vec![],
+        };
+        locations.into_iter()
+    }
+}
+
+impl From<BuildErrorKind> for BuildError {
+    fn from(kind: BuildErrorKind) -> Self {
         BuildError { kind }
     }
 }
@@ -448,7 +487,7 @@ impl From<ErrorKind> for BuildError {
 impl From<CompileError> for BuildError {
     fn from(error: CompileError) -> Self {
         BuildError {
-            kind: ErrorKind::Compile(error),
+            kind: BuildErrorKind::Compile(error),
         }
     }
 }
@@ -462,7 +501,7 @@ impl From<Infallible> for BuildError {
 impl<'t> From<ParseError<'t>> for BuildError {
     fn from(error: ParseError<'t>) -> Self {
         BuildError {
-            kind: ErrorKind::Parse(error.into_owned()),
+            kind: BuildErrorKind::Parse(error.into_owned()),
         }
     }
 }
@@ -470,23 +509,23 @@ impl<'t> From<ParseError<'t>> for BuildError {
 impl<'t> From<RuleError<'t>> for BuildError {
     fn from(error: RuleError<'t>) -> Self {
         BuildError {
-            kind: ErrorKind::Rule(error.into_owned()),
+            kind: BuildErrorKind::Rule(error.into_owned()),
         }
     }
 }
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
-enum ErrorKind {
+#[cfg_attr(feature = "miette", derive(Diagnostic))]
+enum BuildErrorKind {
     #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
+    #[cfg_attr(feature = "miette", diagnostic(transparent))]
     Compile(CompileError),
     #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
+    #[cfg_attr(feature = "miette", diagnostic(transparent))]
     Parse(ParseError<'static>),
     #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
+    #[cfg_attr(feature = "miette", diagnostic(transparent))]
     Rule(RuleError<'static>),
 }
 
@@ -654,8 +693,8 @@ impl<'t> Glob<'t> {
     /// [`Glob`]: crate::Glob
     /// [`Glob::diagnose`]: crate::Glob::diagnose
     /// [`Glob::new`]: crate::Glob::new
-    #[cfg(feature = "diagnostics")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
+    #[cfg(feature = "miette")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "miette")))]
     pub fn diagnosed(expression: &'t str) -> DiagnosticResult<'t, Self> {
         parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
             Glob::compile(tokenized.tokens())
@@ -886,8 +925,8 @@ impl<'t> Glob<'t> {
     /// [`Glob`]: crate::Glob
     /// [`Glob::diagnosed`]: crate::Glob::diagnosed
     /// [`Glob::partition`]: crate::Glob::partition
-    #[cfg(feature = "diagnostics")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
+    #[cfg(feature = "miette")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "miette")))]
     pub fn diagnose(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
         diagnostics::diagnose(&self.tokenized)
     }
@@ -1330,7 +1369,7 @@ fn parse_and_check(expression: &str) -> Result<Tokenized, BuildError> {
     Ok(tokenized)
 }
 
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "miette")]
 fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
     token::parse(expression)
         .into_error_diagnostic()
@@ -1353,7 +1392,7 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
 mod tests {
     use std::path::Path;
 
-    use crate::{Any, BuildError, CandidatePath, ErrorKind, Glob, Pattern};
+    use crate::{Any, BuildError, BuildErrorKind, CandidatePath, Glob, Pattern};
 
     #[test]
     fn escape() {
@@ -1660,28 +1699,28 @@ mod tests {
         assert!(matches!(
             Glob::new("<a:65536>"),
             Err(BuildError {
-                kind: ErrorKind::Rule(_),
+                kind: BuildErrorKind::Rule(_),
                 ..
             }),
         ));
         assert!(matches!(
             Glob::new("<long:16500>"),
             Err(BuildError {
-                kind: ErrorKind::Rule(_),
+                kind: BuildErrorKind::Rule(_),
                 ..
             }),
         ));
         assert!(matches!(
             Glob::new("a<long:16500>b"),
             Err(BuildError {
-                kind: ErrorKind::Rule(_),
+                kind: BuildErrorKind::Rule(_),
                 ..
             }),
         ));
         assert!(matches!(
             Glob::new("{<a:65536>,<long:16500>}"),
             Err(BuildError {
-                kind: ErrorKind::Rule(_),
+                kind: BuildErrorKind::Rule(_),
                 ..
             }),
         ));
@@ -1709,7 +1748,7 @@ mod tests {
         assert!(matches!(
             Glob::new("<a*:1000000>"),
             Err(BuildError {
-                kind: ErrorKind::Compile(_),
+                kind: BuildErrorKind::Compile(_),
                 ..
             }),
         ));

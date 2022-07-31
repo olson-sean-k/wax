@@ -14,15 +14,15 @@
 //       perform an exhaustive analysis and report zero or more errors.
 
 use itertools::Itertools as _;
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "miette")]
 use miette::{Diagnostic, LabeledSpan, SourceCode};
 use std::borrow::Cow;
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "miette")]
 use std::fmt::Display;
 use std::iter::Fuse;
+use std::slice;
 use thiserror::Error;
 
-#[cfg(feature = "diagnostics")]
 use crate::diagnostics::{CompositeSpan, CorrelatedSpan, SpanExt as _};
 use crate::token::{InvariantSize, Token, TokenKind, Tokenized};
 use crate::{SliceExt as _, Terminals};
@@ -145,22 +145,16 @@ where
 #[error("malformed glob expression: {kind}")]
 pub struct RuleError<'t> {
     expression: Cow<'t, str>,
-    kind: ErrorKind,
-    #[cfg(feature = "diagnostics")]
-    span: CompositeSpan,
+    kind: RuleErrorKind,
+    location: CompositeSpan,
 }
 
 impl<'t> RuleError<'t> {
-    fn new(
-        expression: Cow<'t, str>,
-        kind: ErrorKind,
-        #[cfg(feature = "diagnostics")] span: CompositeSpan,
-    ) -> Self {
+    fn new(expression: Cow<'t, str>, kind: RuleErrorKind, location: CompositeSpan) -> Self {
         RuleError {
             expression,
             kind,
-            #[cfg(feature = "diagnostics")]
-            span,
+            location,
         }
     }
 
@@ -169,15 +163,17 @@ impl<'t> RuleError<'t> {
         let RuleError {
             expression,
             kind,
-            #[cfg(feature = "diagnostics")]
-            span,
+            location,
         } = self;
         RuleError {
             expression: expression.into_owned().into(),
             kind,
-            #[cfg(feature = "diagnostics")]
-            span,
+            location,
         }
+    }
+
+    pub fn locations(&self) -> &[CompositeSpan] {
+        slice::from_ref(&self.location)
     }
 
     /// Gets the glob expression that violated pattern rules.
@@ -186,24 +182,24 @@ impl<'t> RuleError<'t> {
     }
 }
 
-#[cfg(feature = "diagnostics")]
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics")))]
+#[cfg(feature = "miette")]
+#[cfg_attr(docsrs, doc(cfg(feature = "miette")))]
 impl Diagnostic for RuleError<'_> {
     fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
         Some(Box::new(String::from(match self.kind {
-            ErrorKind::RootedSubGlob => "wax::glob::rooted_sub_glob",
-            ErrorKind::SingularTree => "wax::glob::singular_tree",
-            ErrorKind::SingularZeroOrMore => "wax::glob::singular_zero_or_more",
-            ErrorKind::AdjacentBoundary => "wax::glob::adjacent_boundary",
-            ErrorKind::AdjacentZeroOrMore => "wax::glob::adjacent_zero_or_more",
-            ErrorKind::OversizedInvariant => "wax::glob::oversized_invariant",
-            ErrorKind::IncompatibleBounds => "wax::glob::incompatible_bounds",
+            RuleErrorKind::RootedSubGlob => "wax::glob::rooted_sub_glob",
+            RuleErrorKind::SingularTree => "wax::glob::singular_tree",
+            RuleErrorKind::SingularZeroOrMore => "wax::glob::singular_zero_or_more",
+            RuleErrorKind::AdjacentBoundary => "wax::glob::adjacent_boundary",
+            RuleErrorKind::AdjacentZeroOrMore => "wax::glob::adjacent_zero_or_more",
+            RuleErrorKind::OversizedInvariant => "wax::glob::oversized_invariant",
+            RuleErrorKind::IncompatibleBounds => "wax::glob::incompatible_bounds",
         })))
     }
 
     fn help<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
         match self.kind {
-            ErrorKind::OversizedInvariant => Some(Box::new(String::from(
+            RuleErrorKind::OversizedInvariant => Some(Box::new(String::from(
                 "this error typically occurs when a repetition has a convergent bound that is too \
                  large",
             ))),
@@ -216,13 +212,13 @@ impl Diagnostic for RuleError<'_> {
     }
 
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan>>> {
-        Some(Box::new(self.span.labels().into_iter()))
+        Some(Box::new(self.location.labels().into_iter()))
     }
 }
 
 #[derive(Clone, Debug, Error)]
 #[non_exhaustive]
-enum ErrorKind {
+enum RuleErrorKind {
     #[error("rooted sub-glob in group")]
     RootedSubGlob,
     #[error("singular tree wildcard `**` in group")]
@@ -248,7 +244,6 @@ pub fn check<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 }
 
 fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
     if let Some((left, right)) = tokenized
         .walk()
         .group_by(|(position, _)| *position)
@@ -266,9 +261,8 @@ fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     {
         Err(RuleError::new(
             tokenized.expression().clone(),
-            ErrorKind::AdjacentBoundary,
-            #[cfg(feature = "diagnostics")]
-            CompositeSpan::span(Some("here"), left.union(&right)),
+            RuleErrorKind::AdjacentBoundary,
+            CompositeSpan::spanned("here", left.union(&right)),
         ))
     }
     else {
@@ -282,18 +276,15 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     use crate::Terminals::{Only, StartEnd};
 
     struct CorrelatedError {
-        kind: ErrorKind,
-        #[cfg(feature = "diagnostics")]
-        span: CorrelatedSpan,
+        kind: RuleErrorKind,
+        location: CorrelatedSpan,
     }
 
     impl CorrelatedError {
-        #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
-        fn new(kind: ErrorKind, outer: Option<&Token>, inner: &Token) -> Self {
+        fn new(kind: RuleErrorKind, outer: Option<&Token>, inner: &Token) -> Self {
             CorrelatedError {
                 kind,
-                #[cfg(feature = "diagnostics")]
-                span: CorrelatedSpan::split_some(
+                location: CorrelatedSpan::split_some(
                     outer.map(Token::annotation).copied().map(From::from),
                     *inner.annotation(),
                 ),
@@ -356,22 +347,17 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         // This is a somewhat unusual API, but it allows the lifetime `'t` of
         // the `Cow` to be properly forwarded to output values (`RuleError`).
         #[allow(clippy::ptr_arg)] expression: &'i Cow<'t, str>,
-        #[cfg_attr(not(feature = "diagnostics"), allow(unused))] token: &'i Token<'t>,
-        #[cfg_attr(not(feature = "diagnostics"), allow(unused))] label: &'static str,
+        token: &'i Token<'t>,
+        label: &'static str,
     ) -> impl 'i + Copy + Fn(CorrelatedError) -> RuleError<'t>
     where
         't: 'i,
     {
-        move |CorrelatedError {
-                  kind,
-                  #[cfg(feature = "diagnostics")]
-                  span,
-              }| {
+        move |CorrelatedError { kind, location }| {
             RuleError::new(
                 expression.clone(),
                 kind,
-                #[cfg(feature = "diagnostics")]
-                CompositeSpan::correlated(Some(label), *token.annotation(), span),
+                CompositeSpan::correlated(label, *token.annotation(), location),
             )
         }
     }
@@ -431,7 +417,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 if has_ending_component_boundary(left) =>
             {
                 Err(CorrelatedError::new(
-                    ErrorKind::AdjacentBoundary,
+                    RuleErrorKind::AdjacentBoundary,
                     left,
                     inner,
                 ))
@@ -444,7 +430,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 if has_starting_component_boundary(right) =>
             {
                 Err(CorrelatedError::new(
-                    ErrorKind::AdjacentBoundary,
+                    RuleErrorKind::AdjacentBoundary,
                     right,
                     inner,
                 ))
@@ -452,16 +438,18 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // Disallow singular tree tokens.
             //
             // For example, `{foo,bar,**}`.
-            Only((inner, Wildcard(Tree { .. }))) => {
-                Err(CorrelatedError::new(ErrorKind::SingularTree, None, inner))
-            },
+            Only((inner, Wildcard(Tree { .. }))) => Err(CorrelatedError::new(
+                RuleErrorKind::SingularTree,
+                None,
+                inner,
+            )),
             // The group is preceded by component boundaries; disallow leading
             // tree tokens.
             //
             // For example, `foo/{bar,**/baz}`.
             StartEnd((inner, Wildcard(Tree { .. })), _) if has_ending_component_boundary(left) => {
                 Err(CorrelatedError::new(
-                    ErrorKind::AdjacentBoundary,
+                    RuleErrorKind::AdjacentBoundary,
                     left,
                     inner,
                 ))
@@ -474,7 +462,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 if has_starting_component_boundary(right) =>
             {
                 Err(CorrelatedError::new(
-                    ErrorKind::AdjacentBoundary,
+                    RuleErrorKind::AdjacentBoundary,
                     right,
                     inner,
                 ))
@@ -488,7 +476,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 if has_ending_zom_token(left) =>
             {
                 Err(CorrelatedError::new(
-                    ErrorKind::AdjacentZeroOrMore,
+                    RuleErrorKind::AdjacentZeroOrMore,
                     left,
                     inner,
                 ))
@@ -502,7 +490,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 if has_starting_zom_token(right) =>
             {
                 Err(CorrelatedError::new(
-                    ErrorKind::AdjacentZeroOrMore,
+                    RuleErrorKind::AdjacentZeroOrMore,
                     right,
                     inner,
                 ))
@@ -522,7 +510,11 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             //
             // For example, `{foo,/}` or `{foo,/bar}`.
             Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _) if left.is_none() => {
-                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
+                Err(CorrelatedError::new(
+                    RuleErrorKind::RootedSubGlob,
+                    left,
+                    inner,
+                ))
             },
             // The alternative is preceded by a termination; disallow rooted
             // sub-globs.
@@ -532,7 +524,11 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             | StartEnd((inner, Wildcard(Tree { has_root: true })), _)
                 if left.is_none() =>
             {
-                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
+                Err(CorrelatedError::new(
+                    RuleErrorKind::RootedSubGlob,
+                    left,
+                    inner,
+                ))
             },
             _ => Ok(()),
         }
@@ -553,7 +549,11 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _)
                 if left.is_none() && lower == 0 =>
             {
-                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
+                Err(CorrelatedError::new(
+                    RuleErrorKind::RootedSubGlob,
+                    left,
+                    inner,
+                ))
             },
             // The repetition is preceded by a termination; disallow rooted
             // sub-globs with a zero lower bound.
@@ -563,7 +563,11 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             | StartEnd((inner, Wildcard(Tree { has_root: true })), _)
                 if left.is_none() && lower == 0 =>
             {
-                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
+                Err(CorrelatedError::new(
+                    RuleErrorKind::RootedSubGlob,
+                    left,
+                    inner,
+                ))
             },
             // The repetition begins and ends with a separator.
             //
@@ -572,7 +576,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 if left.is_component_boundary() && right.is_component_boundary() =>
             {
                 Err(CorrelatedError::new(
-                    ErrorKind::AdjacentBoundary,
+                    RuleErrorKind::AdjacentBoundary,
                     Some(left),
                     right,
                 ))
@@ -581,7 +585,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             //
             // For example, `</:1,>`.
             Only((token, Separator(_))) => Err(CorrelatedError::new(
-                ErrorKind::AdjacentBoundary,
+                RuleErrorKind::AdjacentBoundary,
                 None,
                 token,
             )),
@@ -589,7 +593,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             //
             // For example, `<*:1,>`.
             Only((token, Wildcard(ZeroOrMore(_)))) => Err(CorrelatedError::new(
-                ErrorKind::SingularZeroOrMore,
+                RuleErrorKind::SingularZeroOrMore,
                 None,
                 token,
             )),
@@ -601,7 +605,6 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 }
 
 fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
     if let Some((_, token)) = tokenized.walk().find(|(_, token)| match token.kind() {
         TokenKind::Repetition(ref repetition) => {
             let (lower, upper) = repetition.bounds();
@@ -611,9 +614,8 @@ fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     }) {
         Err(RuleError::new(
             tokenized.expression().clone(),
-            ErrorKind::IncompatibleBounds,
-            #[cfg(feature = "diagnostics")]
-            CompositeSpan::span(Some("here"), *token.annotation()),
+            RuleErrorKind::IncompatibleBounds,
+            CompositeSpan::spanned("here", *token.annotation()),
         ))
     }
     else {
@@ -622,7 +624,6 @@ fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 }
 
 fn size<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    #[cfg_attr(not(feature = "diagnostics"), allow(unused))]
     if let Some((_, token)) = tokenized
         .walk()
         // TODO: This is expensive. For each token tree encountered, the
@@ -638,9 +639,8 @@ fn size<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     {
         Err(RuleError::new(
             tokenized.expression().clone(),
-            ErrorKind::OversizedInvariant,
-            #[cfg(feature = "diagnostics")]
-            CompositeSpan::span(Some("here"), *token.annotation()),
+            RuleErrorKind::OversizedInvariant,
+            CompositeSpan::spanned("here", *token.annotation()),
         ))
     }
     else {
