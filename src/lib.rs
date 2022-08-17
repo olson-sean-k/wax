@@ -372,6 +372,7 @@ pub enum GlobError {
     #[cfg_attr(feature = "miette", diagnostic(transparent))]
     Build(BuildError),
     #[cfg(feature = "walk")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
     #[cfg_attr(feature = "miette", diagnostic(code = "wax::glob::walk"))]
     Walk(WalkError),
 }
