@@ -11,8 +11,8 @@ use walkdir::{self, DirEntry, WalkDir};
 
 use crate::capture::MatchedText;
 use crate::encode::CompileError;
-use crate::token::{self, Boundedness, InvariantText, Token};
-use crate::{BuildError, CandidatePath, Glob, PositionExt as _};
+use crate::token::{self, Token};
+use crate::{BuildError, CandidatePath, Glob, Pattern, PositionExt as _};
 
 pub type WalkItem<'e> = Result<WalkEntry<'e>, WalkError>;
 
@@ -334,8 +334,8 @@ impl FileIterator for walkdir::IntoIter {
 #[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[derive(Clone, Debug)]
 pub struct Negation {
-    terminal: Regex,
-    nonterminal: Regex,
+    exhaustive: Regex,
+    nonexhaustive: Regex,
 }
 
 impl Negation {
@@ -364,15 +364,15 @@ impl Negation {
         //       same, but it's unclear why the compiler requires this, as
         //       `crate::any` has no such requirement.
         fn from_globs(globs: Vec<Glob>) -> Negation {
-            // Partition the negation globs into terminals and nonterminals. A
-            // terminal glob matches all sub-paths once it has matched and so
-            // arrests the traversal into sub-directories. This is determined by
-            // whether or not a glob is terminated by a component with unbounded
-            // depth and unbounded variance.
-            let (terminals, nonterminals) = globs.into_iter().partition::<Vec<_>, _>(is_terminal);
+            // Partition the negation globs into exhaustive and nonexhaustive
+            // patterns. An exhaustive glob matches any and all sub-trees once
+            // it has matched and so arrests the traversal into sub-directories.
+            let (exhaustive, nonexhaustive) = globs
+                .into_iter()
+                .partition::<Vec<_>, _>(Glob::is_exhaustive);
             Negation {
-                terminal: crate::any::<Glob, _>(terminals).unwrap().regex,
-                nonterminal: crate::any::<Glob, _>(nonterminals).unwrap().regex,
+                exhaustive: crate::any::<Glob, _>(exhaustive).unwrap().regex,
+                nonexhaustive: crate::any::<Glob, _>(nonexhaustive).unwrap().regex,
             }
         }
 
@@ -389,20 +389,23 @@ impl Negation {
     /// effeciently filter [`WalkEntry`]s without reading directory trees from
     /// the file system when not necessary.
     ///
-    /// Returns [`FilterTarget::Tree`] if the [`WalkEntry`] matches a terminal
-    /// glob expression, such as `secret/**`.
+    /// Returns [`FilterTarget::Tree`] if the [`WalkEntry`] matches an
+    /// [exhaustive glob expression][`Pattern::is_exhaustive`], such as
+    /// `secret/**`.
     ///
     /// [`FilterTarget`]: crate::FilterTarget
     /// [`FilterTarget::Tree`]: crate::FilterTarget::Tree
     /// [`IteratorExt::filter_tree`]: crate::IteratorExt::filter_tree
+    /// [`Pattern::is_exhaustive`]: crate::Pattern::is_exhaustive
     /// [`WalkEntry`]: crate::WalkEntry
     pub fn target(&self, entry: &WalkEntry) -> Option<FilterTarget> {
         let path = entry.to_candidate_path();
-        if self.terminal.is_match(path.as_ref()) {
-            // Do not descend into directories that match the terminal negation.
+        if self.exhaustive.is_match(path.as_ref()) {
+            // Do not descend into directories that match the exhaustive
+            // negation.
             Some(FilterTarget::Tree)
         }
-        else if self.nonterminal.is_match(path.as_ref()) {
+        else if self.nonexhaustive.is_match(path.as_ref()) {
             Some(FilterTarget::File)
         }
         else {
@@ -632,7 +635,8 @@ impl<'g> Walk<'g> {
     ///
     /// The adaptor is constructed via [`FilterTree`] and [`Negation`] and
     /// therefore does not read directory trees from the file system when a
-    /// directory matches a terminal glob expression such as `**/private/**` or
+    /// directory matches an [exhaustive glob
+    /// expression][`Pattern::is_exhaustive`] such as `**/private/**` or
     /// `hidden/<<?>/>*`. **This function should be preferred when filtering
     /// [`WalkEntry`]s against [`Glob`]s, since this avoids potentially large
     /// and unnecessary reads**.
@@ -665,6 +669,7 @@ impl<'g> Walk<'g> {
     /// [`Iterator::filter`]: std::iter::Iterator::filter
     /// [`IteratorExt::filter_tree`]: crate::IteratorExt::filter_tree
     /// [`Negation`]: crate::Negation
+    /// [`Pattern::is_exhaustive`]: crate::Pattern::is_exhaustive
     /// [`WalkEntry`]: crate::WalkEntry
     pub fn not<'t, P>(
         self,
@@ -932,50 +937,5 @@ where
     }
     else {
         Some(prefix.into())
-    }
-}
-
-/// Returns `true` if the [`Glob`] is terminal.
-///
-/// A [`Glob`] is terminal if its final component has unbounded depth and
-/// unbounded variance. When walking a directory tree, such an expression allows
-/// a matching directory to be ignored when used as a negation, because the
-/// negating expression matches any and all sub-paths.
-///
-/// See [`Negation`].
-///
-/// [`Glob`]: crate::Glob
-/// [`Negation`]: crate::walk::Negation
-fn is_terminal(glob: &Glob<'_>) -> bool {
-    let component = token::components(glob.tokenized.tokens()).last();
-    matches!(
-        component.map(|component| {
-            (
-                component.depth(),
-                component.variance::<InvariantText>().boundedness(),
-            )
-        }),
-        Some((Boundedness::Open, Boundedness::Open)),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::walk;
-    use crate::Glob;
-
-    #[test]
-    fn query_terminal_glob() {
-        assert!(walk::is_terminal(&Glob::new("**").unwrap()));
-        assert!(walk::is_terminal(&Glob::new("a/**").unwrap()));
-        assert!(walk::is_terminal(&Glob::new("a/<*/>*").unwrap()));
-        assert!(walk::is_terminal(&Glob::new("a/<<?>/>*").unwrap()));
-
-        assert!(!walk::is_terminal(&Glob::new("a/**/b").unwrap()));
-        assert!(!walk::is_terminal(&Glob::new("a/*").unwrap()));
-        assert!(!walk::is_terminal(&Glob::new("a/<?>").unwrap()));
-        assert!(!walk::is_terminal(&Glob::new("a</**/b>").unwrap()));
-        assert!(!walk::is_terminal(&Glob::new("**/a").unwrap()));
-        assert!(!walk::is_terminal(&Glob::new("").unwrap()));
     }
 }

@@ -563,6 +563,28 @@ where
     m + 1
 }
 
+/// Returns `true` if the token tree is exhaustive.
+///
+/// A glob expression and its token tree are exhaustive if the terminal
+/// component has unbounded depth and unbounded variance.
+pub fn is_exhaustive<'i, 't, A, I>(tokens: I) -> bool
+where
+    't: 'i,
+    A: 't,
+    I: IntoIterator<Item = &'i Token<'t, A>>,
+{
+    let component = token::components(tokens).last();
+    matches!(
+        component.map(|component| {
+            (
+                component.depth(),
+                component.variance::<InvariantText>().boundedness(),
+            )
+        }),
+        Some((Boundedness::Open, Boundedness::Open)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -627,5 +649,32 @@ mod tests {
             tokenized.variance::<InvariantSize>(),
             Variant(Closed)
         ));
+    }
+
+    #[test]
+    fn exhaustiveness() {
+        assert!(token::is_exhaustive(token::parse("**").unwrap().tokens()));
+        assert!(token::is_exhaustive(token::parse("a/**").unwrap().tokens()));
+        assert!(token::is_exhaustive(
+            token::parse("a/<*/>*").unwrap().tokens()
+        ));
+        assert!(token::is_exhaustive(
+            token::parse("a/<<?>/>*").unwrap().tokens()
+        ));
+
+        assert!(!token::is_exhaustive(
+            token::parse("a/**/b").unwrap().tokens()
+        ));
+        assert!(!token::is_exhaustive(token::parse("a/*").unwrap().tokens()));
+        assert!(!token::is_exhaustive(
+            token::parse("a/<?>").unwrap().tokens()
+        ));
+        assert!(!token::is_exhaustive(
+            token::parse("a</**/b>").unwrap().tokens()
+        ));
+        assert!(!token::is_exhaustive(
+            token::parse("**/a").unwrap().tokens()
+        ));
+        assert!(!token::is_exhaustive(token::parse("").unwrap().tokens()));
     }
 }

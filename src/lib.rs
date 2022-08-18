@@ -222,45 +222,60 @@ impl CapturingToken {
 /// respect to the platform file system APIs. [`Pattern`]s are either variant or
 /// invariant.
 ///
+/// An invariant [`Pattern`] can be represented and completely described by an
+/// equivalent path using the platform's file system APIs. For example, the glob
+/// expression `path/to/file.txt` resolves identically to the paths
+/// `path/to/file.txt` and `path\to\file.txt` on Unix and Windows, respectively.
+///
+/// A variant [`Pattern`] resolves differently than any particular path used
+/// with the platform's file system APIs. Such an expression cannot be
+/// represented by a single path. This is typically because the expression
+/// matches multiple texts using a regular pattern, such as in the glob
+/// expression `**/*.rs`.
+///
 /// [`Pattern`]: crate::Pattern
 /// [`Variance`]: crate::Variance
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Variance {
-    /// A [`Pattern`] is invariant and equivalent to a native path.
-    ///
-    /// An invariant [`Pattern`] is equivalent to a native path and resolves the
-    /// same way as such a native path does when used with the platform's file
-    /// system APIs. These APIs may differ, so variance is platform dependent.
+    /// A [`Pattern`] is invariant and equivalent to a path.
     ///
     /// Some non-literal expressions may be invariant, such as in the expression
     /// `path/[t][o]/{file,file}.txt`, which is invariant on Unix (but not on
-    /// Windows, because the character class expressions do not consider
-    /// casing).
+    /// Windows, because the character class expressions do not match with case
+    /// folding).
     ///
     /// [`Pattern`]: crate::Pattern
     Invariant(
-        /// An equivalent native path that describes the invariant [`Pattern`].
-        /// For example, the invariant expression `path/to/file.txt` can be
-        /// described by the paths `path/to/file.txt` and `path\to\file.txt` on
-        /// Unix and Windows, respectively.
+        /// An equivalent path that completely describes the invariant
+        /// [`Pattern`] with respect to platform file system APIs.
         ///
         /// [`Pattern`]: crate::Pattern
         PathBuf,
     ),
-    /// A [`Pattern`] is variant and resolves differently than any native path.
+    /// A [`Pattern`] is variant and cannot be completely described by a path.
     ///
-    /// Variant expressions may be formed from only literals or other seemingly
-    /// constant expressions. For example, the variance of literals considers
+    /// Variant expressions may be formed from literals or other **seemingly**
+    /// invariant expressions. For example, the variance of literals considers
     /// the case sensitivity of the platform's file system APIs, so the
-    /// expression `(?i)path/to/file.txt` is variant on Unix (but not on
-    /// Windows). Similarly, the expression `path/[t][o]/file.txt` is variant on
-    /// Windows (but not on Unix).
+    /// expression `(?i)path/to/file.txt` is variant on Unix but not on Windows.
+    /// Similarly, the expression `path/[t][o]/file.txt` is variant on Windows
+    /// but not on Unix.
     ///
     /// [`Pattern`]: crate::Pattern
     Variant,
 }
 
 impl Variance {
+    /// Gets the equivalent native path if invariant.
+    ///
+    /// Returns `None` if variant.
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Variance::Invariant(ref path) => Some(path),
+            Variance::Variant => None,
+        }
+    }
+
     /// Returns `true` if invariant.
     pub fn is_invariant(&self) -> bool {
         matches!(self, Variance::Invariant(_))
@@ -283,7 +298,7 @@ impl From<token::Variance<InvariantText<'_>>> for Variance {
     }
 }
 
-/// A representation of a glob expression that can be matched against paths.
+/// A compiled glob expression that can be inspected and matched against paths.
 ///
 /// Matching is a logical operation and does **not** interact with a file
 /// system. To handle path operations, use [`Path`] and/or [`PathBuf`] and their
@@ -311,23 +326,16 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 
     /// Gets the variance of the pattern.
     ///
-    /// An invariant glob expression has no patterns that resolve differently
-    /// than an equivalent path using the platform's file system APIs. For
-    /// example, the expression `path/to/file.txt` is always invariant and
-    /// resolves identically to the paths `path/to/file.txt` and
-    /// `path\to\file.txt` on Unix and Windows, respectively.
-    ///
-    /// A variant glob expression does not resolve the same way as any path used
-    /// with the platform's file system APIs. This is typically because the
-    /// expression matches multiple texts using a regular pattern, such as in
-    /// the expression `**/*.rs`.
-    ///
-    /// Note that this considers non-literal invariant patterns such as in
-    /// `path/[t][o]/{file.txt}`, which is invariant on Unix. Variance considers
-    /// flags and the case sensitivity of literals. For example, `(?i)file.text`
-    /// is invariant on Windows but is not on Unix. Variance is therefore
-    /// platform dependent, as it is based on the behavior of file system APIs.
+    /// The variance of a pattern describes the kinds of paths it can match with
+    /// respect to the platform file system APIs.
     fn variance(&self) -> Variance;
+
+    /// Returns `true` if the pattern is exhaustive.
+    ///
+    /// A glob expression is exhaustive if its terminating component matches any
+    /// and all sub-trees, such as in the expressions `/home/**` and
+    /// `local/<<?>/>*`.
+    fn is_exhaustive(&self) -> bool;
 }
 
 // TODO: `Diagnostic` is implemented with macros for brevity and to ensure
@@ -1018,6 +1026,10 @@ impl<'t> Pattern<'t> for Glob<'t> {
     fn variance(&self) -> Variance {
         self.tokenized.variance().into()
     }
+
+    fn is_exhaustive(&self) -> bool {
+        token::is_exhaustive(self.tokenized.tokens())
+    }
 }
 
 impl<'t> TryFrom<&'t str> for Glob<'t> {
@@ -1068,6 +1080,10 @@ impl<'t> Pattern<'t> for Any<'t> {
 
     fn variance(&self) -> Variance {
         self.token.variance::<InvariantText>().into()
+    }
+
+    fn is_exhaustive(&self) -> bool {
+        token::is_exhaustive(Some(&self.token))
     }
 }
 

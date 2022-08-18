@@ -18,7 +18,7 @@ use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
 
 pub use crate::token::parse::{parse, Annotation, ParseError, ROOT_SEPARATOR_EXPRESSION};
 pub use crate::token::variance::{
-    invariant_text_prefix, Boundedness, InvariantSize, InvariantText, Variance,
+    invariant_text_prefix, is_exhaustive, Boundedness, InvariantSize, InvariantText, Variance,
 };
 
 pub trait IntoTokens<'t>: Sized {
@@ -972,7 +972,6 @@ impl<'i, 't, A> Component<'i, 't, A> {
         self.0.iter().copied().conjunctive_variance()
     }
 
-    #[cfg(feature = "walk")]
     pub fn depth(&self) -> Boundedness {
         self.0.iter().copied().composite_depth()
     }
