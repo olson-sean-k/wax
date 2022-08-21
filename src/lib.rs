@@ -38,7 +38,7 @@ mod rule;
 mod token;
 mod walk;
 
-use itertools::{Itertools as _, Position};
+use itertools::Position;
 #[cfg(feature = "miette")]
 use miette::Diagnostic;
 use regex::Regex;
@@ -53,8 +53,8 @@ use tardar::{DiagnosticResult, DiagnosticResultExt as _, IteratorExt as _, Resul
 use thiserror::Error;
 
 use crate::encode::CompileError;
-use crate::rule::RuleError;
-use crate::token::{Annotation, IntoTokens, InvariantText, ParseError, Token, Tokenized};
+use crate::rule::{Checked, RuleError};
+use crate::token::{InvariantText, ParseError, Token, TokenTree, Tokenized};
 
 pub use crate::capture::MatchedText;
 pub use crate::diagnostics::{LocatedError, Span};
@@ -63,6 +63,8 @@ pub use crate::walk::{
     FilterTarget, FilterTree, IteratorExt, LinkBehavior, Negation, Walk, WalkBehavior, WalkEntry,
     WalkError,
 };
+
+type ComposeError<'t, T> = <T as TryInto<Checked<<T as Compose<'t>>::Tokens>>>::Error;
 
 #[cfg(windows)]
 const PATHS_ARE_CASE_INSENSITIVE: bool = true;
@@ -308,7 +310,7 @@ impl From<token::Variance<InvariantText<'_>>> for Variance {
 /// [`Glob::partition`]: crate::Glob::partition
 /// [`Path`]: std::path::Path
 /// [`PathBuf`]: std::path::PathBuf
-pub trait Pattern<'t>: IntoTokens<'t> {
+pub trait Pattern<'t>: Compose<'t, Error = Infallible> {
     /// Returns `true` if a path matches the pattern.
     ///
     /// The given path must be convertible into a [`CandidatePath`].
@@ -336,6 +338,21 @@ pub trait Pattern<'t>: IntoTokens<'t> {
     /// and all sub-trees, such as in the expressions `/home/**` and
     /// `local/<<?>/>*`.
     fn is_exhaustive(&self) -> bool;
+}
+
+/// A glob expression representation that can be composed into a combinator like
+/// [`Any`].
+///
+/// See implementors and the [`any`] function.
+///
+/// [`any`]: crate::any
+/// [`Any`]: crate::Any
+pub trait Compose<'t>: TryInto<Checked<Self::Tokens>> {
+    type Tokens: TokenTree<'t>;
+}
+
+impl<'t> Compose<'t> for &'t str {
+    type Tokens = Tokenized<'t>;
 }
 
 // TODO: `Diagnostic` is implemented with macros for brevity and to ensure
@@ -646,8 +663,8 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 /// [`walk`]: crate::Glob::walk
 #[derive(Clone, Debug)]
 pub struct Glob<'t> {
-    pub(crate) tokenized: Tokenized<'t>,
-    pub(crate) regex: Regex,
+    checked: Checked<Tokenized<'t>>,
+    regex: Regex,
 }
 
 impl<'t> Glob<'t> {
@@ -674,9 +691,9 @@ impl<'t> Glob<'t> {
     /// [`Glob`]: crate::Glob
     /// [`BuildError`]: crate::BuildError
     pub fn new(expression: &'t str) -> Result<Self, BuildError> {
-        let tokenized = parse_and_check(expression)?;
-        let regex = Glob::compile(tokenized.tokens())?;
-        Ok(Glob { tokenized, regex })
+        let checked = parse_and_check(expression)?;
+        let regex = Glob::compile(checked.as_ref().tokens())?;
+        Ok(Glob { checked, regex })
     }
 
     /// Constructs a [`Glob`] from a glob expression with diagnostics.
@@ -705,10 +722,10 @@ impl<'t> Glob<'t> {
     #[cfg(feature = "miette")]
     #[cfg_attr(docsrs, doc(cfg(feature = "miette")))]
     pub fn diagnosed(expression: &'t str) -> DiagnosticResult<'t, Self> {
-        parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
-            Glob::compile(tokenized.tokens())
+        parse_and_diagnose(expression).and_then_diagnose(|checked| {
+            Glob::compile(checked.as_ref().tokens())
                 .into_error_diagnostic()
-                .map_output(|regex| Glob { tokenized, regex })
+                .map_output(|regex| Glob { checked, regex })
         })
     }
 
@@ -773,10 +790,11 @@ impl<'t> Glob<'t> {
     /// [`RuleError`]: crate::RuleError
     /// [`walk`]: crate::Glob::walk
     pub fn partition(self) -> (PathBuf, Self) {
-        let Glob { tokenized, .. } = self;
-        let (prefix, tokenized) = tokenized.partition();
-        let regex = Glob::compile(tokenized.tokens()).expect("failed to compile partitioned glob");
-        (prefix, Glob { tokenized, regex })
+        let Glob { checked, .. } = self;
+        let (prefix, checked) = checked.partition();
+        let regex =
+            Glob::compile(checked.as_ref().tokens()).expect("failed to compile partitioned glob");
+        (prefix, Glob { checked, regex })
     }
 
     /// Clones any borrowed data into an owning instance.
@@ -796,9 +814,9 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     pub fn into_owned(self) -> Glob<'static> {
-        let Glob { tokenized, regex } = self;
+        let Glob { checked, regex } = self;
         Glob {
-            tokenized: tokenized.into_owned(),
+            checked: checked.into_owned(),
             regex,
         }
     }
@@ -937,7 +955,7 @@ impl<'t> Glob<'t> {
     #[cfg(feature = "miette")]
     #[cfg_attr(docsrs, doc(cfg(feature = "miette")))]
     pub fn diagnose(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
-        diagnostics::diagnose(&self.tokenized)
+        diagnostics::diagnose(self.checked.as_ref())
     }
 
     /// Gets metadata for capturing sub-expressions.
@@ -950,7 +968,8 @@ impl<'t> Glob<'t> {
     ///
     /// [`MatchedText`]: crate::MatchedText
     pub fn captures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
-        self.tokenized
+        self.checked
+            .as_ref()
             .tokens()
             .iter()
             .filter(|token| token.is_capturing())
@@ -967,7 +986,8 @@ impl<'t> Glob<'t> {
     /// separator `/`. Patterns other than separators may also root an
     /// expression, such as `/**` or `</root:1,>`.
     pub fn has_root(&self) -> bool {
-        self.tokenized
+        self.checked
+            .as_ref()
             .tokens()
             .first()
             .map_or(false, Token::has_root)
@@ -986,13 +1006,14 @@ impl<'t> Glob<'t> {
     ///
     /// [`Glob::partition`]: crate::Glob::partition
     pub fn has_semantic_literals(&self) -> bool {
-        token::literals(self.tokenized.tokens()).any(|(_, literal)| literal.is_semantic_literal())
+        token::literals(self.checked.as_ref().tokens())
+            .any(|(_, literal)| literal.is_semantic_literal())
     }
 }
 
 impl Display for Glob<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}", self.tokenized.expression())
+        write!(f, "{}", self.checked.as_ref().expression())
     }
 }
 
@@ -1001,15 +1022,6 @@ impl FromStr for Glob<'static> {
 
     fn from_str(expression: &str) -> Result<Self, Self::Err> {
         Glob::new(expression).map(Glob::into_owned)
-    }
-}
-
-impl<'t> IntoTokens<'t> for Glob<'t> {
-    type Annotation = Annotation;
-
-    fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>> {
-        let Glob { tokenized, .. } = self;
-        tokenized.into_tokens()
     }
 }
 
@@ -1024,11 +1036,11 @@ impl<'t> Pattern<'t> for Glob<'t> {
     }
 
     fn variance(&self) -> Variance {
-        self.tokenized.variance().into()
+        self.checked.as_ref().variance().into()
     }
 
     fn is_exhaustive(&self) -> bool {
-        token::is_exhaustive(self.tokenized.tokens())
+        token::is_exhaustive(self.checked.as_ref().tokens())
     }
 }
 
@@ -1040,31 +1052,26 @@ impl<'t> TryFrom<&'t str> for Glob<'t> {
     }
 }
 
+impl<'t> Compose<'t> for Glob<'t> {
+    type Tokens = Tokenized<'t>;
+}
+
 /// Combinator that matches any of its component [`Pattern`]s.
 ///
 /// An instance of `Any` is constructed using the [`any`] function, which
-/// combines multiple [`Pattern`]s for more ergonomic and efficient matching.
+/// composes multiple [`Pattern`]s for more ergonomic and efficient matching.
 ///
 /// [`any`]: crate::any
 /// [`Pattern`]: crate::Pattern
 #[derive(Clone, Debug)]
 pub struct Any<'t> {
-    pub(crate) token: Token<'t, ()>,
-    pub(crate) regex: Regex,
+    checked: Checked<Token<'t, ()>>,
+    regex: Regex,
 }
 
 impl<'t> Any<'t> {
     fn compile(token: &Token<'t, ()>) -> Result<Regex, CompileError> {
         encode::compile([token])
-    }
-}
-
-impl<'t> IntoTokens<'t> for Any<'t> {
-    type Annotation = ();
-
-    fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>> {
-        let Any { token, .. } = self;
-        vec![token]
     }
 }
 
@@ -1079,99 +1086,90 @@ impl<'t> Pattern<'t> for Any<'t> {
     }
 
     fn variance(&self) -> Variance {
-        self.token.variance::<InvariantText>().into()
+        self.checked.as_ref().variance::<InvariantText>().into()
     }
 
     fn is_exhaustive(&self) -> bool {
-        token::is_exhaustive(Some(&self.token))
+        token::is_exhaustive(Some(self.checked.as_ref()))
     }
 }
 
-// TODO: It may be useful to use dynamic dispatch via `dyn Pattern` and an
-//       object safe `ToTokens` trait instead. This allows for a variety of
-//       types to be combined in an `any` call and would be especially useful if
-//       additional combinators are introduced (namely a `Not` combinator, as
-//       `All` is a bit odd and not very useful in this context.
-/// Combinator that emits a [`Pattern`] that matches if any of its input
+impl<'t> Compose<'t> for Any<'t> {
+    type Tokens = Token<'t, ()>;
+}
+
+// TODO: It may be useful to use dynamic dispatch via trait objects instead.
+//       This would allow for a variety of types to be composed in an `any` call
+//       and would be especially useful if additional combinators are
+//       introduced.
+/// Composes glob expressions into a combinator that matches if any of its input
 /// [`Pattern`]s match.
 ///
-/// This function accepts an [`IntoIterator`] with items that can be converted
-/// into a [`Pattern`] type. The output [`Any`] implements [`Pattern`] by
-/// matching any of its component [`Pattern`]s. [`Any`] is often more ergonomic
-/// and efficient than matching against multiple [`Glob`]s or other
+/// This function accepts an [`IntoIterator`] with items that implement the
+/// [`Compose`] trait such as [`Glob`] and `&str`. The output [`Any`] implements
+/// [`Pattern`] by matching any of its component [`Pattern`]s. [`Any`] is often
+/// more ergonomic and efficient than matching individually against multiple
 /// [`Pattern`]s.
 ///
 /// [`Any`] groups all captures and therefore only exposes the complete text of
 /// a match. It is not possible to index a particular capturing token in the
-/// component patterns.
+/// component patterns. [`Any`] only supports logical matching and cannot be
+/// used to semantically match a directory tree.
 ///
 /// # Examples
 ///
 /// To match a path against multiple patterns, the patterns can first be
-/// combined into an [`Any`].
+/// composed into an [`Any`].
 ///
 /// ```rust
 /// use wax::{Glob, Pattern};
 ///
-/// let any = wax::any::<Glob, _>([
+/// let any = wax::any([
 ///     "src/**/*.rs",
 ///     "tests/**/*.rs",
 ///     "doc/**/*.md",
 ///     "pkg/**/PKGBUILD",
 /// ])
 /// .unwrap();
-/// if any.is_match("src/lib.rs") { /* ... */ }
+/// assert!(any.is_match("src/lib.rs"));
 /// ```
 ///
-/// Opaque patterns can also be combined, such as [`Glob`]s from foreign code.
+/// [`Glob`]s and other compiled [`Pattern`]s can also be composed into an
+/// [`Any`]. Unlike glob expressions represented as `str` slices, using
+/// instances of a [`Pattern`] type is infallible.
 ///
 /// ```rust
-/// use wax::{BuildError, Glob, Pattern};
+/// use wax::{Glob, Pattern};
 ///
-/// fn theirs() -> Result<Glob<'static>, BuildError> {
-///     /* ... */
-///     # Glob::new("")
-/// }
-///
-/// let theirs = theirs().unwrap();
-/// let mine = Glob::new("**/*.txt").unwrap();
-/// if wax::any::<Glob, _>([theirs, mine])
-///     .unwrap()
-///     .is_match("README.md")
-/// { /* ... */ }
+/// let red = Glob::new("**/red/**/*.txt").unwrap();
+/// let blue = Glob::new("**/*blue*.txt").unwrap();
+/// assert!(wax::any([red, blue]).unwrap().is_match("red/potion.txt"));
 /// ```
 ///
 /// # Errors
 ///
-/// Returns an error if any of the inputs fail to build into the target
-/// [`Pattern`] type `P`. If the inputs are of type `P`, then this function is
+/// Returns an error if any of the inputs fail to build. If the inputs are a
+/// compiled [`Pattern`] type such as [`Glob`], then this function is
 /// infallible.
 ///
 /// [`Any`]: crate::Any
 /// [`Glob`]: crate::Glob
 /// [`IntoIterator`]: std::iter::IntoIterator
 /// [`Pattern`]: crate::Pattern
-pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, BuildError>
+pub fn any<'t, I>(patterns: I) -> Result<Any<'t>, BuildError>
 where
-    BuildError: From<<I::Item as TryInto<P>>::Error>,
-    P: Pattern<'t>,
+    BuildError: From<ComposeError<'t, I::Item>>,
     I: IntoIterator,
-    I::Item: TryInto<P>,
+    I::Item: Compose<'t>,
 {
-    let tokens = patterns
-        .into_iter()
-        .map(TryInto::try_into)
-        .map_ok(|pattern| {
-            pattern
-                .into_tokens()
-                .into_iter()
-                .map(Token::unannotate)
-                .collect::<Vec<_>>()
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let token = token::any(tokens);
-    let regex = Any::compile(&token)?;
-    Ok(Any { token, regex })
+    let checked = Checked::any(
+        patterns
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    let regex = Any::compile(checked.as_ref())?;
+    Ok(Any { checked, regex })
 }
 
 /// Returns `true` if a path matches a glob expression.
@@ -1380,25 +1378,22 @@ pub const fn is_contextual_meta_character(x: char) -> bool {
     matches!(x, '-')
 }
 
-fn parse_and_check(expression: &str) -> Result<Tokenized, BuildError> {
+fn parse_and_check(expression: &str) -> Result<Checked<Tokenized>, BuildError> {
     let tokenized = token::parse(expression)?;
-    rule::check(&tokenized)?;
-    Ok(tokenized)
+    let checked = rule::check(tokenized)?;
+    Ok(checked)
 }
 
 #[cfg(feature = "miette")]
-fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
+fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Checked<Tokenized>> {
     token::parse(expression)
         .into_error_diagnostic()
-        .and_then_diagnose(|tokenized| {
-            rule::check(&tokenized)
-                .into_error_diagnostic()
-                .map_output(|_| tokenized)
-        })
-        .and_then_diagnose(|tokenized| {
-            diagnostics::diagnose(&tokenized)
+        .and_then_diagnose(|tokenized| rule::check(tokenized).into_error_diagnostic())
+        .and_then_diagnose(|checked| {
+            // TODO: This should accept `&Checked`.
+            diagnostics::diagnose(checked.as_ref())
                 .into_non_error_diagnostic()
-                .map_output(|_| tokenized)
+                .map_output(|_| checked)
         })
 }
 
@@ -1409,7 +1404,7 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
 mod tests {
     use std::path::Path;
 
-    use crate::{Any, BuildError, BuildErrorKind, CandidatePath, Glob, Pattern};
+    use crate::{BuildError, BuildErrorKind, CandidatePath, Glob, Pattern};
 
     #[test]
     fn escape() {
@@ -1566,20 +1561,20 @@ mod tests {
 
     #[test]
     fn build_any_combinator() {
-        crate::any::<Glob, _>([
+        crate::any([
             Glob::new("src/**/*.rs").unwrap(),
             Glob::new("doc/**/*.md").unwrap(),
             Glob::new("pkg/**/PKGBUILD").unwrap(),
         ])
         .unwrap();
-        crate::any::<Glob, _>(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
+        crate::any(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
     }
 
     #[test]
     fn build_any_nested_combinator() {
-        crate::any::<Any, _>([
-            crate::any::<Glob, _>(["a/b", "c/d"]).unwrap(),
-            crate::any::<Glob, _>(["{e,f,g}", "{h,i}"]).unwrap(),
+        crate::any([
+            crate::any(["a/b", "c/d"]).unwrap(),
+            crate::any(["{e,f,g}", "{h,i}"]).unwrap(),
         ])
         .unwrap();
     }
@@ -1773,7 +1768,7 @@ mod tests {
 
     #[test]
     fn reject_any_combinator() {
-        assert!(crate::any::<Glob, _>(["{a,b,c}", "{d, e}", "f/{g,/error,h}",]).is_err())
+        assert!(crate::any(["{a,b,c}", "{d, e}", "f/{g,/error,h}",]).is_err())
     }
 
     #[test]
@@ -2048,7 +2043,7 @@ mod tests {
 
     #[test]
     fn match_any_combinator() {
-        let any = crate::any::<Glob, _>(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
+        let any = crate::any(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
 
         assert!(any.is_match("src/lib.rs"));
         assert!(any.is_match("doc/api.md"));

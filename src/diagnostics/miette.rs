@@ -6,7 +6,7 @@ use tardar::BoxedDiagnostic;
 use thiserror::Error;
 
 use crate::diagnostics::SpanExt as _;
-use crate::token::{self, TokenKind, Tokenized};
+use crate::token::{self, TokenKind, TokenTree, Tokenized};
 
 #[derive(Clone, Debug, Diagnostic, Error)]
 #[diagnostic(code(wax::glob::semantic_literal), severity(warning))]

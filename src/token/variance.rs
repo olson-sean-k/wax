@@ -589,8 +589,8 @@ where
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use crate::token;
     use crate::token::variance::{self, Boundedness, InvariantSize, Variance};
+    use crate::token::{self, TokenTree};
 
     #[test]
     fn invariant_text_prefix() {

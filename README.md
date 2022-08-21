@@ -69,7 +69,7 @@ Match a path against multiple globs:
 ```rust
 use wax::{Glob, Pattern};
 
-let any = wax::any::<Glob, _>([
+let any = wax::any([
     "src/**/*.rs",
     "tests/**/*.rs",
     "doc/**/*.md",
@@ -266,43 +266,33 @@ the expression to match or walk overlapping trees.
 
 ## Combinators
 
-Glob patterns can be combined and matched together using the [`any`] combinator.
-[`any`] accepts an [`IntoIterator`] type with items that can be converted into a
-type that implements [`Pattern`] (most notably [`Glob`]). The output is an
-[`Any`], which implements [`Pattern`] and efficiently matches any of its input
-patterns. This is often more ergonomic and faster than matching against multiple
-[`Glob`]s.
+Glob patterns can be composed and matched together using the [`any`] combinator.
+[`any`] accepts an [`IntoIterator`] with items that are compiled [`Pattern`]s or
+`str` slices. The output is an [`Any`], which implements [`Pattern`] and
+efficiently matches any of its input patterns.
 
 ```rust
 use wax::{Glob, Pattern};
 
-let any = wax::any::<Glob, _>(["**/*.txt", "src/**/*.rs"]).unwrap();
+let any = wax::any(["**/*.txt", "src/**/*.rs"]).unwrap();
 assert!(any.is_match("src/lib.rs"));
 ```
 
-The first type parameter determines to which [`Pattern`] type the input items
-are converted and is typically [`Glob`].
-
-Because [`any`] accepts any types that can be converted into a [`Pattern`] type,
-it is possible to combine opaque patterns from foreign code (i.e., [`Glob`]s
-obtained from functions in external crates).
+The [`any`] combinator is infallible when using compiled [`Pattern`] types like
+[`Glob`] and [`Any`].
 
 ```rust
-extern crate foreign;
-
 use wax::{Glob, Pattern};
 
-let theirs: Glob = foreign::get().unwrap();
-let mine = Glob::new("**/*.txt").unwrap();
-
-if wax::any::<Glob, _>([theirs, mine]).unwrap().is_match("src/README.txt") {
-    // ...
-}
+let red = Glob::new("**/red/**/*.txt").unwrap();
+let blue = Glob::new("**/*blue*.txt").unwrap();
+assert!(wax::any([red, blue]).unwrap().is_match("red/potion.txt"));
 ```
 
 Unlike [alternatives](#alternatives), [`Any`] supports patterns with overlapping
-trees (rooted and unrooted expressions). However, it is not possible to match an
-[`Any`] against a directory tree (as with `Glob::walk`).
+trees (rooted and unrooted expressions). However, combinators can only perform
+logical matches and it is not possible to match an [`Any`] against a directory
+tree (as with `Glob::walk`).
 
 ## Flags and Case Sensitivity
 

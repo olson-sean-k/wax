@@ -20,12 +20,13 @@ use std::borrow::Cow;
 #[cfg(feature = "miette")]
 use std::fmt::Display;
 use std::iter::Fuse;
+use std::path::PathBuf;
 use std::slice;
 use thiserror::Error;
 
 use crate::diagnostics::{CompositeSpan, CorrelatedSpan, SpanExt as _};
-use crate::token::{InvariantSize, Token, TokenKind, Tokenized};
-use crate::{SliceExt as _, Terminals};
+use crate::token::{self, InvariantSize, Token, TokenKind, TokenTree, Tokenized};
+use crate::{Any, BuildError, Compose, Glob, SliceExt as _, Terminals};
 
 /// Maximum invariant size.
 ///
@@ -235,12 +236,106 @@ enum RuleErrorKind {
     IncompatibleBounds,
 }
 
-pub fn check<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    boundary(tokenized)?;
-    bounds(tokenized)?;
-    group(tokenized)?;
-    size(tokenized)?;
-    Ok(())
+#[derive(Clone, Copy, Debug)]
+pub struct Checked<T> {
+    inner: T,
+}
+
+impl<T> Checked<T> {
+    pub fn release(self) -> T {
+        self.inner
+    }
+}
+
+impl<T> AsRef<T> for Checked<T> {
+    fn as_ref(&self) -> &T {
+        &self.inner
+    }
+}
+
+impl<'t, T> Compose<'t> for Checked<T>
+where
+    T: TokenTree<'t>,
+{
+    type Tokens = T;
+}
+
+impl<'t> Checked<Token<'t, ()>> {
+    pub fn any<T, I>(tokens: I) -> Self
+    where
+        T: TokenTree<'t>,
+        I: IntoIterator<Item = Checked<T>>,
+    {
+        Checked {
+            // `token::any` composes the input tokens into an alternative. The
+            // alternative is not checked, but the `any` combinator is
+            // explicitly allowed to ignore the subset of rules that may be
+            // violated by this construction. In particular, branches may or may
+            // not have roots such that the alternative can match overlapping
+            // trees.
+            inner: token::any(
+                tokens
+                    .into_iter()
+                    .map(Checked::release)
+                    .map(TokenTree::into_tokens),
+            ),
+        }
+    }
+}
+
+impl<'t, A> Checked<Token<'t, A>> {
+    pub fn into_owned(self) -> Checked<Token<'static, A>> {
+        Checked {
+            inner: self.release().into_owned(),
+        }
+    }
+}
+
+impl<'t> Checked<Tokenized<'t>> {
+    pub fn partition(self) -> (PathBuf, Self) {
+        let tokenized = self.release();
+        // `Tokenized::partition` does not violate rules.
+        let (path, tokenized) = tokenized.partition();
+        (path, Checked { inner: tokenized })
+    }
+}
+
+impl<'t, A> Checked<Tokenized<'t, A>> {
+    pub fn into_owned(self) -> Checked<Tokenized<'static, A>> {
+        Checked {
+            inner: self.release().into_owned(),
+        }
+    }
+}
+
+impl<'t> From<Any<'t>> for Checked<Token<'t, ()>> {
+    fn from(any: Any<'t>) -> Self {
+        let Any { checked, .. } = any;
+        checked
+    }
+}
+
+impl<'t> From<Glob<'t>> for Checked<Tokenized<'t>> {
+    fn from(glob: Glob<'t>) -> Self {
+        let Glob { checked, .. } = glob;
+        checked
+    }
+}
+
+impl<'t> TryFrom<&'t str> for Checked<Tokenized<'t>> {
+    type Error = BuildError;
+
+    fn try_from(expression: &'t str) -> Result<Self, Self::Error> {
+        crate::parse_and_check(expression)
+    }
+}
+
+pub fn check(tokenized: Tokenized) -> Result<Checked<Tokenized>, RuleError> {
+    boundary(&tokenized)?;
+    bounds(&tokenized)?;
+    group(&tokenized)?;
+    size(&tokenized)?;
+    Ok(Checked { inner: tokenized })
 }
 
 fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {

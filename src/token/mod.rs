@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::mem;
 use std::ops::Deref;
 use std::path::{PathBuf, MAIN_SEPARATOR};
+use std::slice;
 use std::str;
 
 use crate::token::variance::{
@@ -21,10 +22,12 @@ pub use crate::token::variance::{
     invariant_text_prefix, is_exhaustive, Boundedness, InvariantSize, InvariantText, Variance,
 };
 
-pub trait IntoTokens<'t>: Sized {
+pub trait TokenTree<'t>: Sized {
     type Annotation;
 
     fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>>;
+
+    fn tokens(&self) -> &[Token<'t, Self::Annotation>];
 }
 
 #[derive(Clone, Debug)]
@@ -44,10 +47,6 @@ impl<'t, A> Tokenized<'t, A> {
 
     pub fn expression(&self) -> &Cow<'t, str> {
         &self.expression
-    }
-
-    pub fn tokens(&self) -> &[Token<'t, A>] {
-        &self.tokens
     }
 
     pub fn variance<T>(&self) -> Variance<T>
@@ -114,12 +113,16 @@ impl<'t> Tokenized<'t, Annotation> {
     }
 }
 
-impl<'t, A> IntoTokens<'t> for Tokenized<'t, A> {
+impl<'t, A> TokenTree<'t> for Tokenized<'t, A> {
     type Annotation = A;
 
     fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>> {
         let Tokenized { tokens, .. } = self;
         tokens
+    }
+
+    fn tokens(&self) -> &[Token<'t, Self::Annotation>] {
+        &self.tokens
     }
 }
 
@@ -206,6 +209,18 @@ impl<'t> From<TokenKind<'t, ()>> for Token<'t, ()> {
             kind,
             annotation: (),
         }
+    }
+}
+
+impl<'t, A> TokenTree<'t> for Token<'t, A> {
+    type Annotation = A;
+
+    fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>> {
+        vec![self]
+    }
+
+    fn tokens(&self) -> &[Token<'t, Self::Annotation>] {
+        slice::from_ref(self)
     }
 }
 
@@ -1061,7 +1076,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::token::{self, TokenKind};
+    use crate::token::{self, TokenKind, TokenTree};
 
     #[test]
     fn literal_case_insensitivity() {

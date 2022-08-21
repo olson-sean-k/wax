@@ -11,8 +11,8 @@ use walkdir::{self, DirEntry, WalkDir};
 
 use crate::capture::MatchedText;
 use crate::encode::CompileError;
-use crate::token::{self, Token};
-use crate::{BuildError, CandidatePath, Glob, Pattern, PositionExt as _};
+use crate::token::{self, Token, TokenTree};
+use crate::{BuildError, CandidatePath, Compose, ComposeError, Glob, PositionExt as _};
 
 pub type WalkItem<'e> = Result<WalkEntry<'e>, WalkError>;
 
@@ -320,16 +320,17 @@ impl FileIterator for walkdir::IntoIter {
     }
 }
 
-/// Negated [`Glob`]s and their associated [`FilterTarget`]s.
+/// Negated combinator that efficiently filters [`WalkEntry`]s.
 ///
-/// Determines an appropriate [`FilterTarget`] for a [`WalkEntry`] based on
-/// [`Glob`]s used as a filter. This can be used with [`FilterTree`] to
-/// effeciently filter [`WalkEntry`]s without reading directory trees from the
-/// file system when not necessary.
+/// Determines an appropriate [`FilterTarget`] for a [`WalkEntry`] based on the
+/// [exhaustiveness][`Pattern::is_exhaustive`] of its component [`Pattern`]s.
+/// This can be used with [`FilterTree`] to efficiently filter [`WalkEntry`]s
+/// without reading directory trees from the file system when not necessary.
 ///
 /// [`FilterTarget`]: crate::FilterTarget
 /// [`FilterTree`]: crate::FilterTree
 /// [`Pattern`]: crate::Pattern
+/// [`Pattern::is_exhaustive`]: crate::Pattern::is_exhaustive
 /// [`WalkEntry`]: crate::WalkEntry
 #[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[derive(Clone, Debug)]
@@ -339,48 +340,58 @@ pub struct Negation {
 }
 
 impl Negation {
-    /// Constructs a `Negation` from an [`IntoIterator`] with items that can be
-    /// converted into [`Glob`]s.
+    /// Composes glob expressions into a `Negation`.
+    ///
+    /// This function accepts an [`IntoIterator`] with items that implement the
+    /// [`Compose`] trait such as [`Glob`] and `&str`.
     ///
     /// # Errors
     ///
-    /// Returns an error if any of the items cannot be successfully converted
-    /// into a [`Glob`]. If the items are [`Glob`]s, then this function is
+    /// Returns an error if any of the inputs fail to build. If the inputs are a
+    /// compiled [`Pattern`] type such as [`Glob`], then this function is
     /// infallible.
     ///
     /// [`Glob`]: crate::Glob
+    /// [`Pattern`]: crate::Pattern
     /// [`IntoIterator`]: std::iter::IntoIterator
-    pub fn try_from_patterns<'t, P>(
-        patterns: impl IntoIterator<Item = P>,
-    ) -> Result<Self, BuildError>
+    pub fn any<'t, I>(patterns: I) -> Result<Self, BuildError>
     where
-        BuildError: From<P::Error>,
-        P: TryInto<Glob<'t>>,
+        BuildError: From<ComposeError<'t, I::Item>>,
+        I: IntoIterator,
+        I::Item: Compose<'t>,
     {
+        use crate::rule::Checked;
+
         // TODO: Inlining the code in this function causes E0271 in the call to
-        //       `crate::any` claiming that `Infallible` was expected but
-        //       `<P as TryInto<Glob<'t>>>::Error` was found instead. This may
-        //       be a bug in the compiler. In this case, these types are the
-        //       same, but it's unclear why the compiler requires this, as
-        //       `crate::any` has no such requirement.
-        fn from_globs(globs: Vec<Glob>) -> Negation {
-            // Partition the negation globs into exhaustive and nonexhaustive
-            // patterns. An exhaustive glob matches any and all sub-trees once
-            // it has matched and so arrests the traversal into sub-directories.
-            let (exhaustive, nonexhaustive) = globs
+        //       `crate::any` claiming that `Infallible` was expected but an
+        //       associated type was found instead. This may be a bug in the
+        //       compiler. It's unclear why the compiler requires this, as
+        //       `crate::any` has no such requirement and the error from
+        //       `crate::any` is discarded (unwrapped).
+        fn from_patterns<'t, T>(patterns: Vec<Checked<T>>) -> Negation
+        where
+            T: TokenTree<'t>,
+        {
+            // Partition the patterns into exhaustive and nonexhaustive
+            // patterns. An exhaustive pattern matches any and all sub-trees
+            // once it has matched and so arrests the traversal into
+            // sub-directories.
+            let (exhaustive, nonexhaustive) = patterns
                 .into_iter()
-                .partition::<Vec<_>, _>(Glob::is_exhaustive);
+                .partition::<Vec<_>, _>(|checked| token::is_exhaustive(checked.as_ref().tokens()));
             Negation {
-                exhaustive: crate::any::<Glob, _>(exhaustive).unwrap().regex,
-                nonexhaustive: crate::any::<Glob, _>(nonexhaustive).unwrap().regex,
+                exhaustive: crate::any(exhaustive).unwrap().regex,
+                nonexhaustive: crate::any(nonexhaustive).unwrap().regex,
             }
         }
 
-        let globs: Vec<_> = patterns
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect::<Result<_, _>>()?;
-        Ok(from_globs(globs))
+        let negation = from_patterns(
+            patterns
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        Ok(negation)
     }
 
     /// Gets the appropriate [`FilterTarget`] for the given [`WalkEntry`].
@@ -626,12 +637,12 @@ impl<'g> Walk<'g> {
         });
     }
 
-    /// Filters [`WalkEntry`]s against negated [`Glob`]s.
+    /// Filters [`WalkEntry`]s against negated glob expressions.
     ///
     /// This function creates an adaptor that discards [`WalkEntry`]s that match
-    /// any of the given [`Glob`] patterns. This allows for broad negations
-    /// while matching a [`Glob`] against a directory tree that cannot be
-    /// achieved using a single glob expression alone.
+    /// any of the given glob expressions. This allows for broad negations while
+    /// matching a [`Glob`] against a directory tree that cannot be achieved
+    /// using a single glob expression alone.
     ///
     /// The adaptor is constructed via [`FilterTree`] and [`Negation`] and
     /// therefore does not read directory trees from the file system when a
@@ -643,9 +654,9 @@ impl<'g> Walk<'g> {
     ///
     /// # Errors
     ///
-    /// Returns an error if any of the given patterns could not be converted
-    /// into a [`Glob`]. If the given patterns are [`Glob`]s, then this function
-    /// is infallible.
+    /// Returns an error if any of the inputs fail to build. If the inputs are a
+    /// compiled [`Pattern`] type such as [`Glob`], then this function is
+    /// infallible.
     ///
     /// # Examples
     ///
@@ -669,17 +680,19 @@ impl<'g> Walk<'g> {
     /// [`Iterator::filter`]: std::iter::Iterator::filter
     /// [`IteratorExt::filter_tree`]: crate::IteratorExt::filter_tree
     /// [`Negation`]: crate::Negation
+    /// [`Pattern`]: crate::Pattern
     /// [`Pattern::is_exhaustive`]: crate::Pattern::is_exhaustive
     /// [`WalkEntry`]: crate::WalkEntry
-    pub fn not<'t, P>(
+    pub fn not<'t, I>(
         self,
-        patterns: impl IntoIterator<Item = P>,
+        patterns: I,
     ) -> Result<impl 'g + FileIterator<Item = WalkItem<'static>>, BuildError>
     where
-        BuildError: From<P::Error>,
-        P: TryInto<Glob<'t>>,
+        BuildError: From<ComposeError<'t, I::Item>>,
+        I: IntoIterator,
+        I::Item: Compose<'t>,
     {
-        Negation::try_from_patterns(patterns)
+        Negation::any(patterns)
             .map(|negation| self.filter_tree(move |entry| negation.target(entry)))
     }
 
@@ -892,7 +905,7 @@ pub fn walk<'g>(
     // The directory tree is traversed from `root`, which may include an
     // invariant prefix from the glob pattern. `Walk` patterns are only applied
     // to path components following this prefix in `root`.
-    let (root, prefix) = invariant_path_prefix(glob.tokenized.tokens()).map_or_else(
+    let (root, prefix) = invariant_path_prefix(glob.checked.as_ref().tokens()).map_or_else(
         || {
             let root = Cow::from(directory);
             (root.clone(), root)
@@ -909,8 +922,8 @@ pub fn walk<'g>(
             }
         },
     );
-    let components =
-        Walk::compile(glob.tokenized.tokens()).expect("failed to compile glob sub-expressions");
+    let components = Walk::compile(glob.checked.as_ref().tokens())
+        .expect("failed to compile glob sub-expressions");
     Walk {
         pattern: Cow::Borrowed(&glob.regex),
         components,
