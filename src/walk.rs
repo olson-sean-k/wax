@@ -253,10 +253,12 @@ pub trait IteratorExt: Iterator + Sized {
     /// does not read conventionally hidden directory trees.
     ///
     /// ```rust,no_run
+    /// use wax::Glob;
     /// #[cfg(windows)]
     /// use wax::{FilterTarget, IteratorExt as _};
     ///
-    /// let walk = wax::walk("**/*.(?i){jpg,jpeg}", "./Pictures").unwrap();
+    /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
+    /// let walk = glob.walk("./Pictures");
     /// // Filter out nominally hidden files on Unix. Like `filter_tree`, `not`
     /// // does not perform unnecessary reads of directory trees.
     /// #[cfg(unix)]
@@ -479,9 +481,12 @@ impl Default for LinkBehavior {
 /// ignored. To read linked targets, use [`LinkBehavior::ReadTarget`].
 ///
 /// ```rust
-/// use wax::LinkBehavior;
+/// use wax::{Glob, LinkBehavior};
 ///
-/// for entry in wax::walk_with_behavior("**", ".", LinkBehavior::ReadTarget).unwrap() {
+/// for entry in Glob::new("**")
+///     .unwrap()
+///     .walk_with_behavior(".", LinkBehavior::ReadTarget)
+/// {
 ///     let entry = entry.unwrap();
 ///     // ...
 /// }
