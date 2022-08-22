@@ -17,6 +17,7 @@ use itertools::Itertools as _;
 #[cfg(feature = "miette")]
 use miette::{Diagnostic, LabeledSpan, SourceCode};
 use std::borrow::Cow;
+use std::convert::Infallible;
 #[cfg(feature = "miette")]
 use std::fmt::Display;
 use std::iter::Fuse;
@@ -258,6 +259,7 @@ where
     T: TokenTree<'t>,
 {
     type Tokens = T;
+    type Error = Infallible;
 }
 
 impl<'t> Checked<Token<'t, ()>> {

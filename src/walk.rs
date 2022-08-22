@@ -12,7 +12,7 @@ use walkdir::{self, DirEntry, WalkDir};
 use crate::capture::MatchedText;
 use crate::encode::CompileError;
 use crate::token::{self, Token, TokenTree};
-use crate::{BuildError, CandidatePath, Compose, ComposeError, Glob, PositionExt as _};
+use crate::{BuildError, CandidatePath, Compose, Glob, PositionExt as _};
 
 pub type WalkItem<'e> = Result<WalkEntry<'e>, WalkError>;
 
@@ -350,15 +350,15 @@ impl Negation {
     /// # Errors
     ///
     /// Returns an error if any of the inputs fail to build. If the inputs are a
-    /// compiled [`Pattern`] type such as [`Glob`], then this function is
-    /// infallible.
+    /// compiled [`Pattern`] type such as [`Glob`], then this only occurs if the
+    /// compiled program is too large.
     ///
     /// [`Glob`]: crate::Glob
     /// [`Pattern`]: crate::Pattern
     /// [`IntoIterator`]: std::iter::IntoIterator
     pub fn any<'t, I>(patterns: I) -> Result<Self, BuildError>
     where
-        BuildError: From<ComposeError<'t, I::Item>>,
+        BuildError: From<<I::Item as Compose<'t>>::Error>,
         I: IntoIterator,
         I::Item: Compose<'t>,
     {
@@ -660,8 +660,8 @@ impl<'g> Walk<'g> {
     /// # Errors
     ///
     /// Returns an error if any of the inputs fail to build. If the inputs are a
-    /// compiled [`Pattern`] type such as [`Glob`], then this function is
-    /// infallible.
+    /// compiled [`Pattern`] type such as [`Glob`], then this only occurs if the
+    /// compiled program is too large.
     ///
     /// # Examples
     ///
@@ -693,7 +693,7 @@ impl<'g> Walk<'g> {
         patterns: I,
     ) -> Result<impl 'g + FileIterator<Item = WalkItem<'static>>, BuildError>
     where
-        BuildError: From<ComposeError<'t, I::Item>>,
+        BuildError: From<<I::Item as Compose<'t>>::Error>,
         I: IntoIterator,
         I::Item: Compose<'t>,
     {

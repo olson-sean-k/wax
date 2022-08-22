@@ -64,8 +64,6 @@ pub use crate::walk::{
     WalkError,
 };
 
-type ComposeError<'t, T> = <T as TryInto<Checked<<T as Compose<'t>>::Tokens>>>::Error;
-
 #[cfg(windows)]
 const PATHS_ARE_CASE_INSENSITIVE: bool = true;
 #[cfg(not(windows))]
@@ -347,12 +345,16 @@ pub trait Pattern<'t>: Compose<'t, Error = Infallible> {
 ///
 /// [`any`]: crate::any
 /// [`Any`]: crate::Any
-pub trait Compose<'t>: TryInto<Checked<Self::Tokens>> {
+pub trait Compose<'t>:
+    TryInto<Checked<Self::Tokens>, Error = <Self as Compose<'t>>::Error>
+{
     type Tokens: TokenTree<'t>;
+    type Error;
 }
 
 impl<'t> Compose<'t> for &'t str {
     type Tokens = Tokenized<'t>;
+    type Error = BuildError;
 }
 
 // TODO: `Diagnostic` is implemented with macros for brevity and to ensure
@@ -1054,6 +1056,7 @@ impl<'t> TryFrom<&'t str> for Glob<'t> {
 
 impl<'t> Compose<'t> for Glob<'t> {
     type Tokens = Tokenized<'t>;
+    type Error = Infallible;
 }
 
 /// Combinator that matches any of its component [`Pattern`]s.
@@ -1096,6 +1099,7 @@ impl<'t> Pattern<'t> for Any<'t> {
 
 impl<'t> Compose<'t> for Any<'t> {
     type Tokens = Token<'t, ()>;
+    type Error = Infallible;
 }
 
 // TODO: It may be useful to use dynamic dispatch via trait objects instead.
@@ -1135,8 +1139,7 @@ impl<'t> Compose<'t> for Any<'t> {
 /// ```
 ///
 /// [`Glob`]s and other compiled [`Pattern`]s can also be composed into an
-/// [`Any`]. Unlike glob expressions represented as `str` slices, using
-/// instances of a [`Pattern`] type is infallible.
+/// [`Any`].
 ///
 /// ```rust
 /// use wax::{Glob, Pattern};
@@ -1149,8 +1152,8 @@ impl<'t> Compose<'t> for Any<'t> {
 /// # Errors
 ///
 /// Returns an error if any of the inputs fail to build. If the inputs are a
-/// compiled [`Pattern`] type such as [`Glob`], then this function is
-/// infallible.
+/// compiled [`Pattern`] type such as [`Glob`], then this only occurs if the
+/// compiled program is too large.
 ///
 /// [`Any`]: crate::Any
 /// [`Glob`]: crate::Glob
@@ -1158,7 +1161,7 @@ impl<'t> Compose<'t> for Any<'t> {
 /// [`Pattern`]: crate::Pattern
 pub fn any<'t, I>(patterns: I) -> Result<Any<'t>, BuildError>
 where
-    BuildError: From<ComposeError<'t, I::Item>>,
+    BuildError: From<<I::Item as Compose<'t>>::Error>,
     I: IntoIterator,
     I::Item: Compose<'t>,
 {

@@ -278,17 +278,6 @@ let any = wax::any(["**/*.txt", "src/**/*.rs"]).unwrap();
 assert!(any.is_match("src/lib.rs"));
 ```
 
-The [`any`] combinator is infallible when using compiled [`Pattern`] types like
-[`Glob`] and [`Any`].
-
-```rust
-use wax::{Glob, Pattern};
-
-let red = Glob::new("**/red/**/*.txt").unwrap();
-let blue = Glob::new("**/*blue*.txt").unwrap();
-assert!(wax::any([red, blue]).unwrap().is_match("red/potion.txt"));
-```
-
 Unlike [alternatives](#alternatives), [`Any`] supports patterns with overlapping
 trees (rooted and unrooted expressions). However, combinators can only perform
 logical matches and it is not possible to match an [`Any`] against a directory
