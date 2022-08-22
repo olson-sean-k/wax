@@ -49,20 +49,27 @@ where
     T: Invariance,
 {
     fn disjunctive_variance(self) -> Variance<T> {
-        let variances: Vec<_> = self.map(UnitVariance::unit_variance).collect();
-        if variances.iter().combinations(2).all(|combination| {
-            let mut combination = combination.into_iter();
-            let (left, right) = (combination.next(), combination.next());
-            left == right
-        }) {
-            variances
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| Variance::Invariant(T::empty()))
-        }
-        else {
-            Variance::Variant(Boundedness::Closed)
-        }
+        // TODO: This implementation is incomplete. Unbounded variance (and
+        //       unbounded depth) are "infectious" when disjunctive. If any unit
+        //       variance is variant and unbounded (open), then the disjunctive
+        //       variance should be the same.
+        // There are three distinct possibilities for disjunctive variance.
+        //
+        //   - The iterator is empty and there are no unit variances to
+        //     consider. The disjunctive variance is the empty invariant.
+        //   - The iterator is non-empty and all unit variances are equal. The
+        //     disjunctive variance is the same as any of the like unit
+        //     variances.
+        //   - The iterator is non-empty and the unit variances are **not** all
+        //     equal. The disjunctive variance is variant and bounded (closed).
+        let mut variances = self.map(UnitVariance::unit_variance).fuse();
+        let first = variances
+            .next()
+            .unwrap_or_else(|| Variance::Invariant(T::empty()));
+        variances
+            .all(|variance| first == variance)
+            .then(|| first)
+            .unwrap_or(Variance::Variant(Boundedness::Closed))
     }
 }
 
