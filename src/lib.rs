@@ -357,18 +357,12 @@ impl<'t> Compose<'t> for &'t str {
     type Error = BuildError;
 }
 
-// TODO: `Diagnostic` is implemented with macros for brevity and to ensure
-//       complete coverage of features. See comments on `BuildError` below.
 /// General errors concerning [`Pattern`]s.
 ///
 /// This is the most general error and each of its variants exposes a particular
 /// error type that describes the details of its associated error condition.
 /// This error is not used in any Wax APIs directly, but can be used to
 /// encapsulate the more specific errors that are.
-///
-/// When the `miette` feature is enabled, this and other error types implement
-/// the [`Diagnostic`] trait. Due to a technical limitation, this may not be
-/// properly annotated in API documentation.
 ///
 /// # Examples
 ///
@@ -390,7 +384,6 @@ impl<'t> Compose<'t> for &'t str {
 /// }
 /// ```
 ///
-/// [`Diagnostic`]: miette::Diagnostic
 /// [`Pattern`]: crate::Pattern
 #[cfg_attr(feature = "miette", derive(Diagnostic))]
 #[derive(Debug, Error)]

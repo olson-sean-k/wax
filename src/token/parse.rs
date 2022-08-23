@@ -92,12 +92,6 @@ impl LocatedError for ErrorEntry<'_> {
 /// Common examples of glob expressions that cannot be parsed are alternative
 /// and repetition patterns with missing delimiters and ambiguous patterns, such
 /// as `src/***/*.rs` or `{.local,.config/**/*.toml`.
-///
-/// When the `miette` feature is enabled, this error implements the
-/// [`Diagnostic`] trait and provides more detailed information about the parse
-/// failure.
-///
-/// [`Diagnostic`]: miette::Diagnostic
 #[derive(Clone, Debug, Error)]
 #[error("failed to parse glob expression")]
 pub struct ParseError<'t> {
