@@ -445,7 +445,7 @@ not possible to directly filter or otherwise select paths or files based on
 additional metadata (such as a modification timestamp) in a glob expression.
 However, it is possible for user code to query any such metadata for a matching
 path or effeciently apply such filtering when matching directory trees using
-[`IteratorExt::filter_tree`].
+[`FileIterator::filter_tree`].
 
 For such additional features, including metadata filters and transformations
 using matched text, see [Nym][nym].
@@ -474,11 +474,11 @@ series without warning nor deprecation.
 [`CandidatePath`]: https://docs.rs/wax/*/wax/struct.CandidatePath.html
 [`Display`]: https://doc.rust-lang.org/std/fmt/trait.Display.html
 [`Error`]: https://doc.rust-lang.org/std/error/trait.Error.html
+[`FileIterator::filter_tree`]: https://docs.rs/wax/*/wax/trait.FileIterator.html#tymethod.filter_tree
 [`Glob`]: https://docs.rs/wax/*/wax/struct.Glob.html
 [`Glob::has_semantic_literals`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.has_semantic_literals
 [`Glob::partition`]: https://docs.rs/wax/*/wax/struct.Glob.html#method.partition
 [`GlobError`]: https://docs.rs/wax/*/wax/enum.GlobError.html
 [`IntoIterator`]: https://doc.rust-lang.org/std/iter/trait.IntoIterator.html
-[`IteratorExt::filter_tree`]: https://docs.rs/wax/*/wax/trait.IteratorExt.html#tymethod.filter_tree
 [`PathBuf`]: https://doc.rust-lang.org/std/path/struct.PathBuf.html
 [`Pattern`]: https://docs.rs/wax/*/wax/trait.Pattern.html

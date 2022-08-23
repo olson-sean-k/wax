@@ -215,29 +215,33 @@ macro_rules! walk {
     };
 }
 
-/// Extension methods for [`Iterator`]s concerning [`Glob`]s and directory
-/// traversals.
+/// An [`Iterator`] over [`WalkEntry`]s that can filter directory trees.
 ///
+/// A `FileIterator` is a `TreeIterator` that yields [`WalkEntry`]s. This trait
+/// is implemented by [`Walk`] and adaptors like [`FilterTree`]. A
+/// `TreeIterator` is an iterator that reads its items from a tree and therefore
+/// can meaningfully filter not only items but their corresponding sub-trees to
+/// avoid unnecessary work. To that end, this trait provides the `filter_tree`
+/// function, which allows directory trees to be discarded (not read from the
+/// file system) when matching [`Glob`]s against directory trees.
+///
+/// [`filter_tree`]: crate::FileIterator::filter_tree
 /// [`Glob`]: crate::Glob
 /// [`Iterator`]: std::iter::Iterator
+/// [`WalkEntry`]: crate::WalkEntry
 #[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
-pub trait IteratorExt: Iterator + Sized {
-    /// Filters items and determines the traversal of directory trees in
-    /// `FileIterator`s such as [`Walk`].
-    ///
-    /// A `FileIterator` is an [`Iterator`] that reads the file system and
-    /// traverses directory trees. [`Walk`] and [`FilterTree`] are both
-    /// `FileIterator`s and they both support this function.
+pub trait FileIterator: Sized + TreeIterator<Item = WalkItem<'static>> {
+    /// Filters [`WalkEntry`]s and controls the traversal of directory trees.
     ///
     /// This function creates an adaptor that filters [`WalkEntry`]s and
-    /// furthermore specifies how iteration proceeds to walk directory trees.
-    /// The adaptor accepts a function that, when discarding a [`WalkEntry`],
-    /// yields a [`FilterTarget`]. **If the entry refers to a directory and
-    /// [`FilterTarget::Tree`] is returned by the function, then iteration will
-    /// not descend into that directory and the tree will not be read from the
-    /// file system.** Therefore, this adaptor should be preferred over
-    /// functions like [`Iterator::filter`] when discarded directories do not
-    /// need to be read.
+    /// furthermore specifies how iteration proceeds to traverse directory
+    /// trees. The adaptor accepts a function that, when discarding a
+    /// [`WalkEntry`], yields a [`FilterTarget`]. **If the entry refers to a
+    /// directory and [`FilterTarget::Tree`] is returned by the function, then
+    /// iteration will not descend into that directory and the tree will not be
+    /// read from the file system.** Therefore, this adaptor should be preferred
+    /// over functions like [`Iterator::filter`] when discarded directories do
+    /// not need to be read.
     ///
     /// Errors are not filtered, so if an error occurs reading a file at a path
     /// that would have been discarded, then that error is still yielded by the
@@ -255,7 +259,7 @@ pub trait IteratorExt: Iterator + Sized {
     /// ```rust,no_run
     /// use wax::Glob;
     /// #[cfg(windows)]
-    /// use wax::{FilterTarget, IteratorExt as _};
+    /// use wax::{FileIterator, FilterTarget};
     ///
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
     /// let walk = glob.walk("./Pictures");
@@ -295,28 +299,26 @@ pub trait IteratorExt: Iterator + Sized {
     /// [attributes]: https://docs.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants
     fn filter_tree<F>(self, f: F) -> FilterTree<Self, F>
     where
-        Self: FileIterator<Item = WalkItem<'static>>,
         F: FnMut(&WalkEntry<'static>) -> Option<FilterTarget>;
 }
 
-impl<I> IteratorExt for I
+impl<I> FileIterator for I
 where
-    I: Iterator,
+    I: TreeIterator<Item = WalkItem<'static>> + Sized,
 {
     fn filter_tree<F>(self, f: F) -> FilterTree<Self, F>
     where
-        Self: FileIterator<Item = WalkItem<'static>>,
         F: FnMut(&WalkEntry<'static>) -> Option<FilterTarget>,
     {
         FilterTree { input: self, f }
     }
 }
 
-pub trait FileIterator: Iterator {
+pub trait TreeIterator: Iterator {
     fn skip_tree(&mut self);
 }
 
-impl FileIterator for walkdir::IntoIter {
+impl TreeIterator for walkdir::IntoIter {
     fn skip_tree(&mut self) {
         self.skip_current_dir();
     }
@@ -398,7 +400,7 @@ impl Negation {
 
     /// Gets the appropriate [`FilterTarget`] for the given [`WalkEntry`].
     ///
-    /// This function can be used with [`IteratorExt::filter_tree`] to
+    /// This function can be used with [`FileIterator::filter_tree`] to
     /// effeciently filter [`WalkEntry`]s without reading directory trees from
     /// the file system when not necessary.
     ///
@@ -406,9 +408,9 @@ impl Negation {
     /// [exhaustive glob expression][`Pattern::is_exhaustive`], such as
     /// `secret/**`.
     ///
+    /// [`FileIterator::filter_tree`]: crate::FileIterator::filter_tree
     /// [`FilterTarget`]: crate::FilterTarget
     /// [`FilterTarget::Tree`]: crate::FilterTarget::Tree
-    /// [`IteratorExt::filter_tree`]: crate::IteratorExt::filter_tree
     /// [`Pattern::is_exhaustive`]: crate::Pattern::is_exhaustive
     /// [`WalkEntry`]: crate::WalkEntry
     pub fn target(&self, entry: &WalkEntry) -> Option<FilterTarget> {
@@ -571,10 +573,10 @@ impl From<usize> for WalkBehavior {
 
 /// Iterator over files matching a [`Glob`] in a directory tree.
 ///
-/// `Walk` is a `FileIterator` and supports [`IteratorExt::filter_tree`].
+/// `Walk` is a `TreeIterator` and supports [`FileIterator::filter_tree`].
 ///
+/// [`FileIterator::filter_tree`]: crate::FileIterator::filter_tree
 /// [`Glob`]: crate::Glob
-/// [`IteratorExt::filter_tree`]: crate::IteratorExt::filter_tree
 #[derive(Debug)]
 // This type is principally an iterator and is therefore lazy.
 #[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
@@ -681,17 +683,14 @@ impl<'g> Walk<'g> {
     /// }
     /// ```
     ///
+    /// [`FileIterator::filter_tree`]: crate::FileIterator::filter_tree
     /// [`Glob`]: crate::Glob
     /// [`Iterator::filter`]: std::iter::Iterator::filter
-    /// [`IteratorExt::filter_tree`]: crate::IteratorExt::filter_tree
     /// [`Negation`]: crate::Negation
     /// [`Pattern`]: crate::Pattern
     /// [`Pattern::is_exhaustive`]: crate::Pattern::is_exhaustive
     /// [`WalkEntry`]: crate::WalkEntry
-    pub fn not<'t, I>(
-        self,
-        patterns: I,
-    ) -> Result<impl 'g + FileIterator<Item = WalkItem<'static>>, BuildError>
+    pub fn not<'t, I>(self, patterns: I) -> Result<impl 'g + FileIterator, BuildError>
     where
         BuildError: From<<I::Item as Compose<'t>>::Error>,
         I: IntoIterator,
@@ -730,7 +729,7 @@ impl Iterator for Walk<'_> {
     }
 }
 
-impl FileIterator for Walk<'_> {
+impl TreeIterator for Walk<'_> {
     fn skip_tree(&mut self) {
         self.walk.skip_tree();
     }
@@ -767,20 +766,20 @@ pub enum FilterTarget {
     Tree,
 }
 
-/// Iterator adaptor that filters [`WalkEntry`]s and determines the traversal of
+/// Iterator adaptor that filters [`WalkEntry`]s and controls the traversal of
 /// directory trees.
 ///
-/// This adaptor is returned by [`IteratorExt::filter_tree`] and in addition to
-/// filtering [`WalkEntry`]s also determines how `FileIterator`s walk directory
-/// trees. If discarded directories do not need to be read from the file system,
-/// then **this adaptor should be preferred over functions like
+/// This adaptor is returned by [`FileIterator::filter_tree`] and in addition to
+/// filtering [`WalkEntry`]s also determines how `TreeIterator`s traverse
+/// directory trees. If discarded directories do not need to be read from the
+/// file system, then **this adaptor should be preferred over functions like
 /// [`Iterator::filter`], because it can avoid potentially large and unnecessary
 /// reads.**
 ///
-/// `FilterTree` is a `FileIterator` and supports [`IteratorExt::filter_tree`]
+/// `FilterTree` is a `TreeIterator` and supports [`FileIterator::filter_tree`]
 /// so `filter_tree` may be chained.
 ///
-/// [`IteratorExt::filter_tree`]: crate::IteratorExt::filter_tree
+/// [`FileIterator::filter_tree`]: crate::FileIterator::filter_tree
 /// [`WalkEntry`]: crate::WalkEntry
 #[cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 #[derive(Clone, Debug)]
@@ -791,7 +790,7 @@ pub struct FilterTree<I, F> {
 
 impl<I, F> Iterator for FilterTree<I, F>
 where
-    I: FileIterator<Item = WalkItem<'static>>,
+    I: FileIterator,
     F: FnMut(&WalkEntry<'static>) -> Option<FilterTarget>,
 {
     type Item = WalkItem<'static>;
@@ -822,10 +821,10 @@ where
     }
 }
 
-impl<I, F> FileIterator for FilterTree<I, F>
+impl<I, F> TreeIterator for FilterTree<I, F>
 where
     Self: Iterator,
-    I: FileIterator,
+    I: TreeIterator,
 {
     fn skip_tree(&mut self) {
         self.input.skip_tree();

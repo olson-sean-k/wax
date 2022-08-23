@@ -60,7 +60,7 @@ pub use crate::capture::MatchedText;
 pub use crate::diagnostics::{LocatedError, Span};
 #[cfg(feature = "walk")]
 pub use crate::walk::{
-    FilterTarget, FilterTree, IteratorExt, LinkBehavior, Negation, Walk, WalkBehavior, WalkEntry,
+    FileIterator, FilterTarget, FilterTree, LinkBehavior, Negation, Walk, WalkBehavior, WalkEntry,
     WalkError,
 };
 
