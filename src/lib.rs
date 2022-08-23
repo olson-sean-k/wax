@@ -859,7 +859,8 @@ impl<'t> Glob<'t> {
     /// iterator adaptor can be used when walking a directory tree to filter
     /// [`WalkEntry`]s using arbitary patterns. **This should generally be
     /// preferred over functions like [`Iterator::filter`], because it avoids
-    /// unnecessary reads of directory trees when matching terminal negations.**
+    /// unnecessary reads of directory trees when matching [exhaustive
+    /// negations][`Pattern::is_exhaustive`].**
     ///
     /// ```rust,no_run
     /// use wax::Glob;
@@ -883,6 +884,7 @@ impl<'t> Glob<'t> {
     /// [`Path::join`]: std::path::Path::join
     /// [`PathBuf::push`]: std::path::PathBuf::push
     /// [`Pattern`]: crate::Pattern
+    /// [`Pattern::is_exhaustive`]: crate::Pattern::is_exhaustive
     /// [`WalkBehavior`]: crate::WalkBehavior
     /// [`WalkEntry`]: crate::WalkEntry
     #[cfg(feature = "walk")]
