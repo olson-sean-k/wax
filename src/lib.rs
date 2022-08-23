@@ -138,41 +138,6 @@ impl<T> PositionExt<T> for Position<T> {
     }
 }
 
-trait SliceExt<T> {
-    fn terminals(&self) -> Option<Terminals<&T>>;
-}
-
-impl<T> SliceExt<T> for [T] {
-    fn terminals(&self) -> Option<Terminals<&T>> {
-        match self.len() {
-            0 => None,
-            1 => Some(Terminals::Only(self.first().unwrap())),
-            _ => Some(Terminals::StartEnd(
-                self.first().unwrap(),
-                self.last().unwrap(),
-            )),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum Terminals<T> {
-    Only(T),
-    StartEnd(T, T),
-}
-
-impl<T> Terminals<T> {
-    pub fn map<U, F>(self, mut f: F) -> Terminals<U>
-    where
-        F: FnMut(T) -> U,
-    {
-        match self {
-            Terminals::Only(only) => Terminals::Only(f(only)),
-            Terminals::StartEnd(start, end) => Terminals::StartEnd(f(start), f(end)),
-        }
-    }
-}
-
 /// Token that captures matched text in a glob expression.
 ///
 /// # Examples

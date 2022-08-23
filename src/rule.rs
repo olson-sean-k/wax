@@ -27,7 +27,7 @@ use thiserror::Error;
 
 use crate::diagnostics::{CompositeSpan, CorrelatedSpan, SpanExt as _};
 use crate::token::{self, InvariantSize, Token, TokenKind, TokenTree, Tokenized};
-use crate::{Any, BuildError, Compose, Glob, SliceExt as _, Terminals};
+use crate::{Any, BuildError, Compose, Glob};
 
 /// Maximum invariant size.
 ///
@@ -133,6 +133,41 @@ where
             };
             adjacency
         })
+    }
+}
+
+trait SliceExt<T> {
+    fn terminals(&self) -> Option<Terminals<&T>>;
+}
+
+impl<T> SliceExt<T> for [T] {
+    fn terminals(&self) -> Option<Terminals<&T>> {
+        match self.len() {
+            0 => None,
+            1 => Some(Terminals::Only(self.first().unwrap())),
+            _ => Some(Terminals::StartEnd(
+                self.first().unwrap(),
+                self.last().unwrap(),
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum Terminals<T> {
+    Only(T),
+    StartEnd(T, T),
+}
+
+impl<T> Terminals<T> {
+    pub fn map<U, F>(self, mut f: F) -> Terminals<U>
+    where
+        F: FnMut(T) -> U,
+    {
+        match self {
+            Terminals::Only(only) => Terminals::Only(f(only)),
+            Terminals::StartEnd(start, end) => Terminals::StartEnd(f(start), f(end)),
+        }
     }
 }
 
@@ -370,7 +405,7 @@ fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     use crate::token::TokenKind::{Separator, Wildcard};
     use crate::token::Wildcard::{Tree, ZeroOrMore};
-    use crate::Terminals::{Only, StartEnd};
+    use Terminals::{Only, StartEnd};
 
     struct CorrelatedError {
         kind: RuleErrorKind,
