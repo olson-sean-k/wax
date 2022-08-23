@@ -828,7 +828,16 @@ impl<'t> Glob<'t> {
     /// working directory `.` is an appropriate base directory and will be
     /// intuitively ignored if the [`Glob`] is rooted, such as in
     /// `/mnt/media/**/*.mp4`. The [`has_root`] function can be used to check if
-    /// a [`Glob`] is rooted.
+    /// a [`Glob`] is rooted and the [`Walk::root`] function can be used to get
+    /// the resulting root directory of the traversal.
+    ///
+    /// The [root directory][`Walk::root`] is established via the [invariant
+    /// prefix][`Glob::partition`] of the [`Glob`]. **The prefix and any
+    /// [semantic literals][`Glob::has_semantic_literals`] in this prefix are
+    /// interpreted semantically as a path**, so components like `.` and `..`
+    /// that precede variant patterns interact with the base directory
+    /// semantically. This means that expressions like `../**` escape the base
+    /// directory as expected on Unix and Windows, for example.
     ///
     /// This function uses the default [`WalkBehavior`]. To configure the
     /// behavior of the traversal, see [`Glob::walk_with_behavior`].
@@ -878,6 +887,7 @@ impl<'t> Glob<'t> {
     /// [`PathBuf::push`]: std::path::PathBuf::push
     /// [`Pattern`]: crate::Pattern
     /// [`Pattern::is_exhaustive`]: crate::Pattern::is_exhaustive
+    /// [`Walk::root`]: crate::Walk::root
     /// [`WalkBehavior`]: crate::WalkBehavior
     /// [`WalkEntry`]: crate::WalkEntry
     #[cfg(feature = "walk")]
@@ -892,9 +902,11 @@ impl<'t> Glob<'t> {
     /// a [`WalkBehavior`]. This can be used to configure how the traversal
     /// interacts with symbolic links, the maximum depth from the root, etc.
     ///
-    /// Depth is relative to the root directory of the traversal, which is
-    /// determined by joining the given path and any invariant prefix of the
-    /// [`Glob`]. See [`Walk::root`].
+    /// Depth is relative to the [root directory][`Walk::root`] of the
+    /// traversal, which is determined by joining the given path and any
+    /// [invariant prefix][`Glob::partition`] of the [`Glob`].
+    ///
+    /// See [`Glob::walk`] for more information.
     ///
     /// # Examples
     ///
@@ -923,6 +935,7 @@ impl<'t> Glob<'t> {
     /// ```
     ///
     /// [`Glob`]: crate::Glob
+    /// [`Glob::partition`]: crate::Glob::partition
     /// [`Glob::walk`]: crate::Glob::walk
     /// [`LinkBehavior`]: crate::LinkBehavior
     /// [`Walk::root`]: crate::Walk::root
