@@ -347,15 +347,15 @@ impl<'t, A> Checked<Tokenized<'t, A>> {
 
 impl<'t> From<Any<'t>> for Checked<Token<'t, ()>> {
     fn from(any: Any<'t>) -> Self {
-        let Any { checked, .. } = any;
-        checked
+        let Any { tree, .. } = any;
+        tree
     }
 }
 
 impl<'t> From<Glob<'t>> for Checked<Tokenized<'t>> {
     fn from(glob: Glob<'t>) -> Self {
-        let Glob { checked, .. } = glob;
-        checked
+        let Glob { tree, .. } = glob;
+        tree
     }
 }
 

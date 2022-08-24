@@ -369,10 +369,10 @@ impl Negation {
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)?
             .into_iter()
-            .partition::<Vec<_>, _>(|checked| token::is_exhaustive(checked.as_ref().tokens()));
+            .partition::<Vec<_>, _>(|tree| token::is_exhaustive(tree.as_ref().tokens()));
         let negation = Negation {
-            exhaustive: crate::any(exhaustive)?.regex,
-            nonexhaustive: crate::any(nonexhaustive)?.regex,
+            exhaustive: crate::any(exhaustive)?.pattern,
+            nonexhaustive: crate::any(nonexhaustive)?.pattern,
         };
         Ok(negation)
     }
@@ -887,7 +887,7 @@ pub fn walk<'g>(
     // The directory tree is traversed from `root`, which may include an
     // invariant prefix from the glob pattern. `Walk` patterns are only applied
     // to path components following this prefix in `root`.
-    let (root, prefix) = invariant_path_prefix(glob.checked.as_ref().tokens()).map_or_else(
+    let (root, prefix) = invariant_path_prefix(glob.tree.as_ref().tokens()).map_or_else(
         || {
             let root = Cow::from(directory);
             (root.clone(), root)
@@ -904,10 +904,10 @@ pub fn walk<'g>(
             }
         },
     );
-    let components = Walk::compile(glob.checked.as_ref().tokens())
-        .expect("failed to compile glob sub-expressions");
+    let components =
+        Walk::compile(glob.tree.as_ref().tokens()).expect("failed to compile glob sub-expressions");
     Walk {
-        pattern: Cow::Borrowed(&glob.regex),
+        pattern: Cow::Borrowed(&glob.pattern),
         components,
         root: root.clone().into_owned(),
         prefix: prefix.into_owned(),

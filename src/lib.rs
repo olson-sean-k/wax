@@ -623,8 +623,8 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 /// [`walk`]: crate::Glob::walk
 #[derive(Clone, Debug)]
 pub struct Glob<'t> {
-    checked: Checked<Tokenized<'t>>,
-    regex: Regex,
+    tree: Checked<Tokenized<'t>>,
+    pattern: Regex,
 }
 
 impl<'t> Glob<'t> {
@@ -651,9 +651,9 @@ impl<'t> Glob<'t> {
     /// [`Glob`]: crate::Glob
     /// [`BuildError`]: crate::BuildError
     pub fn new(expression: &'t str) -> Result<Self, BuildError> {
-        let checked = parse_and_check(expression)?;
-        let regex = Glob::compile(checked.as_ref().tokens())?;
-        Ok(Glob { checked, regex })
+        let tree = parse_and_check(expression)?;
+        let pattern = Glob::compile(tree.as_ref().tokens())?;
+        Ok(Glob { tree, pattern })
     }
 
     /// Constructs a [`Glob`] from a glob expression with diagnostics.
@@ -682,10 +682,10 @@ impl<'t> Glob<'t> {
     #[cfg(feature = "miette")]
     #[cfg_attr(docsrs, doc(cfg(feature = "miette")))]
     pub fn diagnosed(expression: &'t str) -> DiagnosticResult<'t, Self> {
-        parse_and_diagnose(expression).and_then_diagnose(|checked| {
-            Glob::compile(checked.as_ref().tokens())
+        parse_and_diagnose(expression).and_then_diagnose(|tree| {
+            Glob::compile(tree.as_ref().tokens())
                 .into_error_diagnostic()
-                .map_output(|regex| Glob { checked, regex })
+                .map_output(|pattern| Glob { tree, pattern })
         })
     }
 
@@ -750,11 +750,11 @@ impl<'t> Glob<'t> {
     /// [`RuleError`]: crate::RuleError
     /// [`walk`]: crate::Glob::walk
     pub fn partition(self) -> (PathBuf, Self) {
-        let Glob { checked, .. } = self;
-        let (prefix, checked) = checked.partition();
-        let regex =
-            Glob::compile(checked.as_ref().tokens()).expect("failed to compile partitioned glob");
-        (prefix, Glob { checked, regex })
+        let Glob { tree, .. } = self;
+        let (prefix, tree) = tree.partition();
+        let pattern =
+            Glob::compile(tree.as_ref().tokens()).expect("failed to compile partitioned glob");
+        (prefix, Glob { tree, pattern })
     }
 
     /// Clones any borrowed data into an owning instance.
@@ -774,10 +774,10 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     pub fn into_owned(self) -> Glob<'static> {
-        let Glob { checked, regex } = self;
+        let Glob { tree, pattern } = self;
         Glob {
-            checked: checked.into_owned(),
-            regex,
+            tree: tree.into_owned(),
+            pattern,
         }
     }
 
@@ -930,7 +930,7 @@ impl<'t> Glob<'t> {
     #[cfg(feature = "miette")]
     #[cfg_attr(docsrs, doc(cfg(feature = "miette")))]
     pub fn diagnose(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
-        diagnostics::diagnose(self.checked.as_ref())
+        diagnostics::diagnose(self.tree.as_ref())
     }
 
     /// Gets metadata for capturing sub-expressions.
@@ -943,7 +943,7 @@ impl<'t> Glob<'t> {
     ///
     /// [`MatchedText`]: crate::MatchedText
     pub fn captures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
-        self.checked
+        self.tree
             .as_ref()
             .tokens()
             .iter()
@@ -961,7 +961,7 @@ impl<'t> Glob<'t> {
     /// separator `/`. Patterns other than separators may also root an
     /// expression, such as `/**` or `</root:1,>`.
     pub fn has_root(&self) -> bool {
-        self.checked
+        self.tree
             .as_ref()
             .tokens()
             .first()
@@ -981,14 +981,14 @@ impl<'t> Glob<'t> {
     ///
     /// [`Glob::partition`]: crate::Glob::partition
     pub fn has_semantic_literals(&self) -> bool {
-        token::literals(self.checked.as_ref().tokens())
+        token::literals(self.tree.as_ref().tokens())
             .any(|(_, literal)| literal.is_semantic_literal())
     }
 }
 
 impl Display for Glob<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}", self.checked.as_ref().expression())
+        write!(f, "{}", self.tree.as_ref().expression())
     }
 }
 
@@ -1003,19 +1003,19 @@ impl FromStr for Glob<'static> {
 impl<'t> Pattern<'t> for Glob<'t> {
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
-        self.regex.is_match(path.as_ref())
+        self.pattern.is_match(path.as_ref())
     }
 
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
-        self.regex.captures(path.as_ref()).map(From::from)
+        self.pattern.captures(path.as_ref()).map(From::from)
     }
 
     fn variance(&self) -> Variance {
-        self.checked.as_ref().variance().into()
+        self.tree.as_ref().variance().into()
     }
 
     fn is_exhaustive(&self) -> bool {
-        token::is_exhaustive(self.checked.as_ref().tokens())
+        token::is_exhaustive(self.tree.as_ref().tokens())
     }
 }
 
@@ -1041,8 +1041,8 @@ impl<'t> Compose<'t> for Glob<'t> {
 /// [`Pattern`]: crate::Pattern
 #[derive(Clone, Debug)]
 pub struct Any<'t> {
-    checked: Checked<Token<'t, ()>>,
-    regex: Regex,
+    tree: Checked<Token<'t, ()>>,
+    pattern: Regex,
 }
 
 impl<'t> Any<'t> {
@@ -1054,19 +1054,19 @@ impl<'t> Any<'t> {
 impl<'t> Pattern<'t> for Any<'t> {
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
-        self.regex.is_match(path.as_ref())
+        self.pattern.is_match(path.as_ref())
     }
 
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
-        self.regex.captures(path.as_ref()).map(From::from)
+        self.pattern.captures(path.as_ref()).map(From::from)
     }
 
     fn variance(&self) -> Variance {
-        self.checked.as_ref().variance::<InvariantText>().into()
+        self.tree.as_ref().variance::<InvariantText>().into()
     }
 
     fn is_exhaustive(&self) -> bool {
-        token::is_exhaustive(Some(self.checked.as_ref()))
+        token::is_exhaustive(Some(self.tree.as_ref()))
     }
 }
 
@@ -1137,15 +1137,15 @@ where
     I: IntoIterator,
     I::Item: Compose<'t>,
 {
-    let checked = Checked::any(
+    let tree = Checked::any(
         patterns
             .into_iter()
             .map(TryInto::try_into)
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)?,
     );
-    let regex = Any::compile(checked.as_ref())?;
-    Ok(Any { checked, regex })
+    let pattern = Any::compile(tree.as_ref())?;
+    Ok(Any { tree, pattern })
 }
 
 /// Escapes text as a literal glob expression.
