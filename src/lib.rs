@@ -314,7 +314,7 @@ pub trait Compose<'t>:
     TryInto<Checked<Self::Tokens>, Error = <Self as Compose<'t>>::Error>
 {
     type Tokens: TokenTree<'t>;
-    type Error;
+    type Error: Into<BuildError>;
 }
 
 impl<'t> Compose<'t> for &'t str {
@@ -1134,7 +1134,6 @@ impl<'t> Compose<'t> for Any<'t> {
 /// [`Pattern`]: crate::Pattern
 pub fn any<'t, I>(patterns: I) -> Result<Any<'t>, BuildError>
 where
-    BuildError: From<<I::Item as Compose<'t>>::Error>,
     I: IntoIterator,
     I::Item: Compose<'t>,
 {
@@ -1142,7 +1141,8 @@ where
         patterns
             .into_iter()
             .map(TryInto::try_into)
-            .collect::<Result<Vec<_>, _>>()?,
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)?,
     );
     let regex = Any::compile(checked.as_ref())?;
     Ok(Any { checked, regex })

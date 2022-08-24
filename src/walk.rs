@@ -360,41 +360,20 @@ impl Negation {
     /// [`IntoIterator`]: std::iter::IntoIterator
     pub fn any<'t, I>(patterns: I) -> Result<Self, BuildError>
     where
-        BuildError: From<<I::Item as Compose<'t>>::Error>,
         I: IntoIterator,
         I::Item: Compose<'t>,
     {
-        use crate::rule::Checked;
-
-        // TODO: Inlining the code in this function causes E0271 in the call to
-        //       `crate::any` claiming that `Infallible` was expected but an
-        //       associated type was found instead. This may be a bug in the
-        //       compiler. It's unclear why the compiler requires this, as
-        //       `crate::any` has no such requirement and the error from
-        //       `crate::any` is discarded (unwrapped).
-        fn from_patterns<'t, T>(patterns: Vec<Checked<T>>) -> Negation
-        where
-            T: TokenTree<'t>,
-        {
-            // Partition the patterns into exhaustive and nonexhaustive
-            // patterns. An exhaustive pattern matches any and all sub-trees
-            // once it has matched and so arrests the traversal into
-            // sub-directories.
-            let (exhaustive, nonexhaustive) = patterns
-                .into_iter()
-                .partition::<Vec<_>, _>(|checked| token::is_exhaustive(checked.as_ref().tokens()));
-            Negation {
-                exhaustive: crate::any(exhaustive).unwrap().regex,
-                nonexhaustive: crate::any(nonexhaustive).unwrap().regex,
-            }
-        }
-
-        let negation = from_patterns(
-            patterns
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+        let (exhaustive, nonexhaustive) = patterns
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)?
+            .into_iter()
+            .partition::<Vec<_>, _>(|checked| token::is_exhaustive(checked.as_ref().tokens()));
+        let negation = Negation {
+            exhaustive: crate::any(exhaustive)?.regex,
+            nonexhaustive: crate::any(nonexhaustive)?.regex,
+        };
         Ok(negation)
     }
 
@@ -692,7 +671,6 @@ impl<'g> Walk<'g> {
     /// [`WalkEntry`]: crate::WalkEntry
     pub fn not<'t, I>(self, patterns: I) -> Result<impl 'g + FileIterator, BuildError>
     where
-        BuildError: From<<I::Item as Compose<'t>>::Error>,
         I: IntoIterator,
         I::Item: Compose<'t>,
     {
