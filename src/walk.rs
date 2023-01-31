@@ -883,7 +883,14 @@ pub fn walk<'g>(
     behavior: impl Into<WalkBehavior>,
 ) -> Walk<'g> {
     let directory = directory.as_ref();
-    let WalkBehavior { depth, link } = behavior.into();
+    let WalkBehavior { mut depth, link } = behavior.into();
+
+    if depth == usize::MAX {
+        if let Some(max_depth) = glob.try_get_max_depth() {
+            depth = max_depth;
+        }
+    }
+
     // The directory tree is traversed from `root`, which may include an
     // invariant prefix from the glob pattern. `Walk` patterns are only applied
     // to path components following this prefix in `root`.

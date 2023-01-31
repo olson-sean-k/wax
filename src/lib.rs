@@ -54,7 +54,7 @@ use thiserror::Error;
 
 use crate::encode::CompileError;
 use crate::rule::{Checked, RuleError};
-use crate::token::{InvariantText, ParseError, Token, TokenTree, Tokenized};
+use crate::token::{InvariantText, ParseError, Token, TokenTree, Tokenized, TokenKind, Wildcard};
 
 pub use crate::capture::MatchedText;
 pub use crate::diagnostics::{LocatedError, Span};
@@ -635,6 +635,24 @@ impl<'t> Glob<'t> {
         encode::compile(tokens)
     }
 
+    pub fn try_get_max_depth(&self) -> Option<usize> {
+        // dbg!(&self.tree);
+
+        let a = self.tree.as_ref().walk().try_fold(1, |acc, (_, token)| {
+            if matches!(token.kind(), TokenKind::Wildcard(Wildcard::Tree { .. }) | TokenKind::Repetition(..)) {
+                None
+            } else {
+                if matches!(token.kind(), TokenKind::Separator(..)) {
+                    Some(acc + 1)
+                } else {
+                    Some(acc)
+                }
+            }
+        });
+
+        a
+    }
+
     // TODO: Document pattern syntax in the crate documentation and refer to it
     //       here.
     /// Constructs a [`Glob`] from a glob expression.
@@ -730,7 +748,7 @@ impl<'t> Glob<'t> {
     ///
     /// let path: &Path = /* ... */ // Candidate path.
     /// # Path::new("");
-    ///     
+    ///
     /// let directory = Path::new("."); // Working directory.
     /// let (prefix, glob) = Glob::new("../../src/**").unwrap().partition();
     /// let prefix = dunce::canonicalize(directory.join(&prefix)).unwrap();
