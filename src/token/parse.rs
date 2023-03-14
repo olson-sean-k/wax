@@ -1,6 +1,8 @@
 #[cfg(feature = "miette")]
 use miette::{self, Diagnostic, LabeledSpan, SourceCode};
-use nom::error::{VerboseError as NomError, VerboseErrorKind as NomErrorKind};
+use nom::{InputTakeAtPosition, FindToken};
+use nom::character::complete::none_of;
+use nom::error::{VerboseError as NomError, VerboseErrorKind as NomErrorKind, ErrorKind};
 use pori::{Located, Location, Stateful};
 use std::borrow::Cow;
 use std::fmt::{self, Display, Formatter};
@@ -235,37 +237,54 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
         flags(move |_| move |input: Input<'i>| Ok((input, ())))(input)
     }
 
-    fn literal(input: Input) -> ParseResult<TokenKind<Annotation>> {
-        combinator::map(
-            combinator::verify(
-                bytes::escaped_transform(
-                    bytes::is_not("/?*$:<>()[]{},\\"),
-                    '\\',
-                    branch::alt((
-                        combinator::value("?", bytes::tag("?")),
-                        combinator::value("*", bytes::tag("*")),
-                        combinator::value("$", bytes::tag("$")),
-                        combinator::value(":", bytes::tag(":")),
-                        combinator::value("<", bytes::tag("<")),
-                        combinator::value(">", bytes::tag(">")),
-                        combinator::value("(", bytes::tag("(")),
-                        combinator::value(")", bytes::tag(")")),
-                        combinator::value("[", bytes::tag("[")),
-                        combinator::value("]", bytes::tag("]")),
-                        combinator::value("{", bytes::tag("{")),
-                        combinator::value("}", bytes::tag("}")),
-                        combinator::value(",", bytes::tag(",")),
-                    )),
+
+    fn literal<'i>(
+        cant_contain: &'i str,
+    ) -> impl FnMut(Input<'i>) -> ParseResult<'i, TokenKind<'i, Annotation>>
+    {
+        fn is_not_both<'i>(
+            arr1: &'i str,
+            arr2: &'i str,
+        ) -> impl Fn(Input<'i>) -> ParseResult<'i,Input<'i>>
+        {
+            move |i: Input| {
+                let e: ErrorKind = ErrorKind::IsNot;
+                i.split_at_position1_complete(|c| arr1.find_token(c) || arr2.find_token(c), e)
+            }
+        }
+
+        move |input: Input| {
+            combinator::map(
+                combinator::verify(
+                    bytes::escaped_transform(
+                        is_not_both("/?*$<>()[]{}\\", cant_contain),
+                        '\\',
+                        branch::alt((
+                            combinator::value("?", bytes::tag("?")),
+                            combinator::value("*", bytes::tag("*")),
+                            combinator::value("$", bytes::tag("$")),
+                            combinator::value("<", bytes::tag("<")),
+                            combinator::value(">", bytes::tag(">")),
+                            combinator::value("(", bytes::tag("(")),
+                            combinator::value(")", bytes::tag(")")),
+                            combinator::value("[", bytes::tag("[")),
+                            combinator::value("]", bytes::tag("]")),
+                            combinator::value("{", bytes::tag("{")),
+                            combinator::value("}", bytes::tag("}")),
+                            combinator::value(",", bytes::tag(",")),
+                            combinator::value(":", bytes::tag(":")),
+                        )),
+                    ),
+                    |text: &str| !text.is_empty(),
                 ),
-                |text: &str| !text.is_empty(),
-            ),
-            move |text| {
-                TokenKind::Literal(Literal {
-                    text: text.into(),
-                    is_case_insensitive: input.state.flags.is_case_insensitive,
-                })
-            },
-        )(input)
+                move |text| {
+                    TokenKind::Literal(Literal {
+                        text: text.into(),
+                        is_case_insensitive: input.state.flags.is_case_insensitive,
+                    })
+                },
+            )(input)
+        }
     }
 
     fn separator(input: Input) -> ParseResult<TokenKind<Annotation>> {
@@ -404,7 +423,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                         "sub-glob",
                         glob(move |input| {
                             combinator::peek(branch::alt((bytes::tag(":"), bytes::tag(">"))))(input)
-                        }),
+                        }, ":"),
                     ),
                     error::context("bounds", bounds),
                 )),
@@ -469,7 +488,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                         "sub-glob",
                         glob(move |input| {
                             combinator::peek(branch::alt((bytes::tag(","), bytes::tag("}"))))(input)
-                        }),
+                        }, ","),
                     ),
                 ),
                 |alternatives: Vec<Vec<_>>| Alternative::from(alternatives).into(),
@@ -480,6 +499,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
 
     fn glob<'i>(
         terminator: impl 'i + Clone + Parser<Input<'i>, Input<'i>, ErrorStack<'i>>,
+        literal_cant_contain: &'i str,
     ) -> impl Parser<Input<'i>, Vec<Token<'i, Annotation>>, ErrorStack<'i>> {
         fn annotate<'i, F>(
             parser: F,
@@ -496,7 +516,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                 multi::many1(branch::alt((
                     annotate(error::context(
                         "literal",
-                        sequence::preceded(flags_with_state, literal),
+                        sequence::preceded(flags_with_state, literal(literal_cant_contain)),
                     )),
                     annotate(error::context(
                         "repetition",
@@ -533,7 +553,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     }
     else {
         let input = Input::new(Expression::from(expression), ParserState::default());
-        let tokens = combinator::all_consuming(glob(combinator::eof))(input)
+        let tokens = combinator::all_consuming(glob(combinator::eof, ""))(input)
             .map(|(_, tokens)| tokens)
             .map_err(|error| ParseError::new(expression, error))?;
         Ok(Tokenized {
