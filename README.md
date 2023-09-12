@@ -95,17 +95,22 @@ use wax::Glob;
 let glob = Glob::new("site/img/logo.svg").unwrap();
 ```
 
-Regardless of platform or operating system, globs always use the same format and
-**are distinct from paths**. In particular, forward slash `/` is **always** the
-path separator and back slashes `\` are forbidden (back slash is used for escape
-sequences, but the literal sequence `\\` is not supported). This means that it
-is impossible to represent `\` in nominal path components, but this character is
-generally forbidden as such and its disuse avoids confusion.
+Not only are APIs designed for portability, **but so too are glob expressions**.
+Regardless of platform or operating system, globs support the same features and
+use the same syntax. **Glob expressions are distinct from paths**, which [differ
+in syntax and features](#schemes-and-prefixes) on each platform.
+
+In glob expressions, forward slash `/` is the only path component separator and
+back slashes `\` are forbidden (back slash is used for escape sequences, but the
+literal sequence `\\` is not supported). This means that it is impossible to
+represent `\` in nominal path components, but this character is generally
+forbidden as such and its disuse avoids confusion.
 
 Globs enforce various rules regarding meta-characters, patterns, and component
 boundaries that reject [nonsense expressions](#errors-and-diagnostics). While
 these rules can sometimes make glob expressions a bit more difficult to compose,
-they also make glob expressions more consistent and easier to reason about.
+they also make glob expressions more consistent, easier to reason about, and
+less prone to errors.
 
 ## Patterns
 
@@ -176,7 +181,7 @@ within a component (**never path separators**). Classes are delimited by square
 brackets `[...]`. Individual character literals are specified as is, such as
 `[ab]` to match either `a` or `b`. Character ranges are formed from two
 characters separated by a hyphen, such as `[x-z]` to match `x`, `y`, or `z`.
-Character classes match exact characters and are always case-sensitive, so the
+Character classes match characters exactly and are always case-sensitive, so the
 expressions `[ab]` and `{a,b}` are not necessarily the same.
 
 Any number of character literals and ranges can be used within a single
