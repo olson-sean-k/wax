@@ -12,7 +12,7 @@ use walkdir::{self, DirEntry, WalkDir};
 use crate::capture::MatchedText;
 use crate::encode::CompileError;
 use crate::token::{self, Token, TokenTree};
-use crate::{BuildError, CandidatePath, Compose, Glob, PositionExt as _};
+use crate::{BuildError, CandidatePath, Compose, Glob};
 
 pub type WalkItem<'e> = Result<WalkEntry<'e>, WalkError>;
 
@@ -139,7 +139,7 @@ macro_rules! walk {
                 .strip_prefix(&$state.prefix)
                 .expect("path is not in tree");
             let depth = entry.depth().saturating_sub(1);
-            for candidate in path
+            for (position, candidate) in path
                 .components()
                 .skip(depth)
                 .filter_map(|component| match component {
@@ -149,8 +149,8 @@ macro_rules! walk {
                 .zip_longest($state.components.iter().skip(depth))
                 .with_position()
             {
-                match candidate.as_tuple() {
-                    (First(_) | Middle(_), Both(component, pattern)) => {
+                match (position, candidate) {
+                    (First | Middle, Both(component, pattern)) => {
                         if !pattern.is_match(component.as_ref()) {
                             // Do not descend into directories that do not match
                             // the corresponding component pattern.
@@ -160,7 +160,7 @@ macro_rules! walk {
                             continue 'walk;
                         }
                     }
-                    (Last(_) | Only(_), Both(component, pattern)) => {
+                    (Last | Only, Both(component, pattern)) => {
                         if pattern.is_match(component.as_ref()) {
                             let path = CandidatePath::from(path);
                             if let Some(matched) =

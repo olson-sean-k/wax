@@ -9,7 +9,6 @@ use std::fmt::Display;
 use thiserror::Error;
 
 use crate::token::Token;
-use crate::PositionExt as _;
 
 #[cfg(windows)]
 const SEPARATOR_CLASS_EXPRESSION: &str = "/\\\\";
@@ -155,7 +154,7 @@ where
 #[allow(clippy::double_parens)]
 fn encode<'t, A, T>(
     grouping: Grouping,
-    superposition: Option<Position<()>>,
+    superposition: Option<Position>,
     pattern: &mut String,
     tokens: impl IntoIterator<Item = T>,
 ) where
@@ -179,8 +178,8 @@ fn encode<'t, A, T>(
 
     // TODO: Use `Grouping` everywhere a group is encoded. For invariant groups
     //       that ignore `grouping`, construct a local `Grouping` instead.
-    for token in tokens.into_iter().with_position() {
-        match token.interior_borrow().map(Token::kind).as_tuple() {
+    for (position, token) in tokens.into_iter().with_position() {
+        match (position, token.borrow().kind()) {
             (_, Literal(literal)) => {
                 // TODO: Only encode changes to casing flags.
                 // TODO: Should Unicode support also be toggled by casing flags?
@@ -269,8 +268,8 @@ fn encode<'t, A, T>(
             (_, Wildcard(One)) => grouping.push_str(pattern, nsepexpr!("{0}")),
             (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, nsepexpr!("{0}*")),
             (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, nsepexpr!("{0}*?")),
-            (First(_), Wildcard(Tree { has_root })) => {
-                if let Some(Middle(_) | Last(_)) = superposition {
+            (First, Wildcard(Tree { has_root })) => {
+                if let Some(Middle | Last) = superposition {
                     encode_intermediate_tree(grouping, pattern);
                 }
                 else if *has_root {
@@ -282,11 +281,11 @@ fn encode<'t, A, T>(
                     pattern.push(')');
                 }
             },
-            (Middle(_), Wildcard(Tree { .. })) => {
+            (Middle, Wildcard(Tree { .. })) => {
                 encode_intermediate_tree(grouping, pattern);
             },
-            (Last(_), Wildcard(Tree { .. })) => {
-                if let Some(First(_) | Middle(_)) = superposition {
+            (Last, Wildcard(Tree { .. })) => {
+                if let Some(First | Middle) = superposition {
                     encode_intermediate_tree(grouping, pattern);
                 }
                 else {
@@ -295,7 +294,7 @@ fn encode<'t, A, T>(
                     pattern.push(')');
                 }
             },
-            (Only(_), Wildcard(Tree { .. })) => grouping.push_str(pattern, ".*"),
+            (Only, Wildcard(Tree { .. })) => grouping.push_str(pattern, ".*"),
         }
     }
 }
