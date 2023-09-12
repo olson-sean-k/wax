@@ -64,4 +64,4 @@ optional = true
 [dev-dependencies]
 build-fs-tree = "^0.6.0"
 dunce = "^1.0.0"
-tempfile = "^3.2.0"
+tempfile = "^3.8.0"
