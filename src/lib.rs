@@ -1347,20 +1347,6 @@ mod tests {
     }
 
     #[test]
-    fn negative_match_does_not_traverse_folders() {
-        let glob = Glob::new("a[!b]c").unwrap();
-        assert!(glob.is_match(Path::new("adc")));
-        assert!(!glob.is_match(Path::new("a/c")));
-    }
-
-    #[test]
-    fn negative_match_does_not_traverse_folders_2() {
-        let glob = Glob::new("a[!b-z]c").unwrap();
-        assert!(glob.is_match(Path::new("aac")));
-        assert!(!glob.is_match(Path::new("a/c")));
-    }
-
-    #[test]
     fn build_glob_with_alternative_tokens() {
         Glob::new("a/{x?z,y$}b*").unwrap();
         Glob::new("a/{???,x$y,frob}b*").unwrap();
@@ -1768,6 +1754,26 @@ mod tests {
         // effectively matches nothing.
         let glob = Glob::new("a[/]b").unwrap();
 
+        assert!(!glob.is_match(Path::new("a/b")));
+    }
+
+    #[test]
+    fn match_glob_with_negated_class_tokens() {
+        let glob = Glob::new("a[!b]c").unwrap();
+
+        assert!(glob.is_match(Path::new("a-c")));
+        assert!(glob.is_match(Path::new("axc")));
+
+        assert!(!glob.is_match(Path::new("abc")));
+        assert!(!glob.is_match(Path::new("a/c")));
+
+        let glob = Glob::new("a[!0-4]b").unwrap();
+
+        assert!(glob.is_match(Path::new("a9b")));
+        assert!(glob.is_match(Path::new("axb")));
+
+        assert!(!glob.is_match(Path::new("a0b")));
+        assert!(!glob.is_match(Path::new("a4b")));
         assert!(!glob.is_match(Path::new("a/b")));
     }
 
