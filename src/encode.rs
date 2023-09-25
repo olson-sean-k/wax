@@ -234,22 +234,33 @@ fn encode<'t, A, T>(
             },
             (_, Class(class)) => {
                 grouping.push_with(pattern, || {
+                    use crate::token::Class as ClassToken;
+
+                    fn encode_class_archetypes(class: &ClassToken, pattern: &mut String) {
+                        for archetype in class.archetypes() {
+                            match archetype {
+                                Character(literal) => pattern.push_str(&literal.escaped()),
+                                Range(left, right) => {
+                                    pattern.push_str(&left.escaped());
+                                    pattern.push('-');
+                                    pattern.push_str(&right.escaped());
+                                },
+                            }
+                        }
+                    }
+
                     let mut pattern = String::new();
                     pattern.push('[');
                     if class.is_negated() {
                         pattern.push('^');
+                        encode_class_archetypes(class, &mut pattern);
+                        pattern.push_str(SEPARATOR_CLASS_EXPRESSION);
                     }
-                    for archetype in class.archetypes() {
-                        match archetype {
-                            Character(literal) => pattern.push_str(&literal.escaped()),
-                            Range(left, right) => {
-                                pattern.push_str(&left.escaped());
-                                pattern.push('-');
-                                pattern.push_str(&right.escaped());
-                            },
-                        }
+                    else {
+                        encode_class_archetypes(class, &mut pattern);
+                        pattern.push_str(nsepexpr!("&&{0}"));
                     }
-                    pattern.push_str(nsepexpr!("&&{0}]"));
+                    pattern.push(']');
                     // Compile the character class sub-expression. This may fail
                     // if the subtraction of the separator pattern yields an
                     // empty character class (meaning that the glob expression
