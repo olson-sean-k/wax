@@ -65,8 +65,8 @@ pub fn diagnose<'i, 't>(
 mod tests {
     use crate::Glob;
 
-    // It is non-trivial to downcast `&dyn Diagnostic`, so diagnostics are
-    // identified in tests by their code.
+    // It is non-trivial to downcast `&dyn Diagnostic`, so diagnostics are identified in tests by
+    // their code.
     const CODE_SEMANTIC_LITERAL: &str = "wax::glob::semantic_literal";
     const CODE_TERMINATING_SEPARATOR: &str = "wax::glob::terminating_separator";
 

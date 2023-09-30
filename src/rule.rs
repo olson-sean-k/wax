@@ -1,17 +1,15 @@
 //! Rules and limitations for token sequences.
 //!
-//! This module provides the `check` function, which examines a token sequence
-//! and emits an error if the sequence violates rules. Rules are invariants that
-//! are difficult or impossible to enforce when parsing text and primarily
-//! detect and reject token sequences that produce anomalous, meaningless, or
-//! unexpected globs (regular expressions) when compiled.
+//! This module provides the `check` function, which examines a token sequence and emits an error
+//! if the sequence violates rules. Rules are invariants that are difficult or impossible to
+//! enforce when parsing text and primarily detect and reject token sequences that produce
+//! anomalous, meaningless, or unexpected globs (regular expressions) when compiled.
 //!
-//! Most rules concern alternatives, which have complex interactions with
-//! neighboring tokens.
+//! Most rules concern alternatives, which have complex interactions with neighboring tokens.
 
-// TODO: The `check` function fails fast and either report no errors or exactly
-//       one error. To better support diagnostics, `check` should probably
-//       perform an exhaustive analysis and report zero or more errors.
+// TODO: The `check` function fails fast and either report no errors or exactly one error. To
+//       better support diagnostics, `check` should probably perform an exhaustive analysis and
+//       report zero or more errors.
 
 use itertools::Itertools as _;
 #[cfg(feature = "miette")]
@@ -31,13 +29,12 @@ use crate::{Any, BuildError, Combine, Glob};
 
 /// Maximum invariant size.
 ///
-/// This size is equal to or greater than the maximum size of a path on
-/// supported platforms. The primary purpose of this limit is to mitigate
-/// malicious or mistaken expressions that encode very large invariant text,
-/// namely via repetitions.
+/// This size is equal to or greater than the maximum size of a path on supported platforms. The
+/// primary purpose of this limit is to mitigate malicious or mistaken expressions that encode very
+/// large invariant text, namely via repetitions.
 ///
-/// This limit is independent of the back end encoding. This code does not rely
-/// on errors in the encoder by design, such as size limitations.
+/// This limit is independent of the back end encoding. This code does not rely on errors in the
+/// encoder by design, such as size limitations.
 const MAX_INVARIANT_SIZE: InvariantSize = InvariantSize::new(0x10000);
 
 trait IteratorExt: Iterator + Sized {
@@ -174,10 +171,9 @@ impl<T> Terminals<T> {
 /// Describes errors concerning rules and patterns in a glob expression.
 ///
 /// Patterns must follow rules described in the [repository
-/// documentation](https://github.com/olson-sean-k/wax/blob/master/README.md).
-/// These rules are designed to avoid nonsense glob expressions and ambiguity.
-/// If a glob expression parses but violates these rules or is otherwise
-/// malformed, then this error is returned by some APIs.
+/// documentation](https://github.com/olson-sean-k/wax/blob/master/README.md). These rules are
+/// designed to avoid nonsense glob expressions and ambiguity. If a glob expression parses but
+/// violates these rules or is otherwise malformed, then this error is returned by some APIs.
 #[derive(Debug, Error)]
 #[error("malformed glob expression: {kind}")]
 pub struct RuleError<'t> {
@@ -290,12 +286,10 @@ impl<'t> Checked<Token<'t, ()>> {
         I: IntoIterator<Item = Checked<T>>,
     {
         Checked {
-            // `token::any` constructs an alternative from the input token
-            // trees. The alternative is not checked, but the `any` combinator
-            // is explicitly allowed to ignore the subset of rules that may be
-            // violated by this construction. In particular, branches may or may
-            // not have roots such that the alternative can match overlapping
-            // directory trees.
+            // `token::any` constructs an alternative from the input token trees. The alternative
+            // is not checked, but the `any` combinator is explicitly allowed to ignore the subset
+            // of rules that may be violated by this construction. In particular, branches may or
+            // may not have roots such that the alternative can match overlapping directory trees.
             inner: token::any(
                 trees
                     .into_iter()
@@ -476,8 +470,8 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     }
 
     fn diagnose<'i, 't>(
-        // This is a somewhat unusual API, but it allows the lifetime `'t` of
-        // the `Cow` to be properly forwarded to output values (`RuleError`).
+        // This is a somewhat unusual API, but it allows the lifetime `'t` of the `Cow` to be
+        // properly forwarded to output values (`RuleError`).
         #[allow(clippy::ptr_arg)] expression: &'i Cow<'t, str>,
         token: &'i Token<'t>,
         label: &'static str,
@@ -495,8 +489,8 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     }
 
     fn recurse<'i, 't, I>(
-        // This is a somewhat unusual API, but it allows the lifetime `'t` of
-        // the `Cow` to be properly forwarded to output values (`RuleError`).
+        // This is a somewhat unusual API, but it allows the lifetime `'t` of the `Cow` to be
+        // properly forwarded to output values (`RuleError`).
         #[allow(clippy::ptr_arg)] expression: &Cow<'t, str>,
         tokens: I,
         outer: Outer<'i, 't>,
@@ -541,8 +535,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     ) -> Result<(), CorrelatedError> {
         let Outer { left, right } = outer;
         match terminals.map(|token| (token, token.kind())) {
-            // The group is preceded by component boundaries; disallow leading
-            // separators.
+            // The group is preceded by component boundaries; disallow leading separators.
             //
             // For example, `foo/{bar,/}`.
             Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _)
@@ -554,8 +547,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     inner,
                 ))
             },
-            // The group is followed by component boundaries; disallow trailing
-            // separators.
+            // The group is followed by component boundaries; disallow trailing separators.
             //
             // For example, `{foo,/}/bar`.
             Only((inner, Separator(_))) | StartEnd(_, (inner, Separator(_)))
@@ -575,8 +567,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 None,
                 inner,
             )),
-            // The group is preceded by component boundaries; disallow leading
-            // tree tokens.
+            // The group is preceded by component boundaries; disallow leading tree tokens.
             //
             // For example, `foo/{bar,**/baz}`.
             StartEnd((inner, Wildcard(Tree { .. })), _) if has_ending_component_boundary(left) => {
@@ -586,8 +577,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     inner,
                 ))
             },
-            // The group is followed by component boundaries; disallow trailing
-            // tree tokens.
+            // The group is followed by component boundaries; disallow trailing tree tokens.
             //
             // For example, `{foo,bar/**}/baz`.
             StartEnd(_, (inner, Wildcard(Tree { .. })))
@@ -599,8 +589,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     inner,
                 ))
             },
-            // The group is prefixed by a zero-or-more token; disallow leading
-            // zero-or-more tokens.
+            // The group is prefixed by a zero-or-more token; disallow leading zero-or-more tokens.
             //
             // For example, `foo*{bar,*,baz}`.
             Only((inner, Wildcard(ZeroOrMore(_))))
@@ -613,8 +602,8 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     inner,
                 ))
             },
-            // The group is followed by a zero-or-more token; disallow trailing
-            // zero-or-more tokens.
+            // The group is followed by a zero-or-more token; disallow trailing zero-or-more
+            // tokens.
             //
             // For example, `{foo,*,bar}*baz`.
             Only((inner, Wildcard(ZeroOrMore(_))))
@@ -637,8 +626,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     ) -> Result<(), CorrelatedError> {
         let Outer { left, .. } = outer;
         match terminals.map(|token| (token, token.kind())) {
-            // The alternative is preceded by a termination; disallow rooted
-            // sub-globs.
+            // The alternative is preceded by a termination; disallow rooted sub-globs.
             //
             // For example, `{foo,/}` or `{foo,/bar}`.
             Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _) if left.is_none() => {
@@ -648,8 +636,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     inner,
                 ))
             },
-            // The alternative is preceded by a termination; disallow rooted
-            // sub-globs.
+            // The alternative is preceded by a termination; disallow rooted sub-globs.
             //
             // For example, `{/**/foo,bar}`.
             Only((inner, Wildcard(Tree { has_root: true })))
@@ -674,8 +661,8 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         let Outer { left, .. } = outer;
         let (lower, _) = bounds;
         match terminals.map(|token| (token, token.kind())) {
-            // The repetition is preceded by a termination; disallow rooted
-            // sub-globs with a zero lower bound.
+            // The repetition is preceded by a termination; disallow rooted sub-globs with a zero
+            // lower bound.
             //
             // For example, `</foo:0,>`.
             Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _)
@@ -687,8 +674,8 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     inner,
                 ))
             },
-            // The repetition is preceded by a termination; disallow rooted
-            // sub-globs with a zero lower bound.
+            // The repetition is preceded by a termination; disallow rooted sub-globs with a zero
+            // lower bound.
             //
             // For example, `</**/foo>`.
             Only((inner, Wildcard(Tree { has_root: true })))
@@ -758,10 +745,9 @@ fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 fn size<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     if let Some((_, token)) = tokenized
         .walk()
-        // TODO: This is expensive. For each token tree encountered, the
-        //       tree is traversed to determine its variance. If variant,
-        //       the tree is traversed and queried again, revisiting the
-        //       same tokens to recompute their local variance.
+        // TODO: This is expensive. For each token tree encountered, the tree is traversed to
+        //       determine its variance. If variant, the tree is traversed and queried again,
+        //       revisiting the same tokens to recompute their local variance.
         .find(|(_, token)| {
             token
                 .variance::<InvariantSize>()

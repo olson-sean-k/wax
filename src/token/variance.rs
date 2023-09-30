@@ -49,10 +49,9 @@ where
     T: Invariance,
 {
     fn disjunctive_variance(self) -> Variance<T> {
-        // TODO: This implementation is incomplete. Unbounded variance (and
-        //       unbounded depth) are "infectious" when disjunctive. If any unit
-        //       variance is variant and unbounded (open), then the disjunctive
-        //       variance should be the same.
+        // TODO: This implementation is incomplete. Unbounded variance (and unbounded depth) are
+        //       "infectious" when disjunctive. If any unit variance is variant and unbounded
+        //       (open), then the disjunctive variance should be the same.
         // There are three distinct possibilities for disjunctive variance.
         //
         //   - The iterator is empty and there are no unit variances to
@@ -221,10 +220,9 @@ impl Mul<usize> for InvariantSize {
     }
 }
 
-// TODO: The derived `PartialEq` implementation is incomplete and does not
-//       detect contiguous like fragments that are equivalent to an aggregated
-//       fragment. This works, but relies on constructing `InvariantText` by
-//       consistently appending fragments.
+// TODO: The derived `PartialEq` implementation is incomplete and does not detect contiguous like
+//       fragments that are equivalent to an aggregated fragment. This works, but relies on
+//       constructing `InvariantText` by consistently appending fragments.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvariantText<'t> {
     fragments: VecDeque<InvariantFragment<'t>>,
@@ -384,13 +382,11 @@ impl<'t> PartialEq for InvariantFragment<'t> {
         match (self, other) {
             (Nominal(ref left), Nominal(ref right)) => {
                 if PATHS_ARE_CASE_INSENSITIVE {
-                    // This comparison uses Unicode simple case folding. It
-                    // would be better to use full case folding (and better
-                    // still to use case folding appropriate for the language of
-                    // the text), but this approach is used to have consistent
-                    // results with the regular expression encoding of compiled
-                    // globs. A more comprehensive alternative would be to use
-                    // something like the `focaccia` crate. See also
+                    // This comparison uses Unicode simple case folding. It would be better to use
+                    // full case folding (and better still to use case folding appropriate for the
+                    // language of the text), but this approach is used to have consistent results
+                    // with the regular expression encoding of compiled globs. A more comprehensive
+                    // alternative would be to use something like the `focaccia` crate. See also
                     // `CharExt::has_casing`.
                     encode::case_folded_eq(left.as_ref(), right.as_ref())
                 }
@@ -423,16 +419,13 @@ impl Boundedness {
 #[derive(Clone, Debug, Eq)]
 pub enum Variance<T> {
     Invariant(T),
-    // NOTE: In this context, _boundedness_ refers to whether or not a variant
-    //       token or expression is _constrained_ or _unconstrained_. For
-    //       example, the expression `**` is unconstrained and matches _any and
-    //       all_, while the expression `a*z` is constrained and matches _some_.
-    //       Note that both expressions match an infinite number of components,
-    //       but the constrained expression does *not* match any component.
-    //       Boundedness does **not** consider length, only whether or not some
-    //       part of an expression is constrained to a known set of matches. As
-    //       such, both the expressions `?` and `*` are variant with open
-    //       bounds.
+    // In this context, _boundedness_ refers to whether or not a variant token or expression is
+    // _constrained_ or _unconstrained_. For example, the expression `**` is unconstrained and
+    // matches _any and all_, while the expression `a*z` is constrained and matches _some_. Note
+    // that both expressions match an infinite number of components, but the constrained expression
+    // does *not* match any component. Boundedness does **not** consider length, only whether or
+    // not some part of an expression is constrained to a known set of matches. As such, both the
+    // expressions `?` and `*` are variant with open bounds.
     Variant(Boundedness),
 }
 
@@ -498,8 +491,7 @@ where
     }
 }
 
-// TODO: Is there some way to unify this with
-//       `invariant_text_prefix_upper_bound`?
+// TODO: Is there some way to unify this with `invariant_text_prefix_upper_bound`?
 pub fn invariant_text_prefix<'t, A, I>(tokens: I) -> String
 where
     A: 't,
@@ -512,13 +504,12 @@ where
         .peek()
         .map_or(false, |token| !token.has_sub_tokens() && token.has_root())
     {
-        // Push a preceding separator if the first token has a root and is not a
-        // group. This ensures that initiating separators and tree wildcards
-        // express a root in invariant prefixes.
+        // Push a preceding separator if the first token has a root and is not a group. This
+        // ensures that initiating separators and tree wildcards express a root in invariant
+        // prefixes.
         prefix.push_str(separator);
     }
-    // TODO: Replace `map`, `take_while`, and `flatten` with `map_while`
-    //       when it stabilizes.
+    // TODO: Replace `map`, `take_while`, and `flatten` with `map_while` when it stabilizes.
     prefix.push_str(
         &token::components(tokens)
             .map(|component| {
@@ -570,8 +561,8 @@ where
 
 /// Returns `true` if the token tree is exhaustive.
 ///
-/// A glob expression and its token tree are exhaustive if the terminal
-/// component has unbounded depth and unbounded variance.
+/// A glob expression and its token tree are exhaustive if the terminal component has unbounded
+/// depth and unbounded variance.
 pub fn is_exhaustive<'i, 't, A, I>(tokens: I) -> bool
 where
     't: 'i,

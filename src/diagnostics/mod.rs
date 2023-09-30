@@ -10,9 +10,9 @@ pub use crate::diagnostics::miette::diagnose;
 
 /// Location and length of a token within a glob expression.
 ///
-/// Spans are encoded as a tuple of `usize`s, where the first element is the
-/// location or position and the second element is the length. Both position and
-/// length are measured in bytes and **not** code points, graphemes, etc.
+/// Spans are encoded as a tuple of `usize`s, where the first element is the location or position
+/// and the second element is the length. Both position and length are measured in bytes and
+/// **not** code points, graphemes, etc.
 ///
 /// # Examples
 ///
@@ -44,18 +44,16 @@ impl SpanExt for Span {
 
 /// Error associated with a [`Span`] within a glob expression.
 ///
-/// Located errors describe specific instances of an error within a glob
-/// expression. Types that implement this trait provide a location within a glob
-/// expression via the [`LocatedError::span`] function as well as a description
-/// via the [`Display`] trait. See [`BuildError::locations`].
+/// Located errors describe specific instances of an error within a glob expression. Types that
+/// implement this trait provide a location within a glob expression via the [`LocatedError::span`]
+/// function as well as a description via the [`Display`] trait. See [`BuildError::locations`].
 ///
 /// [`BuildError::locations`]: crate::BuildError::locations
 /// [`Display`]: std::fmt::Display
 /// [`LocatedError::span`]: crate::LocatedError::span
 /// [`Span`]: crate::Span
 pub trait LocatedError: Display {
-    /// Gets the span within the glob expression with which the error is
-    /// associated.
+    /// Gets the span within the glob expression with which the error is associated.
     fn span(&self) -> Span;
 }
 

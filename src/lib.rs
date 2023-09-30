@@ -1,9 +1,8 @@
-//! Wax provides opinionated and portable globs that can be matched against file
-//! paths and directory trees. Globs use a familiar syntax and support
-//! expressive features with semantics that emphasize component boundaries.
+//! Wax provides opinionated and portable globs that can be matched against file paths and
+//! directory trees. Globs use a familiar syntax and support expressive features with semantics
+//! that emphasize component boundaries.
 //!
-//! See the [repository
-//! documentation](https://github.com/olson-sean-k/wax/blob/master/README.md)
+//! See the [repository documentation](https://github.com/olson-sean-k/wax/blob/master/README.md)
 //! for details about glob expressions and patterns.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -115,9 +114,9 @@ pub struct CapturingToken {
 impl CapturingToken {
     /// Gets the index of the capture.
     ///
-    /// Captures are one-indexed and the index zero always represents the
-    /// implicit capture of the complete match, so the index of
-    /// `CapturingToken`s is always one or greater. See [`MatchedText`].
+    /// Captures are one-indexed and the index zero always represents the implicit capture of the
+    /// complete match, so the index of `CapturingToken`s is always one or greater. See
+    /// [`MatchedText`].
     ///
     /// [`MatchedText`]: crate::MatchedText
     pub fn index(&self) -> usize {
@@ -130,24 +129,21 @@ impl CapturingToken {
     }
 }
 
-// This type is similar to `token::Variance<InvariantText<'_>>`, but is
-// simplified for the public API. Invariant text is always expressed as a path
-// and no variant bounds are provided.
+// This type is similar to `token::Variance<InvariantText<'_>>`, but is simplified for the public
+// API. Invariant text is always expressed as a path and no variant bounds are provided.
 /// Variance of a [`Pattern`].
 ///
-/// The variance of a pattern describes the kinds of paths it can match with
-/// respect to the platform file system APIs. [`Pattern`]s are either variant or
-/// invariant.
+/// The variance of a pattern describes the kinds of paths it can match with respect to the
+/// platform file system APIs. [`Pattern`]s are either variant or invariant.
 ///
-/// An invariant [`Pattern`] can be represented and completely described by an
-/// equivalent path using the platform's file system APIs. For example, the glob
-/// expression `path/to/file.txt` resolves identically to the paths
-/// `path/to/file.txt` and `path\to\file.txt` on Unix and Windows, respectively.
+/// An invariant [`Pattern`] can be represented and completely described by an equivalent path
+/// using the platform's file system APIs. For example, the glob expression `path/to/file.txt`
+/// resolves identically to the paths `path/to/file.txt` and `path\to\file.txt` on Unix and
+/// Windows, respectively.
 ///
-/// A variant [`Pattern`] resolves differently than any particular path used
-/// with the platform's file system APIs. Such an expression cannot be
-/// represented by a single path. This is typically because the expression
-/// matches multiple texts using a regular pattern, such as in the glob
+/// A variant [`Pattern`] resolves differently than any particular path used with the platform's
+/// file system APIs. Such an expression cannot be represented by a single path. This is typically
+/// because the expression matches multiple texts using a regular pattern, such as in the glob
 /// expression `**/*.rs`.
 ///
 /// [`Pattern`]: crate::Pattern
@@ -157,25 +153,23 @@ pub enum Variance {
     /// A [`Pattern`] is invariant and equivalent to a path.
     ///
     /// Some non-literal expressions may be invariant, such as in the expression
-    /// `path/[t][o]/{file,file}.txt`, which is invariant on Unix (but not on
-    /// Windows, because the character class expressions do not match with case
-    /// folding).
+    /// `path/[t][o]/{file,file}.txt`, which is invariant on Unix (but not on Windows, because the
+    /// character class expressions do not match with case folding).
     ///
     /// [`Pattern`]: crate::Pattern
     Invariant(
-        /// An equivalent path that completely describes the invariant
-        /// [`Pattern`] with respect to platform file system APIs.
+        /// An equivalent path that completely describes the invariant [`Pattern`] with respect to
+        /// platform file system APIs.
         ///
         /// [`Pattern`]: crate::Pattern
         PathBuf,
     ),
     /// A [`Pattern`] is variant and cannot be completely described by a path.
     ///
-    /// Variant expressions may be formed from literals or other **seemingly**
-    /// invariant expressions. For example, the variance of literals considers
-    /// the case sensitivity of the platform's file system APIs, so the
-    /// expression `(?i)path/to/file.txt` is variant on Unix but not on Windows.
-    /// Similarly, the expression `path/[t][o]/file.txt` is variant on Windows
+    /// Variant expressions may be formed from literals or other **seemingly** invariant
+    /// expressions. For example, the variance of literals considers the case sensitivity of the
+    /// platform's file system APIs, so the expression `(?i)path/to/file.txt` is variant on Unix
+    /// but not on Windows. Similarly, the expression `path/[t][o]/file.txt` is variant on Windows
     /// but not on Unix.
     ///
     /// [`Pattern`]: crate::Pattern
@@ -217,10 +211,9 @@ impl From<token::Variance<InvariantText<'_>>> for Variance {
 
 /// A compiled glob expression that can be inspected and matched against paths.
 ///
-/// Matching is a logical operation and does **not** interact with a file
-/// system. To handle path operations, use [`Path`] and/or [`PathBuf`] and their
-/// associated functions. See [`Glob::partition`] for more about globs and path
-/// operations.
+/// Matching is a logical operation and does **not** interact with a file system. To handle path
+/// operations, use [`Path`] and/or [`PathBuf`] and their associated functions. See
+/// [`Glob::partition`] for more about globs and path operations.
 ///
 /// [`Glob::partition`]: crate::Glob::partition
 /// [`Path`]: std::path::Path
@@ -243,22 +236,21 @@ pub trait Pattern<'t>: Combine<'t, Error = Infallible> {
 
     /// Gets the variance of the pattern.
     ///
-    /// The variance of a pattern describes the kinds of paths it can match with
-    /// respect to the platform file system APIs.
+    /// The variance of a pattern describes the kinds of paths it can match with respect to the
+    /// platform file system APIs.
     fn variance(&self) -> Variance;
 
     /// Returns `true` if the pattern is exhaustive.
     ///
-    /// A glob expression is exhaustive if its terminating component matches any
-    /// and all sub-trees, such as in the expressions `/home/**` and
-    /// `local/<<?>/>*`.
+    /// A glob expression is exhaustive if its terminating component matches any and all sub-trees,
+    /// such as in the expressions `/home/**` and `local/<<?>/>*`.
     fn is_exhaustive(&self) -> bool;
 }
 
 /// A glob expression representation that can be incorporated into a combinator.
 ///
-/// This trait is implemented by types that can be (fallibly) converted into a
-/// [`Pattern`] and incorporated into a combinator. See [`any`].
+/// This trait is implemented by types that can be (fallibly) converted into a [`Pattern`] and
+/// incorporated into a combinator. See [`any`].
 ///
 /// [`any`]: crate::any
 /// [`Pattern`]: crate::Pattern
@@ -276,15 +268,14 @@ impl<'t> Combine<'t> for &'t str {
 
 /// General errors concerning [`Pattern`]s.
 ///
-/// This is the most general error and each of its variants exposes a particular
-/// error type that describes the details of its associated error condition.
-/// This error is not used in any Wax APIs directly, but can be used to
-/// encapsulate the more specific errors that are.
+/// This is the most general error and each of its variants exposes a particular error type that
+/// describes the details of its associated error condition. This error is not used in any Wax APIs
+/// directly, but can be used to encapsulate the more specific errors that are.
 ///
 /// # Examples
 ///
-/// To encapsulate different errors in the Wax API behind a function, convert
-/// them into a `GlobError` via `?`.
+/// To encapsulate different errors in the Wax API behind a function, convert them into a
+/// `GlobError` via `?`.
 ///
 /// ```rust,no_run,ignore
 /// use std::path::Path;
@@ -327,26 +318,22 @@ impl From<WalkError> for GlobError {
     }
 }
 
-// TODO: `Diagnostic` is implemented with macros for brevity and to ensure
-//       complete coverage of features. However, this means that documentation
-//       does not annotate the implementation with a feature flag requirement.
-//       If possible, perhaps in a later version of Rust, close this gap.
-/// Describes errors that occur when building a [`Pattern`] from a glob
-/// expression.
+// TODO: `Diagnostic` is implemented with macros for brevity and to ensure complete coverage of
+//       features. However, this means that documentation does not annotate the implementation with
+//       a feature flag requirement. If possible, perhaps in a later version of Rust, close this
+//       gap.
+/// Describes errors that occur when building a [`Pattern`] from a glob expression.
 ///
-/// Glob expressions may fail to build if they cannot be parsed, violate rules,
-/// or cannot be compiled. Parsing errors occur when a glob expression has
-/// invalid syntax. Patterns must also follow rules as described in the
-/// [repository
-/// documentation](https://github.com/olson-sean-k/wax/blob/master/README.md),
-/// which are designed to avoid nonsense expressions and ambiguity. Lastly,
-/// compilation errors occur **only if the size of the compiled program is too
-/// large** (all other compilation errors are considered internal bugs and will
-/// panic).
+/// Glob expressions may fail to build if they cannot be parsed, violate rules, or cannot be
+/// compiled. Parsing errors occur when a glob expression has invalid syntax. Patterns must also
+/// follow rules as described in the [repository
+/// documentation](https://github.com/olson-sean-k/wax/blob/master/README.md), which are designed
+/// to avoid nonsense expressions and ambiguity. Lastly, compilation errors occur **only if the
+/// size of the compiled program is too large** (all other compilation errors are considered
+/// internal bugs and will panic).
 ///
-/// When the `miette` feature is enabled, this and other error types implement
-/// the [`Diagnostic`] trait. Due to a technical limitation, this may not be
-/// properly annotated in API documentation.
+/// When the `miette` feature is enabled, this and other error types implement the [`Diagnostic`]
+/// trait. Due to a technical limitation, this may not be properly annotated in API documentation.
 ///
 /// [`Diagnostic`]: miette::Diagnostic
 /// [`Pattern`]: crate::Pattern
@@ -361,22 +348,21 @@ pub struct BuildError {
 impl BuildError {
     /// Gets [`LocatedError`]s detailing the errors within a glob expression.
     ///
-    /// This function returns an [`Iterator`] over the [`LocatedError`]s that
-    /// detail where and why an error occurred when the error has associated
-    /// [`Span`]s within a glob expression. For errors with no such associated
-    /// information, the [`Iterator`] yields no items, such as compilation
-    /// errors.
+    /// This function returns an [`Iterator`] over the [`LocatedError`]s that detail where and why
+    /// an error occurred when the error has associated [`Span`]s within a glob expression. For
+    /// errors with no such associated information, the [`Iterator`] yields no items, such as
+    /// compilation errors.
     ///
     /// # Examples
     ///
-    /// [`LocatedError`]s can be used to provide information to users about
-    /// which parts of a glob expression are associated with an error.
+    /// [`LocatedError`]s can be used to provide information to users about which parts of a glob
+    /// expression are associated with an error.
     ///
     /// ```rust
     /// use wax::Glob;
     ///
-    /// // This glob expression violates rules. The error handling code prints details
-    /// // about the alternative where the violation occurred.
+    /// // This glob expression violates rules. The error handling code prints details about the
+    /// // alternative where the violation occurred.
     /// let expression = "**/{foo,**/bar,baz}";
     /// match Glob::new(expression) {
     ///     Ok(glob) => {
@@ -469,11 +455,10 @@ enum BuildErrorKind {
 
 /// Path that can be matched against a [`Pattern`].
 ///
-/// `CandidatePath`s are always UTF-8 encoded. On some platforms this requires a
-/// lossy conversion that uses Unicode replacement codepoints `�` whenever a
-/// part of a path cannot be represented as valid UTF-8 (such as Windows). This
-/// means that some byte sequences cannot be matched, though this is uncommon in
-/// practice.
+/// `CandidatePath`s are always UTF-8 encoded. On some platforms this requires a lossy conversion
+/// that uses Unicode replacement codepoints `�` whenever a part of a path cannot be represented as
+/// valid UTF-8 (such as Windows). This means that some byte sequences cannot be matched, though
+/// this is uncommon in practice.
 ///
 /// [`Pattern`]: crate::Pattern
 #[derive(Clone)]
@@ -530,16 +515,14 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 
 /// Pattern that can be matched against paths and directory trees.
 ///
-/// `Glob`s are constructed from strings called glob expressions that resemble
-/// Unix paths consisting of nominal components delimited by separators. Glob
-/// expressions support various patterns that match and capture specified text
-/// in a path. These patterns can be used to logically match individual paths
-/// and to semantically match and walk directory trees.
+/// `Glob`s are constructed from strings called glob expressions that resemble Unix paths
+/// consisting of nominal components delimited by separators. Glob expressions support various
+/// patterns that match and capture specified text in a path. These patterns can be used to
+/// logically match individual paths and to semantically match and walk directory trees.
 ///
 /// # Examples
 ///
-/// A `Glob` can be used to determine if a path matches a pattern via the
-/// [`Pattern`] trait.
+/// A `Glob` can be used to determine if a path matches a pattern via the [`Pattern`] trait.
 ///
 /// ```rust
 /// use wax::{Glob, Pattern};
@@ -558,8 +541,8 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 /// assert_eq!("lib.rs", glob.matched(&candidate).unwrap().get(2).unwrap());
 /// ```
 ///
-/// To match a `Glob` against a directory tree, the [`walk`] function can be
-/// used to get an iterator over matching paths.
+/// To match a `Glob` against a directory tree, the [`walk`] function can be used to get an
+/// iterator over matching paths.
 ///
 /// ```rust,no_run,ignore
 /// use wax::Glob;
@@ -587,18 +570,15 @@ impl<'t> Glob<'t> {
         encode::compile(tokens)
     }
 
-    // TODO: Document pattern syntax in the crate documentation and refer to it
-    //       here.
+    // TODO: Document pattern syntax in the crate documentation and refer to it here.
     /// Constructs a [`Glob`] from a glob expression.
     ///
-    /// A glob expression is UTF-8 encoded text that resembles a Unix path
-    /// consisting of nominal components delimited by separators and patterns
-    /// that can be matched against native paths.
+    /// A glob expression is UTF-8 encoded text that resembles a Unix path consisting of nominal
+    /// components delimited by separators and patterns that can be matched against native paths.
     ///
     /// # Errors
     ///
-    /// Returns an error if the glob expression fails to build. See
-    /// [`BuildError`].
+    /// Returns an error if the glob expression fails to build. See [`BuildError`].
     ///
     /// [`Glob`]: crate::Glob
     /// [`BuildError`]: crate::BuildError
@@ -610,8 +590,8 @@ impl<'t> Glob<'t> {
 
     /// Constructs a [`Glob`] from a glob expression with diagnostics.
     ///
-    /// This function is the same as [`Glob::new`], but additionally returns
-    /// detailed diagnostics on both success and failure.
+    /// This function is the same as [`Glob::new`], but additionally returns detailed diagnostics
+    /// on both success and failure.
     ///
     /// See [`Glob::diagnose`].
     ///
@@ -641,39 +621,33 @@ impl<'t> Glob<'t> {
         })
     }
 
-    /// Partitions a [`Glob`] into an invariant [`PathBuf`] prefix and variant
-    /// [`Glob`] postfix.
+    /// Partitions a [`Glob`] into an invariant [`PathBuf`] prefix and variant [`Glob`] postfix.
     ///
-    /// The invariant prefix contains no glob patterns nor other variant
-    /// components and therefore can be interpreted as a native path. The
-    /// [`Glob`] postfix is variant and contains the remaining components that
-    /// follow the prefix. For example, the glob expression `.local/**/*.log`
-    /// would produce the path `.local` and glob `**/*.log`. It is possible for
+    /// The invariant prefix contains no glob patterns nor other variant components and therefore
+    /// can be interpreted as a native path. The [`Glob`] postfix is variant and contains the
+    /// remaining components that follow the prefix. For example, the glob expression
+    /// `.local/**/*.log` would produce the path `.local` and glob `**/*.log`. It is possible for
     /// either partition to be empty.
     ///
-    /// Literal components may be considered variant if they contain characters
-    /// with casing and the configured case sensitivity differs from the target
-    /// platform's file system. For example, the case-insensitive literal
-    /// expression `(?i)photos` is considered variant on Unix and invariant on
-    /// Windows, because the literal `photos` resolves differently in Unix file
-    /// system APIs.
+    /// Literal components may be considered variant if they contain characters with casing and the
+    /// configured case sensitivity differs from the target platform's file system. For example,
+    /// the case-insensitive literal expression `(?i)photos` is considered variant on Unix and
+    /// invariant on Windows, because the literal `photos` resolves differently in Unix file system
+    /// APIs.
     ///
-    /// Partitioning a [`Glob`] allows any invariant prefix to be used as a
-    /// native path to establish a working directory or to interpret semantic
-    /// components that are not recognized by globs, such as parent directory
-    /// `..` components.
+    /// Partitioning a [`Glob`] allows any invariant prefix to be used as a native path to
+    /// establish a working directory or to interpret semantic components that are not recognized
+    /// by globs, such as parent directory `..` components.
     ///
-    /// Partitioned [`Glob`]s are never rooted. If the glob expression has a
-    /// root component, then it is always included in the invariant [`PathBuf`]
-    /// prefix.
+    /// Partitioned [`Glob`]s are never rooted. If the glob expression has a root component, then
+    /// it is always included in the invariant [`PathBuf`] prefix.
     ///
     /// # Examples
     ///
-    /// To match paths against a [`Glob`] while respecting semantic components,
-    /// the invariant prefix and candidate path can be canonicalized. The
-    /// following example canonicalizes both the working directory joined with
-    /// the prefix as well as the candidate path and then attempts to match the
-    /// [`Glob`] if the candidate path contains the prefix.
+    /// To match paths against a [`Glob`] while respecting semantic components, the invariant
+    /// prefix and candidate path can be canonicalized. The following example canonicalizes both
+    /// the working directory joined with the prefix as well as the candidate path and then
+    /// attempts to match the [`Glob`] if the candidate path contains the prefix.
     ///
     /// ```rust,no_run
     /// use dunce; // Avoids UNC paths on Windows.
@@ -713,9 +687,8 @@ impl<'t> Glob<'t> {
     ///
     /// # Examples
     ///
-    /// `Glob`s borrow data in the corresponding glob expression. To move a
-    /// `Glob` beyond the scope of a glob expression, clone the data with this
-    /// function.
+    /// `Glob`s borrow data in the corresponding glob expression. To move a `Glob` beyond the scope
+    /// of a glob expression, clone the data with this function.
     ///
     /// ```rust
     /// use wax::{BuildError, Glob};
@@ -735,32 +708,29 @@ impl<'t> Glob<'t> {
 
     /// Gets an iterator over matching files in a directory tree.
     ///
-    /// This function matches a [`Glob`] against a directory tree, returning
-    /// each matching file as a [`WalkEntry`]. [`Glob`]s are the only patterns
-    /// that support this semantic operation; it is not possible to match
-    /// combinators over directory trees.
+    /// This function matches a [`Glob`] against a directory tree, returning each matching file as
+    /// a [`WalkEntry`]. [`Glob`]s are the only patterns that support this semantic operation; it
+    /// is not possible to match combinators over directory trees.
     ///
-    /// As with [`Path::join`] and [`PathBuf::push`], the base directory can be
-    /// escaped or overridden by rooted [`Glob`]s. In many cases, the current
-    /// working directory `.` is an appropriate base directory and will be
-    /// intuitively ignored if the [`Glob`] is rooted, such as in
-    /// `/mnt/media/**/*.mp4`. The [`has_root`] function can be used to check if
-    /// a [`Glob`] is rooted and the [`Walk::root`] function can be used to get
-    /// the resulting root directory of the traversal.
+    /// As with [`Path::join`] and [`PathBuf::push`], the base directory can be escaped or
+    /// overridden by rooted [`Glob`]s. In many cases, the current working directory `.` is an
+    /// appropriate base directory and will be intuitively ignored if the [`Glob`] is rooted, such
+    /// as in `/mnt/media/**/*.mp4`. The [`has_root`] function can be used to check if a [`Glob`]
+    /// is rooted and the [`Walk::root`] function can be used to get the resulting root directory
+    /// of the traversal.
     ///
     /// The [root directory][`Walk::root`] is established via the [invariant
-    /// prefix][`Glob::partition`] of the [`Glob`]. **The prefix and any
-    /// [semantic literals][`Glob::has_semantic_literals`] in this prefix are
-    /// interpreted semantically as a path**, so components like `.` and `..`
-    /// that precede variant patterns interact with the base directory
-    /// semantically. This means that expressions like `../**` escape the base
+    /// prefix][`Glob::partition`] of the [`Glob`]. **The prefix and any [semantic
+    /// literals][`Glob::has_semantic_literals`] in this prefix are interpreted semantically as a
+    /// path**, so components like `.` and `..` that precede variant patterns interact with the
+    /// base directory semantically. This means that expressions like `../**` escape the base
     /// directory as expected on Unix and Windows, for example.
     ///
-    /// This function uses the default [`WalkBehavior`]. To configure the
-    /// behavior of the traversal, see [`Glob::walk_with_behavior`].
+    /// This function uses the default [`WalkBehavior`]. To configure the behavior of the
+    /// traversal, see [`Glob::walk_with_behavior`].
     ///
-    /// Unlike functions in [`Pattern`], **this operation is semantic and
-    /// interacts with the file system**.
+    /// Unlike functions in [`Pattern`], **this operation is semantic and interacts with the file
+    /// system**.
     ///
     /// # Examples
     ///
@@ -774,10 +744,9 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     ///
-    /// Glob expressions do not support general negations, but the [`not`]
-    /// iterator adaptor can be used when walking a directory tree to filter
-    /// [`WalkEntry`]s using arbitary patterns. **This should generally be
-    /// preferred over functions like [`Iterator::filter`], because it avoids
+    /// Glob expressions do not support general negations, but the [`not`] iterator adaptor can be
+    /// used when walking a directory tree to filter [`WalkEntry`]s using arbitary patterns. **This
+    /// should generally be preferred over functions like [`Iterator::filter`], because it avoids
     /// unnecessary reads of directory trees when matching [exhaustive
     /// negations][`Pattern::is_exhaustive`].**
     ///
@@ -815,13 +784,13 @@ impl<'t> Glob<'t> {
 
     /// Gets an iterator over matching files in a directory tree.
     ///
-    /// This function is the same as [`Glob::walk`], but it additionally accepts
-    /// a [`WalkBehavior`]. This can be used to configure how the traversal
-    /// interacts with symbolic links, the maximum depth from the root, etc.
+    /// This function is the same as [`Glob::walk`], but it additionally accepts a
+    /// [`WalkBehavior`]. This can be used to configure how the traversal interacts with symbolic
+    /// links, the maximum depth from the root, etc.
     ///
-    /// Depth is relative to the [root directory][`Walk::root`] of the
-    /// traversal, which is determined by joining the given path and any
-    /// [invariant prefix][`Glob::partition`] of the [`Glob`].
+    /// Depth is relative to the [root directory][`Walk::root`] of the traversal, which is
+    /// determined by joining the given path and any [invariant prefix][`Glob::partition`] of the
+    /// [`Glob`].
     ///
     /// See [`Glob::walk`] for more information.
     ///
@@ -837,9 +806,9 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     ///
-    /// By default, symbolic links are read as normal files and their targets
-    /// are ignored. To follow symbolic links and traverse any directories that
-    /// they reference, specify a [`LinkBehavior`].
+    /// By default, symbolic links are read as normal files and their targets are ignored. To
+    /// follow symbolic links and traverse any directories that they reference, specify a
+    /// [`LinkBehavior`].
     ///
     /// ```rust,no_run
     /// use wax::{Glob, LinkBehavior};
@@ -869,9 +838,9 @@ impl<'t> Glob<'t> {
 
     /// Gets **non-error** [`Diagnostic`]s.
     ///
-    /// This function requires a receiving [`Glob`] and so does not report
-    /// error-level [`Diagnostic`]s. It can be used to get non-error diagnostics
-    /// after constructing or [partitioning][`Glob::partition`] a [`Glob`].
+    /// This function requires a receiving [`Glob`] and so does not report error-level
+    /// [`Diagnostic`]s. It can be used to get non-error diagnostics after constructing or
+    /// [partitioning][`Glob::partition`] a [`Glob`].
     ///
     /// See [`Glob::diagnosed`].
     ///
@@ -887,11 +856,9 @@ impl<'t> Glob<'t> {
 
     /// Gets metadata for capturing sub-expressions.
     ///
-    /// This function returns an iterator over capturing tokens, which describe
-    /// the index and location of sub-expressions that capture [matched
-    /// text][`MatchedText`]. For example, in the expression `src/**/*.rs`, both
-    /// `**` and `*` form
-    /// captures.
+    /// This function returns an iterator over capturing tokens, which describe the index and
+    /// location of sub-expressions that capture [matched text][`MatchedText`]. For example, in the
+    /// expression `src/**/*.rs`, both `**` and `*` form captures.
     ///
     /// [`MatchedText`]: crate::MatchedText
     pub fn captures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
@@ -909,9 +876,8 @@ impl<'t> Glob<'t> {
 
     /// Returns `true` if the glob has a root.
     ///
-    /// As with Unix paths, a glob expression has a root if it begins with a
-    /// separator `/`. Patterns other than separators may also root an
-    /// expression, such as `/**` or `</root:1,>`.
+    /// As with Unix paths, a glob expression has a root if it begins with a separator `/`.
+    /// Patterns other than separators may also root an expression, such as `/**` or `</root:1,>`.
     pub fn has_root(&self) -> bool {
         self.tree
             .as_ref()
@@ -920,14 +886,13 @@ impl<'t> Glob<'t> {
             .map_or(false, Token::has_root)
     }
 
-    /// Returns `true` if the glob has literals that have non-nominal semantics
-    /// on the target platform.
+    /// Returns `true` if the glob has literals that have non-nominal semantics on the target
+    /// platform.
     ///
-    /// The most notable semantic literals are the relative path components `.`
-    /// and `..`, which refer to a current and parent directory on Unix and
-    /// Windows operating systems, respectively. These are interpreted as
-    /// literals in glob expressions, and so only logically match paths that
-    /// contain these exact nominal components (semantic meaning is lost).
+    /// The most notable semantic literals are the relative path components `.` and `..`, which
+    /// refer to a current and parent directory on Unix and Windows operating systems,
+    /// respectively. These are interpreted as literals in glob expressions, and so only logically
+    /// match paths that contain these exact nominal components (semantic meaning is lost).
     ///
     /// See [`Glob::partition`].
     ///
@@ -986,8 +951,8 @@ impl<'t> Combine<'t> for Glob<'t> {
 
 /// Combinator that matches any of its component [`Pattern`]s.
 ///
-/// An instance of `Any` is constructed using the [`any`] function, which
-/// combines multiple [`Pattern`]s for more ergonomic and efficient matching.
+/// An instance of `Any` is constructed using the [`any`] function, which combines multiple
+/// [`Pattern`]s for more ergonomic and efficient matching.
 ///
 /// [`any`]: crate::any
 /// [`Pattern`]: crate::Pattern
@@ -1027,27 +992,23 @@ impl<'t> Combine<'t> for Any<'t> {
     type Error = Infallible;
 }
 
-// TODO: It may be useful to use dynamic dispatch via trait objects instead.
-//       This would allow for a variety of types to be composed in an `any` call
-//       and would be especially useful if additional combinators are
-//       introduced.
+// TODO: It may be useful to use dynamic dispatch via trait objects instead. This would allow for a
+//       variety of types to be composed in an `any` call and would be especially useful if
+//       additional combinators are introduced.
 /// Constructs a combinator that matches if any of its input [`Pattern`]s match.
 ///
-/// This function accepts an [`IntoIterator`] with items that implement
-/// [`Combine`], such as [`Glob`] and `&str`. The output [`Any`] implements
-/// [`Pattern`] by matching its component [`Pattern`]s. [`Any`] is often more
-/// ergonomic and efficient than matching individually against multiple
-/// [`Pattern`]s.
+/// This function accepts an [`IntoIterator`] with items that implement [`Combine`], such as
+/// [`Glob`] and `&str`. The output [`Any`] implements [`Pattern`] by matching its component
+/// [`Pattern`]s. [`Any`] is often more ergonomic and efficient than matching individually against
+/// multiple [`Pattern`]s.
 ///
-/// [`Any`] groups all captures and therefore only exposes the complete text of
-/// a match. It is not possible to index a particular capturing token in the
-/// component patterns. Combinators only support logical matching and cannot be
-/// used to semantically match (walk) a directory tree.
+/// [`Any`] groups all captures and therefore only exposes the complete text of a match. It is not
+/// possible to index a particular capturing token in the component patterns. Combinators only
+/// support logical matching and cannot be used to semantically match (walk) a directory tree.
 ///
 /// # Examples
 ///
-/// To match a path against multiple patterns, the patterns can first be
-/// combined into an [`Any`].
+/// To match a path against multiple patterns, the patterns can first be combined into an [`Any`].
 ///
 /// ```rust
 /// use wax::{Glob, Pattern};
@@ -1062,8 +1023,7 @@ impl<'t> Combine<'t> for Any<'t> {
 /// assert!(any.is_match("src/lib.rs"));
 /// ```
 ///
-/// [`Glob`]s and other compiled [`Pattern`]s can also be composed into an
-/// [`Any`].
+/// [`Glob`]s and other compiled [`Pattern`]s can also be composed into an [`Any`].
 ///
 /// ```rust
 /// use wax::{Glob, Pattern};
@@ -1073,8 +1033,8 @@ impl<'t> Combine<'t> for Any<'t> {
 /// assert!(wax::any([red, blue]).unwrap().is_match("red/potion.txt"));
 /// ```
 ///
-/// This function can only combine patterns of the same type, but intermediate
-/// combinators can be used to combine different types into a single combinator.
+/// This function can only combine patterns of the same type, but intermediate combinators can be
+/// used to combine different types into a single combinator.
 ///
 /// ```rust
 /// use wax::{Glob, Pattern};
@@ -1099,9 +1059,8 @@ impl<'t> Combine<'t> for Any<'t> {
 ///
 /// # Errors
 ///
-/// Returns an error if any of the inputs fail to build. If the inputs are a
-/// compiled [`Pattern`] type such as [`Glob`], then this only occurs if the
-/// compiled program is too large.
+/// Returns an error if any of the inputs fail to build. If the inputs are a compiled [`Pattern`]
+/// type such as [`Glob`], then this only occurs if the compiled program is too large.
 ///
 /// [`Any`]: crate::Any
 /// [`Combine`]: crate::Combine
@@ -1126,14 +1085,13 @@ where
 
 /// Escapes text as a literal glob expression.
 ///
-/// This function escapes any and all meta-characters in the given string, such
-/// that all text is interpreted as a literal or separator when read as a glob
-/// expression.
+/// This function escapes any and all meta-characters in the given string, such that all text is
+/// interpreted as a literal or separator when read as a glob expression.
 ///
 /// # Examples
 ///
-/// This function can be used to escape opaque strings, such as a string
-/// obtained from a user that must be interpreted literally.
+/// This function can be used to escape opaque strings, such as a string obtained from a user that
+/// must be interpreted literally.
 ///
 /// ```rust
 /// use wax::Glob;
@@ -1149,9 +1107,8 @@ where
 /// if let Ok(glob) = Glob::new(&expression) { /* ... */ }
 /// ```
 ///
-/// Sometimes part of a path contains numerous meta-characters. This function
-/// can be used to reliably escape them while making the unescaped part of the
-/// expression a bit easier to read.
+/// Sometimes part of a path contains numerous meta-characters. This function can be used to
+/// reliably escape them while making the unescaped part of the expression a bit easier to read.
 ///
 /// ```rust
 /// use wax::Glob;
@@ -1159,8 +1116,8 @@ where
 /// let expression = format!("{}{}", "logs/**/", wax::escape("ingest[01](L).txt"));
 /// let glob = Glob::new(&expression).unwrap();
 /// ```
-// It is possible to call this function using a mutable reference, which may
-// appear to mutate the parameter in place.
+// It is possible to call this function using a mutable reference, which may appear to mutate the
+// parameter in place.
 #[must_use]
 pub fn escape(unescaped: &str) -> Cow<str> {
     const ESCAPE: char = '\\';
@@ -1183,10 +1140,9 @@ pub fn escape(unescaped: &str) -> Cow<str> {
 // TODO: Is it possible for `:` and `,` to be contextual meta-characters?
 /// Returns `true` if the given character is a meta-character.
 ///
-/// This function does **not** return `true` for contextual meta-characters that
-/// may only be escaped in particular contexts, such as hyphens `-` in character
-/// class expressions. To detect these characters, use
-/// [`is_contextual_meta_character`].
+/// This function does **not** return `true` for contextual meta-characters that may only be
+/// escaped in particular contexts, such as hyphens `-` in character class expressions. To detect
+/// these characters, use [`is_contextual_meta_character`].
 ///
 /// [`is_contextual_meta_character`]: crate::is_contextual_meta_character
 pub const fn is_meta_character(x: char) -> bool {
@@ -1198,10 +1154,9 @@ pub const fn is_meta_character(x: char) -> bool {
 
 /// Returns `true` if the given character is a contextual meta-character.
 ///
-/// Contextual meta-characters may only be escaped in particular contexts, such
-/// as hyphens `-` in character class expressions. Elsewhere, they are
-/// interpreted as literals. To detect non-contextual meta-characters, use
-/// [`is_meta_character`].
+/// Contextual meta-characters may only be escaped in particular contexts, such as hyphens `-` in
+/// character class expressions. Elsewhere, they are interpreted as literals. To detect
+/// non-contextual meta-characters, use [`is_meta_character`].
 ///
 /// [`is_meta_character`]: crate::is_meta_character
 pub const fn is_contextual_meta_character(x: char) -> bool {
@@ -1227,9 +1182,8 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Checked<Tokenized>> 
         })
 }
 
-// TODO: Construct paths from components in tests. In practice, using string
-//       literals works, but is technically specific to platforms that support
-//       `/` as a separator.
+// TODO: Construct paths from components in tests. In practice, using string literals works, but is
+//       technically specific to platforms that support `/` as a separator.
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -1455,9 +1409,9 @@ mod tests {
         assert!(Glob::new("a/[a-z-]/c").is_err());
         assert!(Glob::new("a/[-a-z]/c").is_err());
         assert!(Glob::new("a/[-]/c").is_err());
-        // NOTE: Without special attention to escaping and character parsing,
-        //       this could be mistakenly interpreted as an empty range over the
-        //       character `-`. This should be rejected.
+        // NOTE: Without special attention to escaping and character parsing, this could be
+        //       mistakenly interpreted as an empty range over the character `-`. This should be
+        //       rejected.
         assert!(Glob::new("a/[---]/c").is_err());
         assert!(Glob::new("a/[[]/c").is_err());
         assert!(Glob::new("a/[]]/c").is_err());
@@ -1528,8 +1482,8 @@ mod tests {
         assert!(Glob::new("<a/:0,>/").is_err());
     }
 
-    // Rooted repetitions are rejected if their lower bound is zero; any other
-    // lower bound is accepted.
+    // Rooted repetitions are rejected if their lower bound is zero; any other lower bound is
+    // accepted.
     #[test]
     fn reject_glob_with_rooted_repetition_tokens() {
         assert!(Glob::new("</root:0,>maybe").is_err());
@@ -1620,8 +1574,8 @@ mod tests {
         assert!(!glob.is_match(Path::new("a/bb")));
         assert!(!glob.is_match(Path::new("a/b/c")));
 
-        // There are no variant tokens with which to capture, but the matched
-        // text should always be available.
+        // There are no variant tokens with which to capture, but the matched text should always be
+        // available.
         assert_eq!(
             "a/b",
             glob.matched(&CandidatePath::from(Path::new("a/b")))
@@ -1725,9 +1679,8 @@ mod tests {
     #[cfg(any(unix, windows))]
     #[test]
     fn match_glob_with_empty_class_tokens() {
-        // A character class is "empty" if it only matches separators on the
-        // target platform. Such a character class only matches `NUL` and so
-        // effectively matches nothing.
+        // A character class is "empty" if it only matches separators on the target platform. Such
+        // a character class only matches `NUL` and so effectively matches nothing.
         let glob = Glob::new("a[/]b").unwrap();
 
         assert!(!glob.is_match(Path::new("a/b")));
@@ -2051,13 +2004,13 @@ mod tests {
         assert!(Glob::new("</root:1,>").unwrap().has_root());
 
         assert!(!Glob::new("").unwrap().has_root());
-        // This is not rooted, because character classes may not match
-        // separators. This example compiles an "empty" character class, which
-        // attempts to match `NUL` and so effectively matches nothing.
+        // This is not rooted, because character classes may not match separators. This example
+        // compiles an "empty" character class, which attempts to match `NUL` and so effectively
+        // matches nothing.
         #[cfg(any(unix, windows))]
         assert!(!Glob::new("[/]root").unwrap().has_root());
-        // The leading forward slash in tree tokens is meaningful. When omitted,
-        // at the beginning of an expression, the resulting glob is not rooted.
+        // The leading forward slash in tree tokens is meaningful. When omitted, at the beginning
+        // of an expression, the resulting glob is not rooted.
         assert!(!Glob::new("**/").unwrap().has_root());
     }
 

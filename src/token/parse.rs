@@ -89,9 +89,9 @@ impl LocatedError for ErrorEntry<'_> {
 
 /// Describes errors that occur when parsing a glob expression.
 ///
-/// Common examples of glob expressions that cannot be parsed are alternative
-/// and repetition patterns with missing delimiters and ambiguous patterns, such
-/// as `src/***/*.rs` or `{.local,.config/**/*.toml`.
+/// Common examples of glob expressions that cannot be parsed are alternative and repetition
+/// patterns with missing delimiters and ambiguous patterns, such as `src/***/*.rs` or
+/// `{.local,.config/**/*.toml`.
 #[derive(Clone, Debug, Error)]
 #[error("failed to parse glob expression")]
 pub struct ParseError<'t> {
