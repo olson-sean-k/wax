@@ -124,8 +124,8 @@ impl<'t> MatchedText<'t> {
     /// Clones any borrowed data to an owning instance.
     ///
     /// This function is similar to [`into_owned`], but does not consume its receiver. Due to a
-    /// technical limitation, `MatchedText` cannot implement [`Clone`], so this function is
-    /// provided as a stop gap that allows a distinct instance to be created that owns its data.
+    /// technical limitation, `MatchedText` cannot properly implement [`Clone`], so this function
+    /// is provided as a stop gap that allows a distinct instance to be created that owns its data.
     ///
     /// [`Clone`]: std::clone::Clone
     /// [`into_owned`]: crate::MatchedText::into_owned
