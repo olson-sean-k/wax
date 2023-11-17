@@ -25,7 +25,7 @@ use thiserror::Error;
 
 use crate::diagnostics::{CompositeSpan, CorrelatedSpan, SpanExt as _};
 use crate::token::{self, InvariantSize, Token, TokenKind, TokenTree, Tokenized};
-use crate::{Any, BuildError, Combine, Glob};
+use crate::{Any, BuildError, Glob, Pattern};
 
 /// Maximum invariant size.
 ///
@@ -331,7 +331,7 @@ impl<T> AsRef<T> for Checked<T> {
     }
 }
 
-impl<'t, T> Combine<'t> for Checked<T>
+impl<'t, T> Pattern<'t> for Checked<T>
 where
     T: TokenTree<'t>,
 {

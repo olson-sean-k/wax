@@ -128,40 +128,40 @@ impl CapturingToken {
 
 // This type is similar to `token::Variance<InvariantText<'_>>`, but is simplified for the public
 // API. Invariant text is always expressed as a path and no variant bounds are provided.
-/// Variance of a [`Pattern`].
+/// Variance of a [`Program`].
 ///
 /// The variance of a pattern describes the kinds of paths it can match with respect to the
-/// platform file system APIs. [`Pattern`]s are either variant or invariant.
+/// platform file system APIs. [`Program`]s are either variant or invariant.
 ///
-/// An invariant [`Pattern`] can be represented and completely described by an equivalent path
+/// An invariant [`Program`] can be represented and completely described by an equivalent path
 /// using the platform's file system APIs. For example, the glob expression `path/to/file.txt`
 /// resolves identically to the paths `path/to/file.txt` and `path\to\file.txt` on Unix and
 /// Windows, respectively.
 ///
-/// A variant [`Pattern`] resolves differently than any particular path used with the platform's
+/// A variant [`Program`] resolves differently than any particular path used with the platform's
 /// file system APIs. Such an expression cannot be represented by a single path. This is typically
 /// because the expression matches multiple texts using a regular pattern, such as in the glob
 /// expression `**/*.rs`.
 ///
-/// [`Pattern`]: crate::Pattern
+/// [`Program`]: crate::Program
 /// [`Variance`]: crate::Variance
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Variance {
-    /// A [`Pattern`] is invariant and equivalent to a path.
+    /// A [`Program`] is invariant and equivalent to a path.
     ///
     /// Some non-literal expressions may be invariant, such as in the expression
     /// `path/[t][o]/{file,file}.txt`, which is invariant on Unix (but not on Windows, because the
     /// character class expressions do not match with case folding).
     ///
-    /// [`Pattern`]: crate::Pattern
+    /// [`Program`]: crate::Program
     Invariant(
-        /// An equivalent path that completely describes the invariant [`Pattern`] with respect to
+        /// An equivalent path that completely describes the invariant [`Program`] with respect to
         /// platform file system APIs.
         ///
-        /// [`Pattern`]: crate::Pattern
+        /// [`Program`]: crate::Program
         PathBuf,
     ),
-    /// A [`Pattern`] is variant and cannot be completely described by a path.
+    /// A [`Program`] is variant and cannot be completely described by a path.
     ///
     /// Variant expressions may be formed from literals or other **seemingly** invariant
     /// expressions. For example, the variance of literals considers the case sensitivity of the
@@ -169,7 +169,7 @@ pub enum Variance {
     /// but not on Windows. Similarly, the expression `path/[t][o]/file.txt` is variant on Windows
     /// but not on Unix.
     ///
-    /// [`Pattern`]: crate::Pattern
+    /// [`Program`]: crate::Program
     Variant,
 }
 
@@ -215,7 +215,7 @@ impl From<token::Variance<InvariantText<'_>>> for Variance {
 /// [`Glob::partition`]: crate::Glob::partition
 /// [`Path`]: std::path::Path
 /// [`PathBuf`]: std::path::PathBuf
-pub trait Pattern<'t>: Combine<'t, Error = Infallible> {
+pub trait Program<'t>: Pattern<'t, Error = Infallible> {
     /// Returns `true` if a path matches the pattern.
     ///
     /// The given path must be convertible into a [`CandidatePath`].
@@ -244,26 +244,25 @@ pub trait Pattern<'t>: Combine<'t, Error = Infallible> {
     fn is_exhaustive(&self) -> bool;
 }
 
-/// A glob expression representation that can be incorporated into a combinator.
+/// A representation of a glob expression.
 ///
-/// This trait is implemented by types that can be (fallibly) converted into a [`Pattern`] and
-/// incorporated into a combinator. See [`any`].
+/// This trait is implemented by types that can be converted into a [`Program`], such as `str`
+/// slices. These types may or may not have been compiled into a [`Program`].
 ///
-/// [`any`]: crate::any
-/// [`Pattern`]: crate::Pattern
-pub trait Combine<'t>:
-    TryInto<Checked<Self::Tokens>, Error = <Self as Combine<'t>>::Error>
+/// [`Program`]: crate::Program
+pub trait Pattern<'t>:
+    TryInto<Checked<Self::Tokens>, Error = <Self as Pattern<'t>>::Error>
 {
     type Tokens: TokenTree<'t>;
     type Error: Into<BuildError>;
 }
 
-impl<'t> Combine<'t> for &'t str {
+impl<'t> Pattern<'t> for &'t str {
     type Tokens = Tokenized<'t>;
     type Error = BuildError;
 }
 
-/// General errors concerning [`Pattern`]s.
+/// General errors concerning [`Program`]s.
 ///
 /// This is the most general error and each of its variants exposes a particular error type that
 /// describes the details of its associated error condition. This error is not used in any Wax APIs
@@ -289,7 +288,7 @@ impl<'t> Combine<'t> for &'t str {
 /// }
 /// ```
 ///
-/// [`Pattern`]: crate::Pattern
+/// [`Program`]: crate::Program
 #[cfg_attr(feature = "miette", derive(Diagnostic))]
 #[derive(Debug, Error)]
 #[error(transparent)]
@@ -319,7 +318,7 @@ impl From<WalkError> for GlobError {
 //       features. However, this means that documentation does not annotate the implementation with
 //       a feature flag requirement. If possible, perhaps in a later version of Rust, close this
 //       gap.
-/// Describes errors that occur when building a [`Pattern`] from a glob expression.
+/// Describes errors that occur when building a [`Program`] from a glob expression.
 ///
 /// Glob expressions may fail to build if they cannot be parsed, violate rules, or cannot be
 /// compiled. Parsing errors occur when a glob expression has invalid syntax. Patterns must also
@@ -333,7 +332,7 @@ impl From<WalkError> for GlobError {
 /// trait. Due to a technical limitation, this may not be properly annotated in API documentation.
 ///
 /// [`Diagnostic`]: miette::Diagnostic
-/// [`Pattern`]: crate::Pattern
+/// [`Program`]: crate::Program
 #[cfg_attr(feature = "miette", derive(Diagnostic))]
 #[cfg_attr(feature = "miette", diagnostic(transparent))]
 #[derive(Debug, Error)]
@@ -450,14 +449,14 @@ enum BuildErrorKind {
     Rule(RuleError<'static>),
 }
 
-/// Path that can be matched against a [`Pattern`].
+/// Path that can be matched against a [`Program`].
 ///
 /// `CandidatePath`s are always UTF-8 encoded. On some platforms this requires a lossy conversion
 /// that uses Unicode replacement codepoints `�` whenever a part of a path cannot be represented as
 /// valid UTF-8 (such as Windows). This means that some byte sequences cannot be matched, though
 /// this is uncommon in practice.
 ///
-/// [`Pattern`]: crate::Pattern
+/// [`Program`]: crate::Program
 #[derive(Clone)]
 pub struct CandidatePath<'b> {
     text: Cow<'b, str>,
@@ -510,7 +509,7 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
     }
 }
 
-/// Pattern that can be matched against paths and directory trees.
+/// Program that can be matched against paths and directory trees.
 ///
 /// `Glob`s are constructed from strings called glob expressions that resemble Unix paths
 /// consisting of nominal components delimited by separators. Glob expressions support various
@@ -519,10 +518,10 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 ///
 /// # Examples
 ///
-/// A `Glob` can be used to determine if a path matches a pattern via the [`Pattern`] trait.
+/// A `Glob` can be used to determine if a path matches a pattern via the [`Program`] trait.
 ///
 /// ```rust
-/// use wax::{Glob, Pattern};
+/// use wax::{Glob, Program};
 ///
 /// let glob = Glob::new("*.png").unwrap();
 /// assert!(glob.is_match("apple.png"));
@@ -531,7 +530,7 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 /// Patterns form captures, which can be used to isolate matching sub-text.
 ///
 /// ```rust
-/// use wax::{CandidatePath, Glob, Pattern};
+/// use wax::{CandidatePath, Glob, Program};
 ///
 /// let glob = Glob::new("**/{*.{go,rs}}").unwrap();
 /// let candidate = CandidatePath::from("src/lib.rs");
@@ -552,12 +551,12 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 /// }
 /// ```
 ///
-/// [`Pattern`]: crate::Pattern
+/// [`Program`]: crate::Program
 /// [`walk`]: crate::Glob::walk
 #[derive(Clone, Debug)]
 pub struct Glob<'t> {
     tree: Checked<Tokenized<'t>>,
-    pattern: Regex,
+    program: Regex,
 }
 
 impl<'t> Glob<'t> {
@@ -582,8 +581,8 @@ impl<'t> Glob<'t> {
     /// [`BuildError`]: crate::BuildError
     pub fn new(expression: &'t str) -> Result<Self, BuildError> {
         let tree = parse_and_check(expression)?;
-        let pattern = Glob::compile(tree.as_ref().tokens())?;
-        Ok(Glob { tree, pattern })
+        let program = Glob::compile(tree.as_ref().tokens())?;
+        Ok(Glob { tree, program })
     }
 
     /// Partitions a [`Glob`] into an invariant [`PathBuf`] prefix and variant [`Glob`] postfix.
@@ -617,7 +616,7 @@ impl<'t> Glob<'t> {
     /// ```rust,no_run
     /// use dunce; // Avoids UNC paths on Windows.
     /// use std::path::Path;
-    /// use wax::{Glob, Pattern};
+    /// use wax::{Glob, Program};
     ///
     /// let path: &Path = /* ... */ // Candidate path.
     /// # Path::new("");
@@ -643,9 +642,9 @@ impl<'t> Glob<'t> {
     pub fn partition(self) -> (PathBuf, Self) {
         let Glob { tree, .. } = self;
         let (prefix, tree) = tree.partition();
-        let pattern =
+        let program =
             Glob::compile(tree.as_ref().tokens()).expect("failed to compile partitioned glob");
-        (prefix, Glob { tree, pattern })
+        (prefix, Glob { tree, program })
     }
 
     /// Clones any borrowed data into an owning instance.
@@ -664,10 +663,10 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     pub fn into_owned(self) -> Glob<'static> {
-        let Glob { tree, pattern } = self;
+        let Glob { tree, program } = self;
         Glob {
             tree: tree.into_owned(),
-            pattern,
+            program,
         }
     }
 
@@ -753,7 +752,7 @@ impl<'t> Glob<'t> {
         parse_and_diagnose(expression).and_then_diagnose(|tree| {
             Glob::compile(tree.as_ref().tokens())
                 .into_error_diagnostic()
-                .map_output(|pattern| Glob { tree, pattern })
+                .map_output(|program| Glob { tree, program })
         })
     }
 
@@ -788,14 +787,14 @@ impl FromStr for Glob<'static> {
     }
 }
 
-impl<'t> Pattern<'t> for Glob<'t> {
+impl<'t> Program<'t> for Glob<'t> {
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
-        self.pattern.is_match(path.as_ref())
+        self.program.is_match(path.as_ref())
     }
 
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
-        self.pattern.captures(path.as_ref()).map(From::from)
+        self.program.captures(path.as_ref()).map(From::from)
     }
 
     fn variance(&self) -> Variance {
@@ -815,22 +814,22 @@ impl<'t> TryFrom<&'t str> for Glob<'t> {
     }
 }
 
-impl<'t> Combine<'t> for Glob<'t> {
+impl<'t> Pattern<'t> for Glob<'t> {
     type Tokens = Tokenized<'t>;
     type Error = Infallible;
 }
 
-/// Combinator that matches any of its component [`Pattern`]s.
+/// Combinator that matches any of its component [`Program`]s.
 ///
 /// An instance of `Any` is constructed using the [`any`] function, which combines multiple
-/// [`Pattern`]s for more ergonomic and efficient matching.
+/// [`Program`]s for more ergonomic and efficient matching.
 ///
 /// [`any`]: crate::any
-/// [`Pattern`]: crate::Pattern
+/// [`Program`]: crate::Program
 #[derive(Clone, Debug)]
 pub struct Any<'t> {
     tree: Checked<Token<'t, ()>>,
-    pattern: Regex,
+    program: Regex,
 }
 
 impl<'t> Any<'t> {
@@ -839,14 +838,14 @@ impl<'t> Any<'t> {
     }
 }
 
-impl<'t> Pattern<'t> for Any<'t> {
+impl<'t> Program<'t> for Any<'t> {
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
-        self.pattern.is_match(path.as_ref())
+        self.program.is_match(path.as_ref())
     }
 
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
-        self.pattern.captures(path.as_ref()).map(From::from)
+        self.program.captures(path.as_ref()).map(From::from)
     }
 
     fn variance(&self) -> Variance {
@@ -858,7 +857,7 @@ impl<'t> Pattern<'t> for Any<'t> {
     }
 }
 
-impl<'t> Combine<'t> for Any<'t> {
+impl<'t> Pattern<'t> for Any<'t> {
     type Tokens = Token<'t, ()>;
     type Error = Infallible;
 }
@@ -868,10 +867,10 @@ impl<'t> Combine<'t> for Any<'t> {
 //       additional combinators are introduced.
 /// Constructs a combinator that matches if any of its input [`Pattern`]s match.
 ///
-/// This function accepts an [`IntoIterator`] with items that implement [`Combine`], such as
-/// [`Glob`] and `&str`. The output [`Any`] implements [`Pattern`] by matching its component
-/// [`Pattern`]s. [`Any`] is often more ergonomic and efficient than matching individually against
-/// multiple [`Pattern`]s.
+/// This function accepts an [`IntoIterator`] with items that implement [`Pattern`], such as
+/// [`Glob`] and `&str`. The output [`Any`] implements [`Program`] by matching its component
+/// [`Program`]s. [`Any`] is often more ergonomic and efficient than matching individually against
+/// multiple [`Program`]s.
 ///
 /// [`Any`] groups all captures and therefore only exposes the complete text of a match. It is not
 /// possible to index a particular capturing token in the component patterns. Combinators only
@@ -882,7 +881,7 @@ impl<'t> Combine<'t> for Any<'t> {
 /// To match a path against multiple patterns, the patterns can first be combined into an [`Any`].
 ///
 /// ```rust
-/// use wax::{Glob, Pattern};
+/// use wax::{Glob, Program};
 ///
 /// let any = wax::any([
 ///     "src/**/*.rs",
@@ -894,10 +893,10 @@ impl<'t> Combine<'t> for Any<'t> {
 /// assert!(any.is_match("src/lib.rs"));
 /// ```
 ///
-/// [`Glob`]s and other compiled [`Pattern`]s can also be composed into an [`Any`].
+/// [`Glob`]s and other compiled [`Program`]s can also be composed into an [`Any`].
 ///
 /// ```rust
-/// use wax::{Glob, Pattern};
+/// use wax::{Glob, Program};
 ///
 /// let red = Glob::new("**/red/**/*.txt").unwrap();
 /// let blue = Glob::new("**/*blue*.txt").unwrap();
@@ -908,7 +907,7 @@ impl<'t> Combine<'t> for Any<'t> {
 /// used to combine different types into a single combinator.
 ///
 /// ```rust
-/// use wax::{Glob, Pattern};
+/// use wax::{Glob, Program};
 ///
 /// # fn fallible() -> Result<(), wax::BuildError> {
 /// let glob = Glob::new("**/*.txt")?;
@@ -930,18 +929,18 @@ impl<'t> Combine<'t> for Any<'t> {
 ///
 /// # Errors
 ///
-/// Returns an error if any of the inputs fail to build. If the inputs are a compiled [`Pattern`]
+/// Returns an error if any of the inputs fail to build. If the inputs are a compiled [`Program`]
 /// type such as [`Glob`], then this only occurs if the compiled program is too large.
 ///
 /// [`Any`]: crate::Any
-/// [`Combine`]: crate::Combine
 /// [`Glob`]: crate::Glob
 /// [`IntoIterator`]: std::iter::IntoIterator
 /// [`Pattern`]: crate::Pattern
+/// [`Program`]: crate::Program
 pub fn any<'t, I>(patterns: I) -> Result<Any<'t>, BuildError>
 where
     I: IntoIterator,
-    I::Item: Combine<'t>,
+    I::Item: Pattern<'t>,
 {
     let tree = Checked::any(
         patterns
@@ -950,8 +949,8 @@ where
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)?,
     );
-    let pattern = Any::compile(tree.as_ref())?;
-    Ok(Any { tree, pattern })
+    let program = Any::compile(tree.as_ref())?;
+    Ok(Any { tree, program })
 }
 
 /// Escapes text as a literal glob expression.
@@ -1059,7 +1058,7 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Checked<Tokenized>> 
 mod tests {
     use std::path::Path;
 
-    use crate::{BuildError, BuildErrorKind, CandidatePath, Glob, Pattern};
+    use crate::{BuildError, BuildErrorKind, CandidatePath, Glob, Program};
 
     #[test]
     fn escape() {

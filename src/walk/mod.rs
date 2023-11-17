@@ -1,7 +1,7 @@
 //! Traversal and matching of files and directory trees.
 //!
 //! This module provides APIs for walking directory trees and matching files in a directory tree
-//! against [`Pattern`]s using [`Iterator`]s. These iterators implement [`FileIterator`], which
+//! against [`Program`]s using [`Iterator`]s. These iterators implement [`FileIterator`], which
 //! supports efficient filtering that can cancel traversal into sub-trees that are discarded by
 //! combinators.
 //!
@@ -37,7 +37,7 @@
 //!
 //! Any [`FileIterator`] (the iterators constructed by [`Glob::walk`], [`PathExt::walk`], etc.) can
 //! be efficiently filtered. This filtering can cancel traversal into sub-trees that are discarded.
-//! To filter files using [`Pattern`]s, use the [`not`] combinator.
+//! To filter files using [`Program`]s, use the [`not`] combinator.
 //!
 //! ```rust,no_run
 //! use std::path::Path;
@@ -60,7 +60,7 @@
 //! [`not`]: crate::walk::FileIterator::not
 //! [`PathExt`]: crate::walk::PathExt
 //! [`PathExt::walk`]: crate::walk::PathExt::walk
-//! [`Pattern`]: crate::Pattern
+//! [`Program`]: crate::Program
 
 #![cfg(feature = "walk")]
 #![cfg_attr(docsrs, doc(cfg(feature = "walk")))]
@@ -79,7 +79,7 @@ use crate::walk::filter::{
     Separation, TreeResidue, WalkCancellation,
 };
 use crate::walk::glob::FilterAny;
-use crate::{BuildError, Combine};
+use crate::{BuildError, Pattern};
 
 pub use crate::walk::glob::GlobEntry;
 
@@ -722,16 +722,16 @@ pub trait FileIterator:
     /// for broad negations that cannot be achieved using a positive glob expression alone.
     ///
     /// The combinator does **not** read directory trees from the file system when a directory
-    /// matches an [exhaustive glob expression][`Pattern::is_exhaustive`] such as `**/private/**`
+    /// matches an [exhaustive glob expression][`Program::is_exhaustive`] such as `**/private/**`
     /// or `hidden/<<?>/>*`.
     ///
-    /// **Prefer this combinator over matching each file entry against [`Pattern`]s, since it
+    /// **Prefer this combinator over matching each file entry against [`Program`]s, since it
     /// avoids potentially large and unnecessary reads.**
     ///
     /// # Errors
     ///
     /// Returns an error if any of the inputs fail to build. If the inputs are a compiled
-    /// [`Pattern`] type such as [`Glob`], then this only occurs if the compiled program is too
+    /// [`Program`] type such as [`Glob`], then this only occurs if the compiled program is too
     /// large (i.e., there are too many component patterns).
     ///
     /// # Examples
@@ -755,13 +755,13 @@ pub trait FileIterator:
     ///
     /// [`Glob`]: crate::Glob
     /// [`Iterator::filter`]: std::iter::Iterator::filter
-    /// [`Pattern`]: crate::Pattern
-    /// [`Pattern::is_exhaustive`]: crate::Pattern::is_exhaustive
+    /// [`Program`]: crate::Program
+    /// [`Program::is_exhaustive`]: crate::Program::is_exhaustive
     fn not<'t, I>(self, patterns: I) -> Result<Not<Self>, BuildError>
     where
         Self: Sized,
         I: IntoIterator,
-        I::Item: Combine<'t>,
+        I::Item: Pattern<'t>,
     {
         FilterAny::any(patterns).map(|filter| Not {
             input: self,
