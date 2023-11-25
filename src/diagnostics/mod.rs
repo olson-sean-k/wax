@@ -5,9 +5,6 @@ use ::miette::LabeledSpan;
 use std::cmp;
 use std::fmt::{self, Display, Formatter};
 
-#[cfg(feature = "miette")]
-pub use crate::diagnostics::miette::diagnose;
-
 /// Location and length of a token within a glob expression.
 ///
 /// Spans are encoded as a tuple of `usize`s, where the first element is the location or position
