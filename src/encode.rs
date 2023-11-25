@@ -10,6 +10,13 @@ use thiserror::Error;
 
 use crate::token::Token;
 
+/// A regular expression that never matches.
+///
+/// This expression is formed from a character class that intersects completely disjoint
+/// characters. Unlike an empty regular expression, which always matches, this yields an empty
+/// character class, which never matches (even against empty strings).
+const NEVER_EXPRESSION: &str = "[a&&b]";
+
 #[cfg(windows)]
 const SEPARATOR_CLASS_EXPRESSION: &str = "/\\\\";
 #[cfg(unix)]
@@ -165,9 +172,6 @@ fn encode<'t, A, T>(
     use crate::token::TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
     use crate::token::Wildcard::{One, Tree, ZeroOrMore};
 
-    // This assumes that `NUL` is not allowed in paths and matches nothing.
-    const NULL_CHARACTER_CLASS: &str = nsepexpr!("[\\x00&&{0}]");
-
     fn encode_intermediate_tree(grouping: Grouping, pattern: &mut String) {
         pattern.push_str(sepexpr!("(?:{0}|{0}"));
         grouping.push_str(pattern, sepexpr!(".*{0}"));
@@ -259,16 +263,19 @@ fn encode<'t, A, T>(
                         pattern.push_str(nsepexpr!("&&{0}"));
                     }
                     pattern.push(']');
+                    // TODO: The compiled `Regex` is discarded. Is there a way to check the
+                    //       correctness of the expression but do less work (i.e., don't build a
+                    //       complete `Regex`)?
                     // Compile the character class sub-expression. This may fail if the subtraction
                     // of the separator pattern yields an empty character class (meaning that the
                     // glob expression matches only separator characters on the target platform).
-                    // If compilation fails, then use the null character class, which matches
-                    // nothing on supported platforms.
                     if Regex::new(&pattern).is_ok() {
                         pattern.into()
                     }
                     else {
-                        NULL_CHARACTER_CLASS.into()
+                        // If compilation fails, then use `NEVER_EXPRESSION`, which matches
+                        // nothing.
+                        NEVER_EXPRESSION.into()
                     }
                 });
             },
