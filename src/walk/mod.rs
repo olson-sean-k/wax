@@ -83,6 +83,9 @@ use crate::{BuildError, Pattern};
 
 pub use crate::walk::glob::{GlobEntry, GlobWalker};
 
+#[cfg(windows)]
+const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+
 type FileFiltrate<T> = Result<T, WalkError>;
 type FileResidue<R> = TreeResidue<R>;
 type FileFeed<T, R> = (FileFiltrate<T>, FileResidue<R>);
@@ -635,6 +638,9 @@ pub trait FileIterator:
     type Entry: Entry;
     type Residue: Entry + From<Self::Entry>;
 
+    // TODO: Implement this using combinators provided by the `filter` module and RPITIT once it lands
+    //       in stable Rust. Remove any and all use of `WalkCancellation::unchecked`. Where
+    //       necessary, implement other `FileIterator` combinators in terms of `filter_entry`.
     /// Filters file entries and controls the traversal of the directory tree.
     ///
     /// This function constructs a combinator that filters file entries and furthermore specifies
@@ -678,10 +684,10 @@ pub trait FileIterator:
     ///     use std::os::windows::fs::MetadataExt as _;
     ///     use wax::walk::EntryResidue;
     ///
-    ///     const ATTRIBUTE_HIDDEN: u32 = 0x2;
+    ///     const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
     ///
     ///     let attributes = entry.metadata().unwrap().file_attributes();
-    ///     if (attributes & ATTRIBUTE_HIDDEN) == ATTRIBUTE_HIDDEN {
+    ///     if (attributes & FILE_ATTRIBUTE_HIDDEN) == FILE_ATTRIBUTE_HIDDEN {
     ///         // Do not read hidden directory trees.
     ///         Some(EntryResidue::Tree)
     ///     }
@@ -763,6 +769,13 @@ pub trait FileIterator:
             filter,
         })
     }
+
+    fn not_hidden(self) -> NotHidden<Self>
+    where
+        Self: Sized,
+    {
+        NotHidden::new(self)
+    }
 }
 
 impl<T, R, I> FileIterator for I
@@ -775,8 +788,6 @@ where
     type Residue = R;
 }
 
-// TODO: Implement this using combinators provided by the `filter` module and RPITIT once it lands
-//       in stable Rust. Remove any use of `WalkCancellation::unchecked`.
 /// Iterator combinator that filters file entries and controls the traversal of directory trees.
 ///
 /// This combinator is returned by [`FileIterator::filter_entry`] and implements [`FileIterator`].
@@ -836,8 +847,6 @@ where
     }
 }
 
-// TODO: Implement this using combinators provided by the `filter` module and RPITIT once it lands
-//       in stable Rust. Remove any use of `WalkCancellation::unchecked`.
 /// Iterator combinator that filters file entries with paths that match patterns.
 ///
 /// This combinator is returned by [`FileIterator::not`] and implements [`FileIterator`].
@@ -895,6 +904,94 @@ where
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct NotHidden<I> {
+    #[cfg(not(unix))]
+    input: I,
+    #[cfg(unix)]
+    input: Not<I>,
+}
+
+impl<I> NotHidden<I> {
+    #[cfg(not(unix))]
+    fn new(input: I) -> Self {
+        NotHidden { input }
+    }
+
+    #[cfg(unix)]
+    fn new(input: I) -> Self {
+        NotHidden {
+            input: Not {
+                input,
+                filter: FilterAny::any(["**/.*/**"]).expect("failed to build hidden file filter"),
+            },
+        }
+    }
+}
+
+impl<I> CancelWalk for NotHidden<I>
+where
+    I: CancelWalk,
+{
+    fn cancel_walk_tree(&mut self) {
+        self.input.cancel_walk_tree()
+    }
+}
+
+impl<T, R, I> SeparatingFilter for NotHidden<I>
+where
+    T: 'static + Entry,
+    R: 'static + Entry + From<T>,
+    I: FileIterator<Entry = T, Residue = R>,
+{
+    type Feed = I::Feed;
+
+    // On Windows, discard files and trees that have the hidden file attribute.
+    #[cfg(windows)]
+    fn feed(&mut self) -> Option<Separation<Self::Feed>> {
+        use std::os::windows::fs::MetadataExt as _;
+
+        self.input
+            .feed()
+            .map(|separation| match separation.transpose_filtrate() {
+                Ok(separation) => separation
+                    .filter_tree_by_substituent(
+                        WalkCancellation::unchecked(&mut self.input),
+                        |substituent| {
+                            substituent.metadata().and_then(|metadata| {
+                                ((metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN)
+                                    == FILE_ATTRIBUTE_HIDDEN)
+                                    .then_some(EntryResidue::Tree)
+                            })
+                        },
+                    )
+                    .map_filtrate(Ok),
+                Err(error) => error.map(Err).into(),
+            })
+    }
+
+    // On non-Windows platforms, do no filtering here. On Unix, this relies on filtering done by
+    // `input` via the `Not` combinator. On all other platforms, there is no filtering and the
+    // `NotHidden` combinator does nothing.
+    #[cfg(not(windows))]
+    fn feed(&mut self) -> Option<Separation<Self::Feed>> {
+        self.input.feed()
+    }
+}
+
+impl<T, R, I> Iterator for NotHidden<I>
+where
+    T: 'static + Entry,
+    R: 'static + Entry + From<T>,
+    I: FileIterator<Entry = T, Residue = R>,
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        filter::filtrate(self)
+    }
+}
+
 /// Describes how file entries are read and discarded by [`FileIterator::filter_entry`].
 ///
 /// [`FileIterator::filter_entry`]: crate::walk::FileIterator::filter_entry
@@ -933,7 +1030,8 @@ impl From<EntryResidue> for TreeResidue<()> {
 mod tests {
     use build_fs_tree::{dir, file, Build, FileSystemTree};
     use std::collections::HashSet;
-    use std::path::PathBuf;
+    use std::io;
+    use std::path::{Path, PathBuf};
     use tempfile::{self, TempDir};
 
     use crate::walk::filter::{HierarchicalIterator, Separation, TreeResidue};
@@ -962,6 +1060,32 @@ mod tests {
 
     /// Writes a testing directory tree to a temporary location on the file system.
     fn temptree() -> (TempDir, PathBuf) {
+        #[cfg(windows)]
+        fn hide(path: impl AsRef<Path>) -> io::Result<()> {
+            use std::os::windows::ffi::OsStrExt as _;
+            use winapi::um::fileapi;
+
+            use crate::walk::FILE_ATTRIBUTE_HIDDEN;
+
+            let path: Vec<_> = path
+                .as_ref()
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            if 0 != unsafe { fileapi::SetFileAttributesW(path.as_ptr(), FILE_ATTRIBUTE_HIDDEN) } {
+                Ok(())
+            }
+            else {
+                Err(io::Error::last_os_error())
+            }
+        }
+
+        #[cfg(not(windows))]
+        fn hide(_path: impl AsRef<Path>) -> io::Result<()> {
+            Ok(())
+        }
+
         let root = tempfile::tempdir().unwrap();
         let tree: FileSystemTree<&str, &str> = dir! {
             "doc" => dir! {
@@ -977,10 +1101,12 @@ mod tests {
                 },
                 "walk.rs" => file!(""),
             },
+            ".hidden" => file!(""),
             "README.md" => file!(""),
         };
         let path = root.path().join("project");
         tree.build(&path).unwrap();
+        hide(path.join(".hidden")).unwrap();
         (root, path)
     }
 
@@ -988,9 +1114,6 @@ mod tests {
     /// location on the file system.
     #[cfg(any(unix, windows))]
     fn temptree_with_cyclic_link() -> (TempDir, PathBuf) {
-        use std::io;
-        use std::path::Path;
-
         #[cfg(unix)]
         fn link(target: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
             std::os::unix::fs::symlink(target, link)
@@ -1029,6 +1152,7 @@ mod tests {
                 PathBuf::from("tests/harness"),
                 PathBuf::from("tests/harness/mod.rs"),
                 PathBuf::from("tests/walk.rs"),
+                PathBuf::from(".hidden"),
                 PathBuf::from("README.md"),
             ]
             .into_iter()
@@ -1057,6 +1181,7 @@ mod tests {
                 path.join("src"),
                 path.join("src/glob.rs"),
                 path.join("src/lib.rs"),
+                path.join(".hidden"),
                 path.join("README.md"),
             ]
             .into_iter()
@@ -1080,6 +1205,39 @@ mod tests {
             // The root directory (`path.join("")` or `path.to_path_buf()`) must not be present,
             // because the empty `not` pattern matches the empty relative path at the root.
             [
+                path.join("doc"),
+                path.join("doc/guide.md"),
+                path.join("src"),
+                path.join("src/glob.rs"),
+                path.join("src/lib.rs"),
+                path.join("tests"),
+                path.join("tests/harness"),
+                path.join("tests/harness/mod.rs"),
+                path.join("tests/walk.rs"),
+                path.join(".hidden"),
+                path.join("README.md"),
+            ]
+            .into_iter()
+            .collect(),
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn walk_tree_with_not_hidden() {
+        let (_root, path) = temptree();
+
+        let paths: HashSet<_> = path
+            .walk()
+            .not_hidden()
+            .flatten()
+            .map(Entry::into_path)
+            .collect();
+        assert_set_eq!(
+            paths,
+            [
+                #[allow(clippy::redundant_clone)]
+                path.to_path_buf(),
                 path.join("doc"),
                 path.join("doc/guide.md"),
                 path.join("src"),
@@ -1116,6 +1274,7 @@ mod tests {
                 path.join("tests/harness"),
                 path.join("tests/harness/mod.rs"),
                 path.join("tests/walk.rs"),
+                path.join(".hidden"),
                 path.join("README.md"),
             ]
             .into_iter()
@@ -1232,6 +1391,7 @@ mod tests {
                 // at all, even as residue.
                 Residue(Tree(path.join("tests/harness"))),
                 Filtrate(path.join("tests/walk.rs")),
+                Residue(Node(path.join(".hidden"))),
                 Filtrate(path.join("README.md")),
             ]
             .into_iter()
@@ -1263,6 +1423,7 @@ mod tests {
                 path.join("doc"),
                 path.join("src"),
                 path.join("tests"),
+                path.join(".hidden"),
                 path.join("README.md"),
             ]
             .into_iter()
@@ -1286,6 +1447,7 @@ mod tests {
             [
                 #[allow(clippy::redundant_clone)]
                 path.to_path_buf(),
+                path.join(".hidden"),
                 path.join("README.md"),
                 path.join("doc"),
                 path.join("doc/guide.md"),
@@ -1312,6 +1474,7 @@ mod tests {
         let expected = vec![
             #[allow(clippy::redundant_clone)]
             path.to_path_buf(),
+            path.join(".hidden"),
             path.join("README.md"),
             path.join("doc"),
             path.join("doc/guide.md"),

@@ -65,3 +65,11 @@ optional = true
 build-fs-tree = "^0.6.0"
 dunce = "^1.0.0"
 tempfile = "^3.8.0"
+
+[target.'cfg(target_os = "windows")'.dev-dependencies.winapi]
+version = "^0.3.0"
+default-features = false
+features = [
+    "fileapi",
+    "std"
+]
