@@ -958,10 +958,10 @@ where
                     .filter_tree_by_substituent(
                         WalkCancellation::unchecked(&mut self.input),
                         |substituent| {
-                            substituent.metadata().and_then(|metadata| {
+                            substituent.metadata().ok().and_then(|metadata| {
                                 ((metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN)
                                     == FILE_ATTRIBUTE_HIDDEN)
-                                    .then_some(EntryResidue::Tree)
+                                    .then_some(TreeResidue::Tree(()))
                             })
                         },
                     )
@@ -1073,11 +1073,11 @@ mod tests {
                 .encode_wide()
                 .chain(Some(0))
                 .collect();
-            if 0 != unsafe { fileapi::SetFileAttributesW(path.as_ptr(), FILE_ATTRIBUTE_HIDDEN) } {
-                Ok(())
+            if 0 == unsafe { fileapi::SetFileAttributesW(path.as_ptr(), FILE_ATTRIBUTE_HIDDEN) } {
+                Err(io::Error::last_os_error())
             }
             else {
-                Err(io::Error::last_os_error())
+                Ok(())
             }
         }
 
@@ -1222,8 +1222,8 @@ mod tests {
         );
     }
 
-    #[cfg(any(unix, windows))]
     #[test]
+    #[cfg(any(unix, windows))]
     fn walk_tree_with_not_hidden() {
         let (_root, path) = temptree();
 
