@@ -8,7 +8,7 @@ use std::borrow::{Borrow, Cow};
 use std::fmt::Display;
 use thiserror::Error;
 
-use crate::token::Token;
+use crate::token::{ConcatenationTree, Token, TokenTopology};
 
 /// A regular expression that never matches.
 ///
@@ -138,13 +138,13 @@ pub fn case_folded_eq(left: &str, right: &str) -> bool {
     }
 }
 
-pub fn compile<'t, A, T>(tokens: impl IntoIterator<Item = T>) -> Result<Regex, CompileError>
+pub fn compile<'t, T>(tree: impl Borrow<T>) -> Result<Regex, CompileError>
 where
-    T: Borrow<Token<'t, A>>,
+    T: ConcatenationTree<'t>,
 {
     let mut pattern = String::new();
     pattern.push('^');
-    encode(Grouping::Capture, None, &mut pattern, tokens);
+    encode(Grouping::Capture, None, &mut pattern, tree);
     pattern.push('$');
     Regex::new(&pattern).map_err(|error| match error {
         RegexError::CompiledTooBig(_) => CompileError {
@@ -154,22 +154,25 @@ where
     })
 }
 
+// TODO: Implement this iteratively.
+// TODO: Encode expressions using the HIR in `regex-syntax` rather than text.
 // TODO: Some versions of `const_format` in `^0.2.0` fail this lint in `formatcp`. See
 //       https://github.com/rodrimati1992/const_format_crates/issues/38
 #[allow(clippy::double_parens)]
-fn encode<'t, A, T>(
+fn encode<'t, T>(
     grouping: Grouping,
     superposition: Option<Position>,
     pattern: &mut String,
-    tokens: impl IntoIterator<Item = T>,
+    tree: impl Borrow<T>,
 ) where
-    T: Borrow<Token<'t, A>>,
+    T: ConcatenationTree<'t>,
 {
     use itertools::Position::{First, Last, Middle, Only};
 
     use crate::token::Archetype::{Character, Range};
+    use crate::token::BranchKind::{Alternation, Concatenation, Repetition};
     use crate::token::Evaluation::{Eager, Lazy};
-    use crate::token::TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
+    use crate::token::LeafKind::{Class, Literal, Separator, Wildcard};
     use crate::token::Wildcard::{One, Tree, ZeroOrMore};
 
     fn encode_intermediate_tree(grouping: Grouping, pattern: &mut String) {
@@ -178,137 +181,141 @@ fn encode<'t, A, T>(
         pattern.push(')');
     }
 
-    // TODO: Use `Grouping` everywhere a group is encoded. For invariant groups that ignore
-    //       `grouping`, construct a local `Grouping` instead.
-    for (position, token) in tokens.into_iter().with_position() {
-        match (position, token.borrow().kind()) {
-            (_, Literal(literal)) => {
-                // TODO: Only encode changes to casing flags.
-                // TODO: Should Unicode support also be toggled by casing flags?
-                if literal.is_case_insensitive() {
-                    pattern.push_str("(?i)");
-                }
-                else {
-                    pattern.push_str("(?-i)");
-                }
-                pattern.push_str(&literal.text().escaped());
+    // TODO: Use `Grouping` everywhere a group is encoded.
+    for (position, token) in tree.borrow().concatenation().iter().with_position() {
+        match token.topology() {
+            TokenTopology::Leaf(leaf) => match (position, leaf) {
+                (_, Literal(literal)) => {
+                    // TODO: Only encode changes to casing flags.
+                    // TODO: Should Unicode support also be toggled by casing flags?
+                    if literal.is_case_insensitive() {
+                        pattern.push_str("(?i)");
+                    }
+                    else {
+                        pattern.push_str("(?-i)");
+                    }
+                    pattern.push_str(&literal.text().escaped());
+                },
+                (_, Separator(_)) => pattern.push_str(sepexpr!("{0}")),
+                (_, Class(class)) => {
+                    grouping.push_with(pattern, || {
+                        use crate::token::Class as ClassToken;
+
+                        fn encode_class_archetypes(class: &ClassToken, pattern: &mut String) {
+                            for archetype in class.archetypes() {
+                                match archetype {
+                                    Character(literal) => pattern.push_str(&literal.escaped()),
+                                    Range(left, right) => {
+                                        pattern.push_str(&left.escaped());
+                                        pattern.push('-');
+                                        pattern.push_str(&right.escaped());
+                                    },
+                                }
+                            }
+                        }
+
+                        let mut pattern = String::new();
+                        pattern.push('[');
+                        if class.is_negated() {
+                            pattern.push('^');
+                            encode_class_archetypes(class, &mut pattern);
+                            pattern.push_str(SEPARATOR_CLASS_EXPRESSION);
+                        }
+                        else {
+                            encode_class_archetypes(class, &mut pattern);
+                            pattern.push_str(nsepexpr!("&&{0}"));
+                        }
+                        pattern.push(']');
+                        // TODO: The compiled `Regex` is discarded. Is there a way to check the
+                        //       correctness of the expression but do less work (i.e., don't build a
+                        //       complete `Regex`)?
+                        // Compile the character class sub-expression. This may fail if the subtraction
+                        // of the separator pattern yields an empty character class (meaning that the
+                        // glob expression matches only separator characters on the target platform).
+                        if Regex::new(&pattern).is_ok() {
+                            pattern.into()
+                        }
+                        else {
+                            // If compilation fails, then use `NEVER_EXPRESSION`, which matches
+                            // nothing.
+                            NEVER_EXPRESSION.into()
+                        }
+                    });
+                },
+                (_, Wildcard(One)) => grouping.push_str(pattern, nsepexpr!("{0}")),
+                (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, nsepexpr!("{0}*")),
+                (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, nsepexpr!("{0}*?")),
+                (First, Wildcard(Tree { has_root })) => {
+                    if let Some(Middle | Last) = superposition {
+                        encode_intermediate_tree(grouping, pattern);
+                    }
+                    else if *has_root {
+                        grouping.push_str(pattern, sepexpr!("{0}.*{0}?"));
+                    }
+                    else {
+                        pattern.push_str(sepexpr!("(?:{0}?|"));
+                        grouping.push_str(pattern, sepexpr!(".*{0}"));
+                        pattern.push(')');
+                    }
+                },
+                (Middle, Wildcard(Tree { .. })) => {
+                    encode_intermediate_tree(grouping, pattern);
+                },
+                (Last, Wildcard(Tree { .. })) => {
+                    if let Some(First | Middle) = superposition {
+                        encode_intermediate_tree(grouping, pattern);
+                    }
+                    else {
+                        pattern.push_str(sepexpr!("(?:{0}?|{0}"));
+                        grouping.push_str(pattern, ".*");
+                        pattern.push(')');
+                    }
+                },
+                (Only, Wildcard(Tree { .. })) => grouping.push_str(pattern, ".*"),
             },
-            (_, Separator(_)) => pattern.push_str(sepexpr!("{0}")),
-            (position, Alternative(alternative)) => {
-                let encodings: Vec<_> = alternative
-                    .branches()
-                    .iter()
-                    .map(|tokens| {
+            TokenTopology::Branch(branch) => match branch {
+                Alternation(alternation) => {
+                    let encodings: Vec<_> = alternation
+                        .tokens()
+                        .iter()
+                        .map(|token| {
+                            let mut pattern = String::new();
+                            pattern.push_str("(?:");
+                            encode::<Token<_>>(
+                                Grouping::NonCapture,
+                                superposition.or(Some(position)),
+                                &mut pattern,
+                                token,
+                            );
+                            pattern.push(')');
+                            pattern
+                        })
+                        .collect();
+                    grouping.push_str(pattern, &encodings.join("|"));
+                },
+                Concatenation(_) => unreachable!(),
+                Repetition(repetition) => {
+                    let encoding = {
+                        let variance = repetition.variance();
                         let mut pattern = String::new();
                         pattern.push_str("(?:");
-                        encode(
+                        encode::<Token<_>>(
                             Grouping::NonCapture,
                             superposition.or(Some(position)),
                             &mut pattern,
-                            tokens.iter(),
+                            repetition.token(),
                         );
-                        pattern.push(')');
-                        pattern
-                    })
-                    .collect();
-                grouping.push_str(pattern, &encodings.join("|"));
-            },
-            (position, Repetition(repetition)) => {
-                let encoding = {
-                    let (lower, upper) = repetition.bounds();
-                    let mut pattern = String::new();
-                    pattern.push_str("(?:");
-                    encode(
-                        Grouping::NonCapture,
-                        superposition.or(Some(position)),
-                        &mut pattern,
-                        repetition.tokens().iter(),
-                    );
-                    pattern.push_str(&if let Some(upper) = upper {
-                        format!("){{{},{}}}", lower, upper)
-                    }
-                    else {
-                        format!("){{{},}}", lower)
-                    });
-                    pattern
-                };
-                grouping.push_str(pattern, &encoding);
-            },
-            (_, Class(class)) => {
-                grouping.push_with(pattern, || {
-                    use crate::token::Class as ClassToken;
-
-                    fn encode_class_archetypes(class: &ClassToken, pattern: &mut String) {
-                        for archetype in class.archetypes() {
-                            match archetype {
-                                Character(literal) => pattern.push_str(&literal.escaped()),
-                                Range(left, right) => {
-                                    pattern.push_str(&left.escaped());
-                                    pattern.push('-');
-                                    pattern.push_str(&right.escaped());
-                                },
-                            }
+                        pattern.push_str(&if let Some(upper) = variance.upper().into_usize() {
+                            format!("){{{},{}}}", variance.lower().into_usize(), upper)
                         }
-                    }
-
-                    let mut pattern = String::new();
-                    pattern.push('[');
-                    if class.is_negated() {
-                        pattern.push('^');
-                        encode_class_archetypes(class, &mut pattern);
-                        pattern.push_str(SEPARATOR_CLASS_EXPRESSION);
-                    }
-                    else {
-                        encode_class_archetypes(class, &mut pattern);
-                        pattern.push_str(nsepexpr!("&&{0}"));
-                    }
-                    pattern.push(']');
-                    // TODO: The compiled `Regex` is discarded. Is there a way to check the
-                    //       correctness of the expression but do less work (i.e., don't build a
-                    //       complete `Regex`)?
-                    // Compile the character class sub-expression. This may fail if the subtraction
-                    // of the separator pattern yields an empty character class (meaning that the
-                    // glob expression matches only separator characters on the target platform).
-                    if Regex::new(&pattern).is_ok() {
-                        pattern.into()
-                    }
-                    else {
-                        // If compilation fails, then use `NEVER_EXPRESSION`, which matches
-                        // nothing.
-                        NEVER_EXPRESSION.into()
-                    }
-                });
+                        else {
+                            format!("){{{},}}", variance.lower().into_usize())
+                        });
+                        pattern
+                    };
+                    grouping.push_str(pattern, &encoding);
+                },
             },
-            (_, Wildcard(One)) => grouping.push_str(pattern, nsepexpr!("{0}")),
-            (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, nsepexpr!("{0}*")),
-            (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, nsepexpr!("{0}*?")),
-            (First, Wildcard(Tree { has_root })) => {
-                if let Some(Middle | Last) = superposition {
-                    encode_intermediate_tree(grouping, pattern);
-                }
-                else if *has_root {
-                    grouping.push_str(pattern, sepexpr!("{0}.*{0}?"));
-                }
-                else {
-                    pattern.push_str(sepexpr!("(?:{0}?|"));
-                    grouping.push_str(pattern, sepexpr!(".*{0}"));
-                    pattern.push(')');
-                }
-            },
-            (Middle, Wildcard(Tree { .. })) => {
-                encode_intermediate_tree(grouping, pattern);
-            },
-            (Last, Wildcard(Tree { .. })) => {
-                if let Some(First | Middle) = superposition {
-                    encode_intermediate_tree(grouping, pattern);
-                }
-                else {
-                    pattern.push_str(sepexpr!("(?:{0}?|{0}"));
-                    grouping.push_str(pattern, ".*");
-                    pattern.push(')');
-                }
-            },
-            (Only, Wildcard(Tree { .. })) => grouping.push_str(pattern, ".*"),
         }
     }
 }

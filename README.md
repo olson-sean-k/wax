@@ -153,7 +153,7 @@ occurrence of that literal while `$` stops at the first occurence.
 The exactly-one wildcard `?` matches any single character within a component
 (**never path separators**). Exactly-one wildcards do not group automatically,
 so a pattern of contiguous wildcards such as `???` form distinct captures for
-each `?` wildcard. [An alternative](#alternatives) can be used to group
+each `?` wildcard. [An alternation](#alternations) can be used to group
 exactly-one wildcards into a single capture, such as `{???}`.
 
 The tree wildcard `**` matches any characters across zero or more components.
@@ -210,21 +210,21 @@ concern, but **such patterns should be avoided**.
 Character classes have limited utility on their own, but compose well with
 [repetitions](#repetitions).
 
-### Alternatives
+### Alternations
 
-Alternatives match an arbitrary sequence of one or more comma separated
+Alternations match an arbitrary sequence of one or more comma separated
 sub-globs delimited by curly braces `{...,...}`. For example, `{a?c,x?z,foo}`
-matches any of the sub-globs `a?c`, `x?z`, or `foo`. Alternatives may be
+matches any of the alternative globs `a?c`, `x?z`, or `foo`. Alternations may be
 arbitrarily nested and composed with [repetitions](#repetitions).
 
-Alternatives form a single capture group regardless of the contents of their
+Alternations form a single capture group regardless of the contents of their
 sub-globs. This capture is formed from the complete match of the sub-glob, so if
-the alternative `{a?c,x?z}` matches `abc`, then the captured text will be `abc`
-(**not** `b`). Alternatives can be used to group captures using a single
-sub-glob, such as `{*.{go,rs}}` to capture an entire file name with a particular
-extension or `{???}` to group a sequence of exactly-one wildcards.
+the alternation `{a?c,x?z}` matches the path `abc`, then the captured text will
+be `abc` (**not** `b`). Alternations can be used to group captures using a
+single sub-glob, such as `{*.{go,rs}}` to capture an entire file name with a
+particular extension or `{???}` to group a sequence of exactly-one wildcards.
 
-Alternatives must consider adjacency rules and neighboring patterns. For
+Alternations must consider adjacency rules and neighboring patterns. For
 example, `*{a,b*}` is allowed but `*{a,*b}` is not. Additionally, they may not
 contain a sub-glob consisting of a singular tree wildcard `**` and cannot root a
 glob expression as this could cause the expression to match or walk overlapping
@@ -238,7 +238,7 @@ precedes the colon and an optional bounds specification follows it. For example,
 `<a*/:0,>` matches the sub-glob `a*/` zero or more times. Though not implicit
 like tree [wildcards](#wildcards), **repetitions can match across component
 boundaries** (and can themselves include tree wildcards). Repetitions may be
-arbitrarily nested and composed with [alternatives](#alternatives).
+arbitrarily nested and composed with [alternations](#alternations).
 
 Bound specifications are formed from inclusive lower and upper bounds separated
 by a comma `,`, such as `:1,4` to match between one and four times. The upper
@@ -284,7 +284,7 @@ let any = wax::any(["**/*.txt", "src/**/*.rs"]).unwrap();
 assert!(any.is_match("src/lib.rs"));
 ```
 
-Unlike [alternatives](#alternatives), `Any` supports patterns with overlapping
+Unlike [alternations](#alternations), `Any` supports patterns with overlapping
 trees (rooted and unrooted expressions). However, combinators can only perform
 logical matches and it is not possible to match an `Any` against a directory
 tree (as with `Glob::walk`).
@@ -332,7 +332,7 @@ Error: wax::glob::adjacent_zero_or_more
  1 | doc/**/*{.md,.tex,*.txt}
    :        |^^^^^^^^|^^^^^^^
    :        |        | `-- here
-   :        |        `-- in this alternative
+   :        |        `-- in this alternation
    :        `-- here
    `----
 ```

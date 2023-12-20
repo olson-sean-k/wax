@@ -28,14 +28,40 @@ use std::fmt::{self, Display, Formatter};
 pub type Span = (usize, usize);
 
 pub trait SpanExt {
-    fn union(&self, other: &Self) -> Self;
+    fn union(self, other: Self) -> Self;
 }
 
 impl SpanExt for Span {
-    fn union(&self, other: &Self) -> Self {
+    fn union(self, other: Self) -> Self {
         let start = cmp::min(self.0, other.0);
         let end = cmp::max(self.0 + self.1, other.0 + other.1);
         (start, end - start)
+    }
+}
+
+pub trait Spanned {
+    fn span(&self) -> &Span;
+
+    fn span_mut(&mut self) -> &mut Span;
+
+    fn map_span<F>(mut self, f: F) -> Self
+    where
+        Self: Sized,
+        F: FnOnce(Span) -> Span,
+    {
+        let span = *self.span();
+        *self.span_mut() = f(span);
+        self
+    }
+}
+
+impl Spanned for Span {
+    fn span(&self) -> &Span {
+        self
+    }
+
+    fn span_mut(&mut self) -> &mut Span {
+        self
     }
 }
 

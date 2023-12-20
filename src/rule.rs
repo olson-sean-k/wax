@@ -2,10 +2,8 @@
 //!
 //! This module provides the `check` function, which examines a token sequence and emits an error
 //! if the sequence violates rules. Rules are invariants that are difficult or impossible to
-//! enforce when parsing text and primarily detect and reject token sequences that produce
-//! anomalous, meaningless, or unexpected globs (regular expressions) when compiled.
-//!
-//! Most rules concern alternatives, which have complex interactions with neighboring tokens.
+//! enforce when parsing text and primarily detect and reject token sequences that produce errant,
+//! meaningless, or unexpected programs when compiled.
 
 // TODO: The `check` function fails fast and either report no errors or exactly one error. To
 //       better support diagnostics, `check` should probably perform an exhaustive analysis and
@@ -15,6 +13,7 @@ use itertools::Itertools as _;
 #[cfg(feature = "miette")]
 use miette::{Diagnostic, LabeledSpan, SourceCode};
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::convert::Infallible;
 #[cfg(feature = "miette")]
 use std::fmt::Display;
@@ -23,8 +22,12 @@ use std::path::PathBuf;
 use std::slice;
 use thiserror::Error;
 
-use crate::diagnostics::{CompositeSpan, CorrelatedSpan, SpanExt as _};
-use crate::token::{self, InvariantSize, Token, TokenKind, TokenTree, Tokenized};
+use crate::diagnostics::{CompositeSpan, CorrelatedSpan, SpanExt as _, Spanned};
+use crate::token::walk::{self, TokenEntry};
+use crate::token::{
+    self, BranchKind, ExpressionMetadata, NaturalRange, Repetition, Size, Token, TokenTree,
+    Tokenized,
+};
 use crate::{Any, BuildError, Glob, Pattern};
 
 /// Maximum invariant size.
@@ -35,7 +38,7 @@ use crate::{Any, BuildError, Glob, Pattern};
 ///
 /// This limit is independent of the back end encoding. This code does not rely on errors in the
 /// encoder by design, such as size limitations.
-const MAX_INVARIANT_SIZE: InvariantSize = InvariantSize::new(0x10000);
+const MAX_INVARIANT_SIZE: Size = Size::new(0x10000);
 
 trait IteratorExt: Iterator + Sized {
     fn adjacent(self) -> Adjacent<Self>
@@ -252,11 +255,11 @@ impl Diagnostic for RuleError<'_> {
 #[derive(Clone, Debug, Error)]
 #[non_exhaustive]
 enum RuleErrorKind {
-    #[error("rooted sub-glob in group")]
+    #[error("rooted sub-glob in branch")]
     RootedSubGlob,
-    #[error("singular tree wildcard `**` in group")]
+    #[error("singular tree wildcard `**` in branch")]
     SingularTree,
-    #[error("singular zero-or-more wildcard `*` or `$` in group")]
+    #[error("singular zero-or-more wildcard `*` or `$` in branch")]
     SingularZeroOrMore,
     #[error("adjacent component boundaries `/` or `**`")]
     AdjacentBoundary,
@@ -286,16 +289,13 @@ impl<'t> Checked<Token<'t, ()>> {
         I: IntoIterator<Item = Checked<T>>,
     {
         Checked {
-            // `token::any` constructs an alternative from the input token trees. The alternative
-            // is not checked, but the `any` combinator is explicitly allowed to ignore the subset
-            // of rules that may be violated by this construction. In particular, branches may or
-            // may not have roots such that the alternative can match overlapping directory trees.
-            inner: token::any(
-                trees
-                    .into_iter()
-                    .map(Checked::release)
-                    .map(TokenTree::into_tokens),
-            ),
+            // `token::any` constructs an alternation from the input token trees. The alternation
+            // is **not** checked, but the `any` combinator is explicitly allowed to ignore the
+            // subset of rules that may be violated by this construction. In particular,
+            // alternatives may or may not have roots such that the alternation can match
+            // overlapping directory trees, because combinators do not support matching against
+            // directory trees.
+            inner: token::any(trees.into_iter().map(Checked::release)),
         }
     }
 }
@@ -316,18 +316,38 @@ impl<'t, A> Checked<Tokenized<'t, A>> {
     }
 }
 
-impl<'t> Checked<Tokenized<'t>> {
-    pub fn partition(self) -> (PathBuf, Self) {
+impl<'t, A> Checked<Tokenized<'t, A>>
+where
+    A: Default + Spanned,
+{
+    pub fn partition(self) -> (PathBuf, Option<Self>) {
         let tokenized = self.release();
-        // `Tokenized::partition` does not violate rules.
+        // This relies on the correctness of `Tokenized::partition`, which must not violate rules.
         let (path, tokenized) = tokenized.partition();
-        (path, Checked { inner: tokenized })
+        (
+            path,
+            tokenized.map(|tokenized| Checked { inner: tokenized }),
+        )
     }
 }
 
 impl<T> AsRef<T> for Checked<T> {
     fn as_ref(&self) -> &T {
         &self.inner
+    }
+}
+
+impl<'t> From<Any<'t>> for Checked<Token<'t, ()>> {
+    fn from(any: Any<'t>) -> Self {
+        let Any { tree, .. } = any;
+        tree
+    }
+}
+
+impl<'t> From<Glob<'t>> for Checked<Tokenized<'t, ExpressionMetadata>> {
+    fn from(glob: Glob<'t>) -> Self {
+        let Glob { tree, .. } = glob;
+        tree
     }
 }
 
@@ -339,21 +359,7 @@ where
     type Error = Infallible;
 }
 
-impl<'t> From<Any<'t>> for Checked<Token<'t, ()>> {
-    fn from(any: Any<'t>) -> Self {
-        let Any { tree, .. } = any;
-        tree
-    }
-}
-
-impl<'t> From<Glob<'t>> for Checked<Tokenized<'t>> {
-    fn from(glob: Glob<'t>) -> Self {
-        let Glob { tree, .. } = glob;
-        tree
-    }
-}
-
-impl<'t> TryFrom<&'t str> for Checked<Tokenized<'t>> {
+impl<'t> TryFrom<&'t str> for Checked<Tokenized<'t, ExpressionMetadata>> {
     type Error = BuildError;
 
     fn try_from(expression: &'t str) -> Result<Self, Self::Error> {
@@ -361,34 +367,37 @@ impl<'t> TryFrom<&'t str> for Checked<Tokenized<'t>> {
     }
 }
 
-pub fn check(tokenized: Tokenized) -> Result<Checked<Tokenized>, RuleError> {
-    boundary(&tokenized)?;
-    bounds(&tokenized)?;
-    group(&tokenized)?;
-    size(&tokenized)?;
-    Ok(Checked { inner: tokenized })
+pub fn check<A>(tree: Tokenized<'_, A>) -> Result<Checked<Tokenized<'_, A>>, RuleError<'_>>
+where
+    A: Spanned,
+{
+    boundary(&tree)?;
+    bounds(&tree)?;
+    branch(&tree)?;
+    size(&tree)?;
+    Ok(Checked { inner: tree })
 }
 
-fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    if let Some((left, right)) = tokenized
-        .walk()
-        .group_by(|(position, _)| *position)
+fn boundary<'t, A>(tree: &Tokenized<'t, A>) -> Result<(), RuleError<'t>>
+where
+    A: Spanned,
+{
+    if let Some((left, right)) = walk::forward(tree)
+        .group_by(TokenEntry::position)
         .into_iter()
         .flat_map(|(_, group)| {
             group
-                .map(|(_, token)| token)
+                .map(TokenEntry::into_token)
                 .tuple_windows::<(_, _)>()
-                .filter(|(left, right)| {
-                    left.is_component_boundary() && right.is_component_boundary()
-                })
-                .map(|(left, right)| (*left.annotation(), *right.annotation()))
+                .filter(|(left, right)| left.boundary().and(right.boundary()).is_some())
+                .map(|(left, right)| (*left.annotation().span(), *right.annotation().span()))
         })
         .next()
     {
         Err(RuleError::new(
-            tokenized.expression().clone(),
+            tree.expression().clone(),
             RuleErrorKind::AdjacentBoundary,
-            CompositeSpan::spanned("here", left.union(&right)),
+            CompositeSpan::spanned("here", left.union(right)),
         ))
     }
     else {
@@ -396,36 +405,49 @@ fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     }
 }
 
-fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    use crate::token::TokenKind::{Separator, Wildcard};
+fn branch<'t, A>(tree: &Tokenized<'t, A>) -> Result<(), RuleError<'t>>
+where
+    A: Spanned,
+{
+    use crate::token::LeafKind::{Separator, Wildcard};
     use crate::token::Wildcard::{Tree, ZeroOrMore};
     use Terminals::{Only, StartEnd};
 
+    #[derive(Debug)]
     struct CorrelatedError {
         kind: RuleErrorKind,
         location: CorrelatedSpan,
     }
 
     impl CorrelatedError {
-        fn new(kind: RuleErrorKind, outer: Option<&Token>, inner: &Token) -> Self {
+        fn new<A>(kind: RuleErrorKind, outer: Option<&Token<'_, A>>, inner: &Token<'_, A>) -> Self
+        where
+            A: Spanned,
+        {
             CorrelatedError {
                 kind,
                 location: CorrelatedSpan::split_some(
-                    outer.map(Token::annotation).copied().map(From::from),
-                    *inner.annotation(),
+                    outer
+                        .map(Token::annotation)
+                        .map(A::span)
+                        .copied()
+                        .map(From::from),
+                    *inner.annotation().span(),
                 ),
             }
         }
     }
 
-    #[derive(Clone, Copy, Default)]
-    struct Outer<'i, 't> {
-        left: Option<&'i Token<'t>>,
-        right: Option<&'i Token<'t>>,
+    #[derive(Debug)]
+    struct Outer<'i, 't, A> {
+        left: Option<&'i Token<'t, A>>,
+        right: Option<&'i Token<'t, A>>,
     }
 
-    impl<'i, 't> Outer<'i, 't> {
-        pub fn push(self, left: Option<&'i Token<'t>>, right: Option<&'i Token<'t>>) -> Self {
+    impl<'i, 't, A> Outer<'i, 't, A> {
+        // This may appear to operate in place.
+        #[must_use]
+        pub fn or(self, left: Option<&'i Token<'t, A>>, right: Option<&'i Token<'t, A>>) -> Self {
             Outer {
                 left: left.or(self.left),
                 right: right.or(self.right),
@@ -433,113 +455,96 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         }
     }
 
-    fn has_starting_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
+    impl<'i, 't, A> Clone for Outer<'i, 't, A> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+
+    impl<'i, 't, A> Copy for Outer<'i, 't, A> {}
+
+    impl<'i, 't, A> Default for Outer<'i, 't, A> {
+        fn default() -> Self {
+            Outer {
+                left: None,
+                right: None,
+            }
+        }
+    }
+
+    fn is_some_and_any_in<'i, 't, A, R, I, P>(
+        token: Option<&'i Token<'t, A>>,
+        traversal: R,
+        mut predicate: P,
+    ) -> bool
+    where
+        R: FnOnce(&'i Token<'t, A>) -> I,
+        I: Iterator<Item = TokenEntry<'i, 't, A>>,
+        P: FnMut(&'i Token<'t, A>) -> bool,
+    {
         token.map_or(false, |token| {
-            token
-                .walk()
-                .starting()
-                .any(|(_, token)| token.is_component_boundary())
+            traversal(token).any(move |entry| predicate(entry.into_token()))
         })
     }
 
-    fn has_ending_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token.map_or(false, |token| {
-            token
-                .walk()
-                .ending()
-                .any(|(_, token)| token.is_component_boundary())
-        })
+    fn is_boundary<A>(token: &Token<'_, A>) -> bool {
+        token.boundary().is_some()
     }
 
-    fn has_starting_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token.map_or(false, |token| {
-            token
-                .walk()
-                .starting()
-                .any(|(_, token)| matches!(token.kind(), Wildcard(ZeroOrMore(_))))
-        })
+    fn is_zom<A>(token: &Token<'_, A>) -> bool {
+        matches!(token.as_leaf(), Some(Wildcard(ZeroOrMore(_))))
     }
 
-    fn has_ending_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token.map_or(false, |token| {
-            token
-                .walk()
-                .ending()
-                .any(|(_, token)| matches!(token.kind(), Wildcard(ZeroOrMore(_))))
-        })
+    fn has_starting_boundary<A>(token: Option<&Token<'_, A>>) -> bool {
+        is_some_and_any_in(token, walk::starting, is_boundary)
     }
 
-    fn diagnose<'i, 't>(
+    fn has_ending_boundary<A>(token: Option<&Token<'_, A>>) -> bool {
+        is_some_and_any_in(token, walk::ending, is_boundary)
+    }
+
+    fn has_starting_zom<A>(token: Option<&Token<'_, A>>) -> bool {
+        is_some_and_any_in(token, walk::starting, is_zom)
+    }
+
+    fn has_ending_zom<A>(token: Option<&Token<'_, A>>) -> bool {
+        is_some_and_any_in(token, walk::ending, is_zom)
+    }
+
+    fn diagnose<'i, 't, A>(
         // This is a somewhat unusual API, but it allows the lifetime `'t` of the `Cow` to be
         // properly forwarded to output values (`RuleError`).
         #[allow(clippy::ptr_arg)] expression: &'i Cow<'t, str>,
-        token: &'i Token<'t>,
+        token: &'i Token<'t, A>,
         label: &'static str,
-    ) -> impl 'i + Copy + Fn(CorrelatedError) -> RuleError<'t>
+    ) -> impl 'i + Copy + FnOnce(CorrelatedError) -> RuleError<'t>
     where
         't: 'i,
+        A: Spanned,
     {
         move |CorrelatedError { kind, location }| {
             RuleError::new(
                 expression.clone(),
                 kind,
-                CompositeSpan::correlated(label, *token.annotation(), location),
+                CompositeSpan::correlated(label, *token.annotation().span(), location),
             )
         }
     }
 
-    fn recurse<'i, 't, I>(
-        // This is a somewhat unusual API, but it allows the lifetime `'t` of the `Cow` to be
-        // properly forwarded to output values (`RuleError`).
-        #[allow(clippy::ptr_arg)] expression: &Cow<'t, str>,
-        tokens: I,
-        outer: Outer<'i, 't>,
-    ) -> Result<(), RuleError<'t>>
+    fn check_branch<'i, 't, A>(
+        terminals: Terminals<&'i Token<'t, A>>,
+        outer: Outer<'i, 't, A>,
+    ) -> Result<(), CorrelatedError>
     where
-        I: IntoIterator<Item = &'i Token<'t>>,
-        't: 'i,
+        A: Spanned,
     {
-        for (left, token, right) in tokens.into_iter().adjacent().map(Adjacency::into_tuple) {
-            match token.kind() {
-                TokenKind::Alternative(ref alternative) => {
-                    let outer = outer.push(left, right);
-                    let diagnose = diagnose(expression, token, "in this alternative");
-                    for tokens in alternative.branches() {
-                        if let Some(terminals) = tokens.terminals() {
-                            check_group(terminals, outer).map_err(diagnose)?;
-                            check_group_alternative(terminals, outer).map_err(diagnose)?;
-                        }
-                        recurse(expression, tokens.iter(), outer)?;
-                    }
-                },
-                TokenKind::Repetition(ref repetition) => {
-                    let outer = outer.push(left, right);
-                    let diagnose = diagnose(expression, token, "in this repetition");
-                    let tokens = repetition.tokens();
-                    if let Some(terminals) = tokens.terminals() {
-                        check_group(terminals, outer).map_err(diagnose)?;
-                        check_group_repetition(terminals, outer, repetition.bounds())
-                            .map_err(diagnose)?;
-                    }
-                    recurse(expression, tokens.iter(), outer)?;
-                },
-                _ => {},
-            }
-        }
-        Ok(())
-    }
-
-    fn check_group<'t>(
-        terminals: Terminals<&Token>,
-        outer: Outer<'t, 't>,
-    ) -> Result<(), CorrelatedError> {
         let Outer { left, right } = outer;
-        match terminals.map(|token| (token, token.kind())) {
-            // The group is preceded by component boundaries; disallow leading separators.
+        match terminals.map(|token| (token, token.as_leaf())) {
+            // The branch is preceded by component boundaries; disallow leading separators.
             //
             // For example, `foo/{bar,/}`.
-            Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _)
-                if has_ending_component_boundary(left) =>
+            Only((inner, Some(Separator(_)))) | StartEnd((inner, Some(Separator(_))), _)
+                if has_ending_boundary(left) =>
             {
                 Err(CorrelatedError::new(
                     RuleErrorKind::AdjacentBoundary,
@@ -547,11 +552,11 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     inner,
                 ))
             },
-            // The group is followed by component boundaries; disallow trailing separators.
+            // The branch is followed by component boundaries; disallow trailing separators.
             //
             // For example, `{foo,/}/bar`.
-            Only((inner, Separator(_))) | StartEnd(_, (inner, Separator(_)))
-                if has_starting_component_boundary(right) =>
+            Only((inner, Some(Separator(_)))) | StartEnd(_, (inner, Some(Separator(_))))
+                if has_starting_boundary(right) =>
             {
                 Err(CorrelatedError::new(
                     RuleErrorKind::AdjacentBoundary,
@@ -562,39 +567,33 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // Disallow singular tree tokens.
             //
             // For example, `{foo,bar,**}`.
-            Only((inner, Wildcard(Tree { .. }))) => Err(CorrelatedError::new(
+            Only((inner, Some(Wildcard(Tree { .. })))) => Err(CorrelatedError::new(
                 RuleErrorKind::SingularTree,
                 None,
                 inner,
             )),
-            // The group is preceded by component boundaries; disallow leading tree tokens.
+            // The branch is preceded by component boundaries; disallow leading tree tokens.
             //
             // For example, `foo/{bar,**/baz}`.
-            StartEnd((inner, Wildcard(Tree { .. })), _) if has_ending_component_boundary(left) => {
-                Err(CorrelatedError::new(
-                    RuleErrorKind::AdjacentBoundary,
-                    left,
-                    inner,
-                ))
-            },
-            // The group is followed by component boundaries; disallow trailing tree tokens.
+            StartEnd((inner, Some(Wildcard(Tree { .. }))), _) if has_ending_boundary(left) => Err(
+                CorrelatedError::new(RuleErrorKind::AdjacentBoundary, left, inner),
+            ),
+            // The branch is followed by component boundaries; disallow trailing tree tokens.
             //
             // For example, `{foo,bar/**}/baz`.
-            StartEnd(_, (inner, Wildcard(Tree { .. })))
-                if has_starting_component_boundary(right) =>
-            {
+            StartEnd(_, (inner, Some(Wildcard(Tree { .. })))) if has_starting_boundary(right) => {
                 Err(CorrelatedError::new(
                     RuleErrorKind::AdjacentBoundary,
                     right,
                     inner,
                 ))
             },
-            // The group is prefixed by a zero-or-more token; disallow leading zero-or-more tokens.
+            // The branch is prefixed by a zero-or-more token; disallow leading zero-or-more tokens.
             //
             // For example, `foo*{bar,*,baz}`.
-            Only((inner, Wildcard(ZeroOrMore(_))))
-            | StartEnd((inner, Wildcard(ZeroOrMore(_))), _)
-                if has_ending_zom_token(left) =>
+            Only((inner, Some(Wildcard(ZeroOrMore(_)))))
+            | StartEnd((inner, Some(Wildcard(ZeroOrMore(_)))), _)
+                if has_ending_zom(left) =>
             {
                 Err(CorrelatedError::new(
                     RuleErrorKind::AdjacentZeroOrMore,
@@ -602,13 +601,13 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                     inner,
                 ))
             },
-            // The group is followed by a zero-or-more token; disallow trailing zero-or-more
+            // The branch is followed by a zero-or-more token; disallow trailing zero-or-more
             // tokens.
             //
             // For example, `{foo,*,bar}*baz`.
-            Only((inner, Wildcard(ZeroOrMore(_))))
-            | StartEnd(_, (inner, Wildcard(ZeroOrMore(_))))
-                if has_starting_zom_token(right) =>
+            Only((inner, Some(Wildcard(ZeroOrMore(_)))))
+            | StartEnd(_, (inner, Some(Wildcard(ZeroOrMore(_)))))
+                if has_starting_zom(right) =>
             {
                 Err(CorrelatedError::new(
                     RuleErrorKind::AdjacentZeroOrMore,
@@ -620,27 +619,32 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         }
     }
 
-    fn check_group_alternative<'t>(
-        terminals: Terminals<&Token>,
-        outer: Outer<'t, 't>,
-    ) -> Result<(), CorrelatedError> {
+    fn check_alternation<'i, 't, A>(
+        terminals: Terminals<&'i Token<'t, A>>,
+        outer: Outer<'i, 't, A>,
+    ) -> Result<(), CorrelatedError>
+    where
+        A: Spanned,
+    {
         let Outer { left, .. } = outer;
-        match terminals.map(|token| (token, token.kind())) {
-            // The alternative is preceded by a termination; disallow rooted sub-globs.
+        match terminals.map(|token| (token, token.as_leaf())) {
+            // The alternation is preceded by a termination; disallow rooted sub-globs.
             //
             // For example, `{foo,/}` or `{foo,/bar}`.
-            Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _) if left.is_none() => {
+            Only((inner, Some(Separator(_)))) | StartEnd((inner, Some(Separator(_))), _)
+                if left.is_none() =>
+            {
                 Err(CorrelatedError::new(
                     RuleErrorKind::RootedSubGlob,
                     left,
                     inner,
                 ))
             },
-            // The alternative is preceded by a termination; disallow rooted sub-globs.
+            // The alternation is preceded by a termination; disallow rooted sub-globs.
             //
             // For example, `{/**/foo,bar}`.
-            Only((inner, Wildcard(Tree { has_root: true })))
-            | StartEnd((inner, Wildcard(Tree { has_root: true })), _)
+            Only((inner, Some(Wildcard(Tree { has_root: true }))))
+            | StartEnd((inner, Some(Wildcard(Tree { has_root: true }))), _)
                 if left.is_none() =>
             {
                 Err(CorrelatedError::new(
@@ -653,20 +657,23 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         }
     }
 
-    fn check_group_repetition<'t>(
-        terminals: Terminals<&Token>,
-        outer: Outer<'t, 't>,
-        bounds: (usize, Option<usize>),
-    ) -> Result<(), CorrelatedError> {
+    fn check_repetition<'i, 't, A>(
+        terminals: Terminals<&'i Token<'t, A>>,
+        outer: Outer<'i, 't, A>,
+        variance: NaturalRange,
+    ) -> Result<(), CorrelatedError>
+    where
+        A: Spanned,
+    {
         let Outer { left, .. } = outer;
-        let (lower, _) = bounds;
-        match terminals.map(|token| (token, token.kind())) {
+        let lower = variance.lower().into_bound();
+        match terminals.map(|token| (token, token.as_leaf())) {
             // The repetition is preceded by a termination; disallow rooted sub-globs with a zero
             // lower bound.
             //
             // For example, `</foo:0,>`.
-            Only((inner, Separator(_))) | StartEnd((inner, Separator(_)), _)
-                if left.is_none() && lower == 0 =>
+            Only((inner, Some(Separator(_)))) | StartEnd((inner, Some(Separator(_))), _)
+                if left.is_none() && lower.is_unbounded() =>
             {
                 Err(CorrelatedError::new(
                     RuleErrorKind::RootedSubGlob,
@@ -678,9 +685,9 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // lower bound.
             //
             // For example, `</**/foo>`.
-            Only((inner, Wildcard(Tree { has_root: true })))
-            | StartEnd((inner, Wildcard(Tree { has_root: true })), _)
-                if left.is_none() && lower == 0 =>
+            Only((inner, Some(Wildcard(Tree { has_root: true }))))
+            | StartEnd((inner, Some(Wildcard(Tree { has_root: true }))), _)
+                if left.is_none() && lower.is_unbounded() =>
             {
                 Err(CorrelatedError::new(
                     RuleErrorKind::RootedSubGlob,
@@ -691,9 +698,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // The repetition begins and ends with a separator.
             //
             // For example, `</foo/bar/:1,>`.
-            StartEnd((left, _), (right, _))
-                if left.is_component_boundary() && right.is_component_boundary() =>
-            {
+            StartEnd((left, _), (right, _)) if left.boundary().and(right.boundary()).is_some() => {
                 Err(CorrelatedError::new(
                     RuleErrorKind::AdjacentBoundary,
                     Some(left),
@@ -703,7 +708,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // The repetition is a singular separator.
             //
             // For example, `</:1,>`.
-            Only((token, Separator(_))) => Err(CorrelatedError::new(
+            Only((token, Some(Separator(_)))) => Err(CorrelatedError::new(
                 RuleErrorKind::AdjacentBoundary,
                 None,
                 token,
@@ -711,7 +716,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // The repetition is a singular zero-or-more wildcard.
             //
             // For example, `<*:1,>`.
-            Only((token, Wildcard(ZeroOrMore(_)))) => Err(CorrelatedError::new(
+            Only((token, Some(Wildcard(ZeroOrMore(_))))) => Err(CorrelatedError::new(
                 RuleErrorKind::SingularZeroOrMore,
                 None,
                 token,
@@ -720,21 +725,74 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         }
     }
 
-    recurse(tokenized.expression(), tokenized.tokens(), Outer::default())
+    let mut outer = Outer::default();
+    let mut tokens: VecDeque<_> = Some(tree.as_token()).into_iter().collect();
+    while let Some(token) = tokens.pop_front() {
+        use BranchKind::{Alternation, Repetition};
+
+        for (left, token, right) in token
+            .concatenation()
+            .iter()
+            .adjacent()
+            .map(Adjacency::into_tuple)
+        {
+            match token.as_branch() {
+                Some(Alternation(ref alternation)) => {
+                    outer = outer.or(left, right);
+                    let diagnose = diagnose(tree.expression(), token, "in this alternation");
+                    for token in alternation.tokens() {
+                        let concatenation = token.concatenation();
+                        if let Some(terminals) = concatenation.terminals() {
+                            check_branch(terminals, outer).map_err(diagnose)?;
+                            check_alternation(terminals, outer).map_err(diagnose)?;
+                        }
+                    }
+                    tokens.extend(alternation.tokens());
+                },
+                Some(Repetition(ref repetition)) => {
+                    outer = outer.or(left, right);
+                    let diagnose = diagnose(tree.expression(), token, "in this repetition");
+                    let token = repetition.token();
+                    let concatenation = token.concatenation();
+                    if let Some(terminals) = concatenation.terminals() {
+                        check_branch(terminals, outer).map_err(diagnose)?;
+                        check_repetition(terminals, outer, repetition.variance())
+                            .map_err(diagnose)?;
+                    }
+                    tokens.push_back(token);
+                },
+                _ => {},
+            }
+        }
+    }
+    Ok(())
 }
 
-fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    if let Some((_, token)) = tokenized.walk().find(|(_, token)| match token.kind() {
-        TokenKind::Repetition(ref repetition) => {
-            let (lower, upper) = repetition.bounds();
-            upper.map_or(false, |upper| upper < lower || upper == 0)
-        },
-        _ => false,
-    }) {
+// Arguably, this function enforces _syntactic_ rules. Any bound specification can be used to
+// construct a functional repetition token, but this is only because `NaturalRange` has an
+// interpretation of these bounds (such as `<_:0,0>` and `<_:10,1>`). These interpretations may be
+// counterintuitive and present multiple spellings of the same semantics, so they are rejected
+// here.
+fn bounds<'t, A>(tree: &Tokenized<'t, A>) -> Result<(), RuleError<'t>>
+where
+    A: Spanned,
+{
+    if let Some(token) = walk::forward(tree)
+        .map(TokenEntry::into_token)
+        .find(|token| {
+            token
+                .as_repetition()
+                .map(Repetition::bound_specification)
+                .and_then(|(lower, upper)| upper.map(|upper| (lower, upper)))
+                .map_or(false, |(lower, upper)| {
+                    (lower > upper) || (lower == 0 && lower == upper)
+                })
+        })
+    {
         Err(RuleError::new(
-            tokenized.expression().clone(),
+            tree.expression().clone(),
             RuleErrorKind::IncompatibleBounds,
-            CompositeSpan::spanned("here", *token.annotation()),
+            CompositeSpan::spanned("here", *token.annotation().span()),
         ))
     }
     else {
@@ -742,23 +800,26 @@ fn bounds<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     }
 }
 
-fn size<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    if let Some((_, token)) = tokenized
-        .walk()
+fn size<'t, A>(tree: &Tokenized<'t, A>) -> Result<(), RuleError<'t>>
+where
+    A: Spanned,
+{
+    if let Some(token) = walk::forward(tree)
+        .map(TokenEntry::into_token)
         // TODO: This is expensive. For each token tree encountered, the tree is traversed to
         //       determine its variance. If variant, the tree is traversed and queried again,
         //       revisiting the same tokens to recompute their local variance.
-        .find(|(_, token)| {
+        .find(|token| {
             token
-                .variance::<InvariantSize>()
-                .as_invariance()
-                .map_or(false, |size| *size >= MAX_INVARIANT_SIZE)
+                .variance::<Size>()
+                .invariant()
+                .map_or(false, |size| size >= MAX_INVARIANT_SIZE)
         })
     {
         Err(RuleError::new(
-            tokenized.expression().clone(),
+            tree.expression().clone(),
             RuleErrorKind::OversizedInvariant,
-            CompositeSpan::spanned("here", *token.annotation()),
+            CompositeSpan::spanned("here", *token.annotation().span()),
         ))
     }
     else {

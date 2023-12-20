@@ -19,6 +19,8 @@
 //! [`Iterator::filter`]: std::iter::Iterator::filter
 //! [`SeparatingFilter`]: crate::walk::filter::SeparatingFilter
 
+#![cfg_attr(not(feature = "walk"), allow(dead_code))]
+
 use std::cmp::{Eq, PartialEq};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -440,7 +442,7 @@ impl<'i, I> WalkCancellation<'i, I> {
     //
     //       RPITIT is slated to land at the end of December of 2023. Remove this and implement
     //       iterators using pure combinators when that happens.
-    pub(in crate::walk) fn unchecked(tree: &'i mut I) -> Self {
+    pub(crate) fn unchecked(tree: &'i mut I) -> Self {
         WalkCancellation(tree)
     }
 }

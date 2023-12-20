@@ -33,6 +33,7 @@
 mod capture;
 mod diagnostics;
 mod encode;
+mod filter;
 mod rule;
 mod token;
 pub mod walk;
@@ -74,7 +75,9 @@ use thiserror::Error;
 
 use crate::encode::CompileError;
 use crate::rule::{Checked, RuleError};
-use crate::token::{InvariantText, ParseError, Token, TokenTree, Tokenized};
+use crate::token::{
+    ConcatenationTree, ExpressionMetadata, ParseError, Text, Token, TokenTree, Tokenized,
+};
 #[cfg(feature = "walk")]
 use crate::walk::WalkError;
 
@@ -217,8 +220,8 @@ impl Variance {
     }
 }
 
-impl From<token::Variance<InvariantText<'_>>> for Variance {
-    fn from(variance: token::Variance<InvariantText<'_>>) -> Self {
+impl From<token::Variance<Text<'_>>> for Variance {
+    fn from(variance: token::Variance<Text<'_>>) -> Self {
         match variance {
             token::Variance::Invariant(text) => {
                 Variance::Invariant(PathBuf::from(text.to_string().into_owned()))
@@ -280,7 +283,7 @@ pub trait Pattern<'t>:
 }
 
 impl<'t> Pattern<'t> for &'t str {
-    type Tokens = Tokenized<'t>;
+    type Tokens = Tokenized<'t, ExpressionMetadata>;
     type Error = BuildError;
 }
 
@@ -380,7 +383,7 @@ impl BuildError {
     /// use wax::Glob;
     ///
     /// // This glob expression violates rules. The error handling code prints details about the
-    /// // alternative where the violation occurred.
+    /// // alternation where the violation occurred.
     /// let expression = "**/{foo,**/bar,baz}";
     /// match Glob::new(expression) {
     ///     Ok(glob) => {
@@ -577,16 +580,16 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 /// [`walk`]: crate::Glob::walk
 #[derive(Clone, Debug)]
 pub struct Glob<'t> {
-    tree: Checked<Tokenized<'t>>,
+    tree: Checked<Tokenized<'t, ExpressionMetadata>>,
     program: Regex,
 }
 
 impl<'t> Glob<'t> {
-    fn compile<T>(tokens: impl IntoIterator<Item = T>) -> Result<Regex, CompileError>
+    fn compile<T>(tree: impl Borrow<T>) -> Result<Regex, CompileError>
     where
-        T: Borrow<Token<'t>>,
+        T: ConcatenationTree<'t>,
     {
-        encode::compile(tokens)
+        encode::compile(tree)
     }
 
     // TODO: Document pattern syntax in the crate documentation and refer to it here.
@@ -603,10 +606,21 @@ impl<'t> Glob<'t> {
     /// [`BuildError`]: crate::BuildError
     pub fn new(expression: &'t str) -> Result<Self, BuildError> {
         let tree = parse_and_check(expression)?;
-        let program = Glob::compile(tree.as_ref().tokens())?;
+        let program = Glob::compile::<Tokenized<_>>(tree.as_ref())?;
         Ok(Glob { tree, program })
     }
 
+    // TODO: Describe what an empty glob is. In particular, define what it does and does not match.
+    pub fn empty() -> Self {
+        Glob::new("").expect("failed to build empty glob")
+    }
+
+    // TODO: Describe what a tree glob is.
+    pub fn tree() -> Self {
+        Glob::new("**").expect("failed to build tree glob")
+    }
+
+    // TODO: Describe why and when the `Glob` postfix is `None`.
     /// Partitions a [`Glob`] into an invariant [`PathBuf`] prefix and variant [`Glob`] postfix.
     ///
     /// The invariant prefix contains no glob patterns nor other variant components and therefore
@@ -649,8 +663,9 @@ impl<'t> Glob<'t> {
     /// if dunce::canonicalize(path)
     ///     .unwrap()
     ///     .strip_prefix(&prefix)
-    ///     .map(|path| glob.is_match(path))
-    ///     .unwrap_or(false)
+    ///     .ok()
+    ///     .zip(glob)
+    ///     .map_or(false, |(path, glob)| glob.is_match(path))
     /// {
     ///     // ...
     /// }
@@ -661,12 +676,29 @@ impl<'t> Glob<'t> {
     /// [`PathBuf`]: std::path::PathBuf
     /// [`RuleError`]: crate::RuleError
     /// [`walk`]: crate::Glob::walk
-    pub fn partition(self) -> (PathBuf, Self) {
+    pub fn partition(self) -> (PathBuf, Option<Self>) {
         let Glob { tree, .. } = self;
         let (prefix, tree) = tree.partition();
-        let program =
-            Glob::compile(tree.as_ref().tokens()).expect("failed to compile partitioned glob");
-        (prefix, Glob { tree, program })
+        (
+            prefix,
+            tree.map(|tree| {
+                let program = Glob::compile::<Tokenized<_>>(tree.as_ref())
+                    .expect("failed to compile partitioned glob");
+                Glob { tree, program }
+            }),
+        )
+    }
+
+    // TODO: Describe what an empty glob is and how this relates to `Glob::partition`.
+    pub fn partition_or_empty(self) -> (PathBuf, Self) {
+        let (prefix, glob) = self.partition();
+        (prefix, glob.unwrap_or_else(Glob::empty))
+    }
+
+    // TODO: Describe what a tree glob is and how this relates to `Glob::partition`.
+    pub fn partition_or_tree(self) -> (PathBuf, Self) {
+        let (prefix, glob) = self.partition();
+        (prefix, glob.unwrap_or_else(Glob::tree))
     }
 
     /// Clones any borrowed data into an owning instance.
@@ -702,7 +734,8 @@ impl<'t> Glob<'t> {
     pub fn captures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
         self.tree
             .as_ref()
-            .tokens()
+            .as_token()
+            .concatenation()
             .iter()
             .filter(|token| token.is_capturing())
             .enumerate()
@@ -717,11 +750,7 @@ impl<'t> Glob<'t> {
     /// As with Unix paths, a glob expression has a root if it begins with a separator `/`.
     /// Patterns other than separators may also root an expression, such as `/**` or `</root:1,>`.
     pub fn has_root(&self) -> bool {
-        self.tree
-            .as_ref()
-            .tokens()
-            .first()
-            .map_or(false, Token::has_root)
+        self.tree.as_ref().as_token().has_root().is_always()
     }
 
     /// Returns `true` if the glob has literals that have non-nominal semantics on the target
@@ -736,8 +765,15 @@ impl<'t> Glob<'t> {
     ///
     /// [`Glob::partition`]: crate::Glob::partition
     pub fn has_semantic_literals(&self) -> bool {
-        token::literals(self.tree.as_ref().tokens())
+        self.tree
+            .as_ref()
+            .as_token()
+            .literals()
             .any(|(_, literal)| literal.is_semantic_literal())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tree.as_ref().as_token().is_empty()
     }
 }
 
@@ -766,11 +802,11 @@ impl<'t> Program<'t> for Glob<'t> {
     }
 
     fn variance(&self) -> Variance {
-        self.tree.as_ref().variance().into()
+        self.tree.as_ref().as_token().variance::<Text<'t>>().into()
     }
 
     fn is_exhaustive(&self) -> bool {
-        token::is_exhaustive(self.tree.as_ref().tokens())
+        self.tree.as_ref().as_token().is_exhaustive()
     }
 }
 
@@ -783,7 +819,7 @@ impl<'t> TryFrom<&'t str> for Glob<'t> {
 }
 
 impl<'t> Pattern<'t> for Glob<'t> {
-    type Tokens = Tokenized<'t>;
+    type Tokens = Tokenized<'t, ExpressionMetadata>;
     type Error = Infallible;
 }
 
@@ -802,7 +838,7 @@ pub struct Any<'t> {
 
 impl<'t> Any<'t> {
     fn compile(token: &Token<'t, ()>) -> Result<Regex, CompileError> {
-        encode::compile([token])
+        encode::compile::<Token<_>>(token)
     }
 }
 
@@ -817,11 +853,11 @@ impl<'t> Program<'t> for Any<'t> {
     }
 
     fn variance(&self) -> Variance {
-        self.tree.as_ref().variance::<InvariantText>().into()
+        self.tree.as_ref().as_token().variance::<Text<'t>>().into()
     }
 
     fn is_exhaustive(&self) -> bool {
-        token::is_exhaustive(Some(self.tree.as_ref()))
+        self.tree.as_ref().as_token().is_exhaustive()
     }
 }
 
@@ -1001,7 +1037,9 @@ pub const fn is_contextual_meta_character(x: char) -> bool {
     matches!(x, '-')
 }
 
-fn parse_and_check(expression: &str) -> Result<Checked<Tokenized>, BuildError> {
+fn parse_and_check(
+    expression: &str,
+) -> Result<Checked<Tokenized<'_, ExpressionMetadata>>, BuildError> {
     let tokenized = token::parse(expression)?;
     let checked = rule::check(tokenized)?;
     Ok(checked)
@@ -1011,9 +1049,20 @@ fn parse_and_check(expression: &str) -> Result<Checked<Tokenized>, BuildError> {
 //       technically specific to platforms that support `/` as a separator.
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use crate::{BuildError, BuildErrorKind, CandidatePath, Glob, Program};
+
+    trait PartitionNonEmpty<'t>: Sized {
+        fn partition_non_empty(self) -> (PathBuf, Glob<'t>);
+    }
+
+    impl<'t> PartitionNonEmpty<'t> for Glob<'t> {
+        fn partition_non_empty(self) -> (PathBuf, Glob<'t>) {
+            let (prefix, glob) = self.partition();
+            (prefix, glob.expect("glob partition is empty"))
+        }
+    }
 
     #[test]
     fn escape() {
@@ -1102,7 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn build_glob_with_alternative_tokens() {
+    fn build_glob_with_alternation_tokens() {
         Glob::new("a/{x?z,y$}b*").unwrap();
         Glob::new("a/{???,x$y,frob}b*").unwrap();
         Glob::new("a/{???,x$y,frob}b*").unwrap();
@@ -1140,13 +1189,13 @@ mod tests {
     }
 
     #[test]
-    fn build_glob_with_literal_escaped_alternative_tokens() {
+    fn build_glob_with_literal_escaped_alternation_tokens() {
         Glob::new("a/\\{\\}/c").unwrap();
         Glob::new("a/{x,y\\,,z}/c").unwrap();
     }
 
     #[test]
-    fn build_glob_with_class_escaped_alternative_tokens() {
+    fn build_glob_with_class_escaped_alternation_tokens() {
         Glob::new("a/[{][}]/c").unwrap();
         Glob::new("a/{x,y[,],z}/c").unwrap();
     }
@@ -1243,7 +1292,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_glob_with_invalid_alternative_zom_tokens() {
+    fn reject_glob_with_invalid_alternation_zom_tokens() {
         assert!(Glob::new("*{okay,*}").is_err());
         assert!(Glob::new("{okay,*}*").is_err());
         assert!(Glob::new("${okay,*error}").is_err());
@@ -1253,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_glob_with_invalid_alternative_tree_tokens() {
+    fn reject_glob_with_invalid_alternation_tree_tokens() {
         assert!(Glob::new("{**}").is_err());
         assert!(Glob::new("slash/{**/error}").is_err());
         assert!(Glob::new("{error/**}/slash").is_err());
@@ -1265,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_glob_with_invalid_alternative_separator_tokens() {
+    fn reject_glob_with_invalid_alternation_separator_tokens() {
         assert!(Glob::new("/slash/{okay,/error}").is_err());
         assert!(Glob::new("{okay,error/}/slash").is_err());
         assert!(Glob::new("slash/{okay,/error/,okay}/slash").is_err());
@@ -1273,7 +1322,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_glob_with_rooted_alternative_tokens() {
+    fn reject_glob_with_rooted_alternation_tokens() {
         assert!(Glob::new("{okay,/}").is_err());
         assert!(Glob::new("{okay,/**}").is_err());
         assert!(Glob::new("{okay,/error}").is_err());
@@ -1536,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    fn match_glob_with_alternative_tokens() {
+    fn match_glob_with_alternation_tokens() {
         let glob = Glob::new("a/{x?z,y$}b/*").unwrap();
 
         assert!(glob.is_match(Path::new("a/xyzb/file.ext")));
@@ -1552,7 +1601,7 @@ mod tests {
     }
 
     #[test]
-    fn match_glob_with_nested_alternative_tokens() {
+    fn match_glob_with_nested_alternation_tokens() {
         let glob = Glob::new("a/{y$,{x?z,?z}}b/*").unwrap();
 
         let path = CandidatePath::from(Path::new("a/xyzb/file.ext"));
@@ -1561,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn match_glob_with_alternative_tree_tokens() {
+    fn match_glob_with_alternation_tree_tokens() {
         let glob = Glob::new("a{/foo,/bar,/**/baz}/qux").unwrap();
 
         assert!(glob.is_match(Path::new("a/foo/qux")));
@@ -1572,7 +1621,7 @@ mod tests {
     }
 
     #[test]
-    fn match_glob_with_alternative_repetition_tokens() {
+    fn match_glob_with_alternation_repetition_tokens() {
         let glob = Glob::new("log-{<[0-9]:3>,<[0-9]:4>-<[0-9]:2>-<[0-9]:2>}.txt").unwrap();
 
         assert!(glob.is_match(Path::new("log-000.txt")));
@@ -1625,7 +1674,7 @@ mod tests {
     }
 
     #[test]
-    fn match_glob_with_repeated_alternative_tokens() {
+    fn match_glob_with_repeated_alternation_tokens() {
         let glob = Glob::new("<{a,b}:1,>/**").unwrap();
 
         assert!(glob.is_match(Path::new("a/file.ext")));
@@ -1688,7 +1737,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_variant_and_invariant_parts() {
-        let (prefix, glob) = Glob::new("a/b/x?z/*.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("a/b/x?z/*.ext").unwrap().partition_non_empty();
 
         assert_eq!(prefix, Path::new("a/b"));
 
@@ -1698,7 +1747,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_only_variant_wildcard_parts() {
-        let (prefix, glob) = Glob::new("x?z/*.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("x?z/*.ext").unwrap().partition_non_empty();
 
         assert_eq!(prefix, Path::new(""));
 
@@ -1708,7 +1757,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_only_invariant_literal_parts() {
-        let (prefix, glob) = Glob::new("a/b").unwrap().partition();
+        let (prefix, glob) = Glob::new("a/b").unwrap().partition_or_empty();
 
         assert_eq!(prefix, Path::new("a/b"));
 
@@ -1717,8 +1766,8 @@ mod tests {
     }
 
     #[test]
-    fn partition_glob_with_variant_alternative_parts() {
-        let (prefix, glob) = Glob::new("{x,z}/*.ext").unwrap().partition();
+    fn partition_glob_with_variant_alternation_parts() {
+        let (prefix, glob) = Glob::new("{x,z}/*.ext").unwrap().partition_non_empty();
 
         assert_eq!(prefix, Path::new(""));
 
@@ -1727,8 +1776,8 @@ mod tests {
     }
 
     #[test]
-    fn partition_glob_with_invariant_alternative_parts() {
-        let (prefix, glob) = Glob::new("{a/b}/c").unwrap().partition();
+    fn partition_glob_with_invariant_alternation_parts() {
+        let (prefix, glob) = Glob::new("{a/b}/c").unwrap().partition_or_empty();
 
         assert_eq!(prefix, Path::new("a/b/c"));
 
@@ -1738,7 +1787,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_invariant_repetition_parts() {
-        let (prefix, glob) = Glob::new("</a/b:3>/c").unwrap().partition();
+        let (prefix, glob) = Glob::new("</a/b:3>/c").unwrap().partition_or_empty();
 
         assert_eq!(prefix, Path::new("/a/b/a/b/a/b/c"));
 
@@ -1748,7 +1797,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_literal_dots_and_tree_tokens() {
-        let (prefix, glob) = Glob::new("../**/*.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("../**/*.ext").unwrap().partition_non_empty();
 
         assert_eq!(prefix, Path::new(".."));
 
@@ -1758,7 +1807,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_rooted_tree_token() {
-        let (prefix, glob) = Glob::new("/**/*.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("/**/*.ext").unwrap().partition_non_empty();
 
         assert_eq!(prefix, Path::new("/"));
         assert!(!glob.has_root());
@@ -1769,7 +1818,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_rooted_zom_token() {
-        let (prefix, glob) = Glob::new("/*/*.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("/*/*.ext").unwrap().partition_non_empty();
 
         assert_eq!(prefix, Path::new("/"));
         assert!(!glob.has_root());
@@ -1780,7 +1829,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_rooted_literal_token() {
-        let (prefix, glob) = Glob::new("/root/**/*.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("/root/**/*.ext").unwrap().partition_non_empty();
 
         assert_eq!(prefix, Path::new("/root"));
         assert!(!glob.has_root());
@@ -1791,37 +1840,41 @@ mod tests {
 
     #[test]
     fn partition_glob_with_invariant_expression_text() {
-        let (prefix, glob) = Glob::new("/root/file.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("/root/file.ext").unwrap().partition_or_empty();
         assert_eq!(prefix, Path::new("/root/file.ext"));
         assert_eq!(format!("{}", glob), "");
 
-        let (prefix, glob) = Glob::new("<a:3>/file.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("<a:3>/file.ext").unwrap().partition_or_empty();
         assert_eq!(prefix, Path::new("aaa/file.ext"));
         assert_eq!(format!("{}", glob), "");
     }
 
     #[test]
     fn partition_glob_with_variant_expression_text() {
-        let (prefix, glob) = Glob::new("**/file.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("**/file.ext").unwrap().partition_non_empty();
         assert_eq!(prefix, Path::new(""));
         assert_eq!(format!("{}", glob), "**/file.ext");
 
-        let (prefix, glob) = Glob::new("/root/**/file.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("/root/**/file.ext")
+            .unwrap()
+            .partition_non_empty();
         assert_eq!(prefix, Path::new("/root"));
         assert_eq!(format!("{}", glob), "**/file.ext");
 
-        let (prefix, glob) = Glob::new("/root/**").unwrap().partition();
+        let (prefix, glob) = Glob::new("/root/**").unwrap().partition_non_empty();
         assert_eq!(prefix, Path::new("/root"));
         assert_eq!(format!("{}", glob), "**");
     }
 
     #[test]
     fn repartition_glob_with_variant_tokens() {
-        let (prefix, glob) = Glob::new("/root/**/file.ext").unwrap().partition();
+        let (prefix, glob) = Glob::new("/root/**/file.ext")
+            .unwrap()
+            .partition_non_empty();
         assert_eq!(prefix, Path::new("/root"));
         assert_eq!(format!("{}", glob), "**/file.ext");
 
-        let (prefix, glob) = glob.partition();
+        let (prefix, glob) = glob.partition_non_empty();
         assert_eq!(prefix, Path::new(""));
         assert_eq!(format!("{}", glob), "**/file.ext");
     }
@@ -1851,6 +1904,9 @@ mod tests {
         assert!(Glob::new("{a,..}").unwrap().has_semantic_literals());
         assert!(Glob::new("<a/..>").unwrap().has_semantic_literals());
         assert!(Glob::new("<a/{b,..,c}/d>").unwrap().has_semantic_literals());
+        assert!(Glob::new("{a,<b/{c,..}/>}d")
+            .unwrap()
+            .has_semantic_literals());
         assert!(Glob::new("./*.txt").unwrap().has_semantic_literals());
     }
 

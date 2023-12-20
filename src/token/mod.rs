@@ -1,189 +1,713 @@
 mod parse;
 mod variance;
+pub mod walk;
 
 use itertools::Itertools as _;
 use std::borrow::Cow;
 use std::cmp;
 use std::collections::VecDeque;
+use std::iter;
 use std::mem;
-use std::ops::Deref;
-use std::path::{PathBuf, MAIN_SEPARATOR};
+use std::path::{PathBuf, MAIN_SEPARATOR_STR};
 use std::slice;
 use std::str;
 
-use crate::token::variance::{
-    CompositeBreadth, CompositeDepth, ConjunctiveVariance, DisjunctiveVariance, IntoInvariantText,
-    Invariance, UnitBreadth, UnitDepth, UnitVariance,
-};
+use crate::diagnostics::{Span, Spanned};
+use crate::token::variance::bound::Boundedness;
+use crate::token::variance::invariant::{IntoNominalText, IntoStructuralText};
+use crate::token::variance::ops::{self, Conjunction};
+use crate::token::variance::{TreeExhaustiveness, TreeVariance, VarianceFold, VarianceTerm};
+use crate::token::walk::{BranchFold, Fold, FoldMap, Starting, TokenEntry};
 use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
 
-pub use crate::token::parse::{parse, Annotation, ParseError, ROOT_SEPARATOR_EXPRESSION};
-pub use crate::token::variance::{
-    invariant_text_prefix, is_exhaustive, Boundedness, InvariantSize, InvariantText, Variance,
-};
+pub use crate::token::parse::{parse, ParseError, ROOT_SEPARATOR_EXPRESSION};
+pub use crate::token::variance::bound::NaturalRange;
+pub use crate::token::variance::invariant::{Breadth, Depth, GlobVariance, Invariant, Size, Text};
+pub use crate::token::variance::Variance;
 
-pub trait TokenTree<'t>: Sized {
+// TODO: Tree representations of expressions are intrusive and only differ in their annotations.
+//       This supports some distinctions between tree types, but greatly limits the ability to
+//       model syntactic vs. semantic glob representations. Consider an unintrusive tree data
+//       structure and more distinct (and disjoint) glob representations. See also
+//       `BranchComposition`.
+
+pub type ExpressionMetadata = Span;
+
+pub trait ConcatenationTree<'t> {
     type Annotation;
 
-    fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>>;
+    fn concatenation(&self) -> &[Token<'t, Self::Annotation>];
+}
 
-    fn tokens(&self) -> &[Token<'t, Self::Annotation>];
+pub trait TokenTree<'t> {
+    type Annotation;
+
+    fn into_token(self) -> Token<'t, Self::Annotation>
+    where
+        Self: Sized;
+
+    fn as_token(&self) -> &Token<'t, Self::Annotation>;
+}
+
+impl<'t, T> ConcatenationTree<'t> for T
+where
+    T: TokenTree<'t>,
+{
+    type Annotation = T::Annotation;
+
+    fn concatenation(&self) -> &[Token<'t, Self::Annotation>] {
+        self.as_token().concatenation()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum When {
+    Always,
+    Sometimes,
+    Never,
+}
+
+impl When {
+    pub fn and(self, other: Self) -> Self {
+        use When::{Always, Never, Sometimes};
+
+        match (self, other) {
+            (Never, _) | (_, Never) => Never,
+            (Sometimes, _) | (_, Sometimes) => Sometimes,
+            (Always, Always) => Always,
+        }
+    }
+
+    pub fn or(self, other: Self) -> Self {
+        use When::{Always, Never, Sometimes};
+
+        match (self, other) {
+            (Always, _) | (_, Always) => Always,
+            (Sometimes, _) | (_, Sometimes) => Sometimes,
+            (Never, Never) => Never,
+        }
+    }
+
+    pub fn certainty(self, other: Self) -> Self {
+        use When::{Always, Never, Sometimes};
+
+        match (self, other) {
+            (Always, Always) => Always,
+            (Never, Never) => Never,
+            (Sometimes, _) | (_, Sometimes) | (Always, _) | (_, Always) => Sometimes,
+        }
+    }
+
+    pub fn is_always(&self) -> bool {
+        matches!(self, When::Always)
+    }
+
+    pub fn is_sometimes(&self) -> bool {
+        matches!(self, When::Sometimes)
+    }
+
+    pub fn is_never(&self) -> bool {
+        matches!(self, When::Never)
+    }
+}
+
+impl From<bool> for When {
+    fn from(is_always: bool) -> Self {
+        if is_always {
+            When::Always
+        }
+        else {
+            When::Never
+        }
+    }
+}
+
+impl From<Option<bool>> for When {
+    fn from(when: Option<bool>) -> Self {
+        match when {
+            Some(true) => When::Always,
+            None => When::Sometimes,
+            Some(false) => When::Never,
+        }
+    }
+}
+
+impl From<When> for Option<bool> {
+    fn from(when: When) -> Self {
+        match when {
+            When::Always => Some(true),
+            When::Sometimes => None,
+            When::Never => Some(false),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Composition<C, D> {
+    Conjunctive(C),
+    Disjunctive(D),
+}
+
+pub type TokenComposition<T> = Composition<T, T>;
+
+impl<C, D> Composition<C, D> {
+    pub fn map_conjunctive<T, F>(self, f: F) -> Composition<T, D>
+    where
+        F: FnOnce(C) -> T,
+    {
+        match self {
+            Composition::Conjunctive(inner) => Composition::Conjunctive(f(inner)),
+            Composition::Disjunctive(inner) => Composition::Disjunctive(inner),
+        }
+    }
+
+    pub fn map_disjunctive<T, F>(self, f: F) -> Composition<C, T>
+    where
+        F: FnOnce(D) -> T,
+    {
+        match self {
+            Composition::Conjunctive(inner) => Composition::Conjunctive(inner),
+            Composition::Disjunctive(inner) => Composition::Disjunctive(f(inner)),
+        }
+    }
+
+    pub fn conjunctive(self) -> Option<C> {
+        match self {
+            Composition::Conjunctive(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    pub fn disjunctive(self) -> Option<D> {
+        match self {
+            Composition::Disjunctive(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    pub fn as_ref(&self) -> Composition<&C, &D> {
+        match self {
+            Composition::Conjunctive(ref inner) => Composition::Conjunctive(inner),
+            Composition::Disjunctive(ref inner) => Composition::Disjunctive(inner),
+        }
+    }
+}
+
+impl<T> Composition<T, T> {
+    pub fn into_inner(self) -> T {
+        match self {
+            Composition::Conjunctive(inner) | Composition::Disjunctive(inner) => inner,
+        }
+    }
+
+    pub fn map<U, F>(self, f: F) -> Composition<U, U>
+    where
+        F: FnOnce(T) -> U,
+    {
+        match self {
+            Composition::Conjunctive(inner) => Composition::Conjunctive(f(inner)),
+            Composition::Disjunctive(inner) => Composition::Disjunctive(f(inner)),
+        }
+    }
+
+    pub fn get(&self) -> &T {
+        AsRef::as_ref(self)
+    }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        AsMut::as_mut(self)
+    }
+}
+
+impl<T> AsMut<T> for Composition<T, T> {
+    fn as_mut(&mut self) -> &mut T {
+        match self {
+            Composition::Conjunctive(ref mut inner) | Composition::Disjunctive(ref mut inner) => {
+                inner
+            },
+        }
+    }
+}
+
+impl<T> AsRef<T> for Composition<T, T> {
+    fn as_ref(&self) -> &T {
+        match self {
+            Composition::Conjunctive(ref inner) | Composition::Disjunctive(ref inner) => inner,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Boundary {
+    Component,
+    Separator,
 }
 
 #[derive(Clone, Debug)]
-pub struct Tokenized<'t, A = Annotation> {
+pub struct Tokenized<'t, A> {
     expression: Cow<'t, str>,
-    tokens: Vec<Token<'t, A>>,
+    token: Token<'t, A>,
 }
 
 impl<'t, A> Tokenized<'t, A> {
     pub fn into_owned(self) -> Tokenized<'static, A> {
-        let Tokenized { expression, tokens } = self;
+        let Tokenized { expression, token } = self;
         Tokenized {
             expression: expression.into_owned().into(),
-            tokens: tokens.into_iter().map(Token::into_owned).collect(),
+            token: token.into_owned(),
         }
     }
 
     pub fn expression(&self) -> &Cow<'t, str> {
         &self.expression
     }
-
-    pub fn variance<T>(&self) -> Variance<T>
-    where
-        T: Invariance,
-        for<'i> &'i Token<'t, A>: UnitVariance<T>,
-    {
-        self.tokens().iter().conjunctive_variance()
-    }
-
-    pub fn walk(&self) -> Walk<'_, 't, A> {
-        Walk::from(&self.tokens)
-    }
 }
 
-impl<'t> Tokenized<'t, Annotation> {
-    pub fn partition(self) -> (PathBuf, Self) {
+impl<'t, A> Tokenized<'t, A>
+where
+    A: Default + Spanned,
+{
+    // TODO: This function is limited to immediate concatenations and so expressions like
+    //       `{.cargo/**/*.crate}` do not partition (into the path `.cargo` and glob
+    //       `{**/*.crate}`). This requires a more sophisticated transformation of the token tree,
+    //       but is probably worth supporting. Maybe this can be done via `FoldMap`.
+    pub fn partition(self) -> (PathBuf, Option<Self>) {
         fn pop_expression_bytes(expression: &str, n: usize) -> &str {
             let n = cmp::min(expression.len(), n);
             str::from_utf8(&expression.as_bytes()[n..])
                 .expect("span offset split UTF-8 byte sequence")
         }
 
-        let Tokenized {
-            expression,
-            mut tokens,
-        } = self;
+        let Tokenized { expression, token } = self;
 
-        // Get the invariant prefix and its upper bound for the token sequence.
-        let prefix = variance::invariant_text_prefix(tokens.iter()).into();
-        let n = variance::invariant_text_prefix_upper_bound(&tokens);
-        let mut offset: usize = tokens
-            .iter()
-            .take(n)
-            .map(|token| token.annotation().1)
-            .sum();
+        let (n, text) = token.invariant_text_prefix();
+        let mut unrooted = 0;
+        let (popped, token) = token.pop_prefix_tokens_with(n, |first| {
+            unrooted = first.unroot_boundary_component();
+        });
+        let offset = popped
+            .into_iter()
+            .map(|token| token.annotation().span().1)
+            .sum::<usize>()
+            + unrooted;
 
-        // Drain invariant tokens from the beginning of the token sequence and unroot any tokens at
-        // the beginning of the variant sequence (tree wildcards). Finally, translate spans and
-        // discard the corresponding invariant bytes in the expression.
-        tokens.drain(0..n);
-        if tokens.first_mut().map_or(false, Token::unroot) {
-            // TODO: The relationship between roots, the unrooting operation, and the span in an
-            //       expression that represents such a root (if any) is not captured by these APIs
-            //       very well. Perhaps `unroot` should do more here?
-            // Pop additional bytes for the root separator expression if the initial token has lost
-            // a root.
-            offset += ROOT_SEPARATOR_EXPRESSION.len();
-        }
-        for token in tokens.iter_mut() {
-            let start = token.annotation().0.saturating_sub(offset);
-            token.annotation.0 = start;
-        }
-        let expression = match expression {
-            Cow::Borrowed(expression) => pop_expression_bytes(expression, offset).into(),
-            Cow::Owned(expression) => {
-                String::from(pop_expression_bytes(&expression, offset)).into()
-            },
-        };
-
-        (prefix, Tokenized { expression, tokens })
+        (
+            text.into(),
+            token.map(|token| Tokenized {
+                token: token.fold_map(|annotation: A| {
+                    annotation.map_span(|(start, n)| (start.saturating_sub(offset), n))
+                }),
+                expression: match expression {
+                    Cow::Borrowed(expression) => pop_expression_bytes(expression, offset).into(),
+                    Cow::Owned(expression) => {
+                        String::from(pop_expression_bytes(&expression, offset)).into()
+                    },
+                },
+            }),
+        )
     }
 }
 
 impl<'t, A> TokenTree<'t> for Tokenized<'t, A> {
     type Annotation = A;
 
-    fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>> {
-        let Tokenized { tokens, .. } = self;
-        tokens
+    fn into_token(self) -> Token<'t, Self::Annotation> {
+        let Tokenized { token, .. } = self;
+        token
     }
 
-    fn tokens(&self) -> &[Token<'t, Self::Annotation>] {
-        &self.tokens
+    fn as_token(&self) -> &Token<'t, Self::Annotation> {
+        &self.token
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Token<'t, A = Annotation> {
-    kind: TokenKind<'t, A>,
+pub struct Token<'t, A> {
+    topology: TokenTopology<'t, A>,
     annotation: A,
 }
 
 impl<'t, A> Token<'t, A> {
-    fn new(kind: TokenKind<'t, A>, annotation: A) -> Self {
-        Token { kind, annotation }
-    }
-
-    pub fn into_owned(self) -> Token<'static, A> {
-        let Token { kind, annotation } = self;
+    fn new(topology: impl Into<TokenTopology<'t, A>>, annotation: A) -> Self {
         Token {
-            kind: kind.into_owned(),
+            topology: topology.into(),
             annotation,
         }
     }
 
-    pub fn unannotate(self) -> Token<'t, ()> {
-        let Token { kind, .. } = self;
+    pub const fn empty(annotation: A) -> Self {
         Token {
-            kind: kind.unannotate(),
-            annotation: (),
+            topology: TokenTopology::Leaf(LeafKind::Literal(Literal::EMPTY)),
+            annotation,
         }
     }
 
-    pub fn unroot(&mut self) -> bool {
-        self.kind.unroot()
+    pub fn into_owned(self) -> Token<'static, A> {
+        struct IntoOwned;
+
+        impl<'t, A> FoldMap<'t, 'static, A> for IntoOwned {
+            type Annotation = A;
+
+            fn fold(
+                &mut self,
+                annotation: A,
+                branch: BranchFold,
+                tokens: Vec<Token<'static, Self::Annotation>>,
+            ) -> Option<Token<'static, Self::Annotation>> {
+                branch
+                    .fold(tokens)
+                    .ok()
+                    .map(|branch| Token::new(branch, annotation))
+            }
+
+            fn map(
+                &mut self,
+                annotation: A,
+                leaf: LeafKind<'t>,
+            ) -> Token<'static, Self::Annotation> {
+                Token::new(leaf.into_owned(), annotation)
+            }
+        }
+
+        self.fold_map(IntoOwned)
     }
 
-    pub fn kind(&self) -> &TokenKind<'t, A> {
-        self.as_ref()
+    fn pop_prefix_tokens_with<F>(mut self, n: usize, f: F) -> (Vec<Self>, Option<Self>)
+    where
+        F: FnOnce(&mut Self),
+    {
+        if let Some(concatenation) = self.as_concatenation_mut() {
+            if n >= concatenation.tokens().len() {
+                // Pop the entire concatenation if exhausted. This always pops empty
+                // concatenations.
+                (vec![self], None)
+            }
+            else {
+                // Pop `n` tokens and forward the first remaining token in the concatenation
+                // (postfix) to `f`.
+                let tokens = concatenation.0.drain(0..n).collect();
+                f(concatenation.0.first_mut().unwrap());
+                (tokens, Some(self))
+            }
+        }
+        else if n == 0 {
+            // Yield the token as-is if there are no tokens to pop.
+            (vec![], Some(self))
+        }
+        else {
+            // Pop the entire token if it is not a concatenation (and `n` is not zero).
+            (vec![self], None)
+        }
     }
 
-    pub fn annotation(&self) -> &A {
-        self.as_ref()
+    fn unroot_boundary_component(&mut self) -> usize
+    where
+        LeafKind<'t>: Unroot<A, Output = usize>,
+    {
+        let annotation = &mut self.annotation;
+        match self.topology {
+            TokenTopology::Leaf(ref mut leaf) => leaf.unroot(annotation),
+            _ => 0,
+        }
     }
 
-    pub fn walk(&self) -> Walk<'_, 't, A> {
-        Walk::from(self)
+    pub fn tokens(&self) -> Option<TokenComposition<&[Self]>> {
+        self.as_branch().map(BranchKind::tokens)
     }
 
-    pub fn has_root(&self) -> bool {
-        self.walk().starting().any(|(_, token)| {
-            matches!(
-                token.kind(),
-                TokenKind::Separator(_) | TokenKind::Wildcard(Wildcard::Tree { has_root: true }),
-            )
+    pub fn components(&self) -> impl Iterator<Item = Component<'_, 't, A>> {
+        self::components(self.concatenation())
+    }
+
+    // TODO: This API operates differently than `components`, but appears similar and may be
+    //       confusing. Unlike `components`, this function searches the tree of the token rather
+    //       than only its concatenation. Consider names or different APIs that make this more
+    //       obvious.
+    // TODO: This function only finds `LiteralSequence` components rather than **invariant text**
+    //       components, and so may miss some interesting text. Consider `{.}{.}/a`. The text of
+    //       this pattern is invariant, but this function does not find and cannot represent the
+    //       `..` component.
+    pub fn literals(
+        &self,
+    ) -> impl Iterator<Item = (Component<'_, 't, A>, LiteralSequence<'_, 't>)> {
+        let mut components: VecDeque<_> = self.components().collect();
+        iter::from_fn(move || {
+            while let Some(component) = components.pop_front() {
+                if let Some(literal) = component.literal() {
+                    return Some((component, literal));
+                }
+                components.extend(
+                    component
+                        .tokens()
+                        .iter()
+                        .filter_map(Token::as_branch)
+                        .flat_map(|branch| self::components(branch.tokens().into_inner())),
+                );
+            }
+            None
         })
     }
 
-    pub fn has_component_boundary(&self) -> bool {
-        self.walk().any(|(_, token)| token.is_component_boundary())
+    pub fn concatenation(&self) -> &[Self] {
+        if let Some(concatenation) = self.as_concatenation() {
+            concatenation.tokens()
+        }
+        else {
+            slice::from_ref(self)
+        }
+    }
+
+    pub fn composition(&self) -> TokenComposition<()> {
+        self.as_branch()
+            .map_or(Composition::Conjunctive(()), BranchKind::composition)
+    }
+
+    pub fn topology(&self) -> &TokenTopology<'t, A> {
+        &self.topology
+    }
+
+    pub fn annotation(&self) -> &A {
+        &self.annotation
+    }
+
+    pub fn boundary(&self) -> Option<Boundary> {
+        self.as_leaf().and_then(LeafKind::boundary)
+    }
+
+    pub fn variance<T>(&self) -> GlobVariance<T>
+    where
+        TreeVariance<T>: Fold<'t, A, Term = GlobVariance<T>>,
+        T: Conjunction<Output = T> + Invariant,
+    {
+        self.fold(TreeVariance::default())
+            .unwrap_or_else(Variance::zero)
+            .map_invariant(|invariant| ops::conjunction(T::once(), invariant))
+    }
+
+    pub fn invariant_text_prefix(&self) -> (usize, String) {
+        #[derive(Clone, Debug, Default)]
+        struct Prefix {
+            index: usize,
+            text: String,
+        }
+
+        impl Prefix {
+            fn into_count_text(self) -> (usize, String) {
+                (self.index + 1, self.text)
+            }
+        }
+
+        fn empty() -> (usize, String) {
+            (0, String::new())
+        }
+
+        let mut tokens = self.concatenation().iter().peekable();
+        if tokens.peek().map_or(false, |token| {
+            // This is a very general predicate, but at time of writing amounts to, "Is this a tree
+            // wildcard?"
+            token.has_root().is_always() && token.variance::<Text>().is_variant()
+        }) {
+            return (0, String::from(Separator::INVARIANT_TEXT));
+        }
+        let mut head = None;
+        let mut checkpoint = None;
+        for (n, token) in tokens.enumerate() {
+            match token.variance::<Text>() {
+                Variance::Invariant(text) => {
+                    let prefix = head.get_or_insert_with(Prefix::default);
+                    prefix.index = n;
+                    prefix.text.push_str(text.to_string().as_ref());
+                    if token.is_boundary() {
+                        checkpoint = head.clone();
+                    }
+                },
+                _ => {
+                    return match token.boundary() {
+                        Some(_) => head,
+                        None => checkpoint,
+                    }
+                    .map_or_else(empty, Prefix::into_count_text)
+                },
+            }
+        }
+        head.map_or_else(empty, Prefix::into_count_text)
+    }
+
+    pub fn has_root(&self) -> When {
+        struct IsRooting;
+
+        impl<'t, A> Fold<'t, A> for IsRooting {
+            type Sequencer = Starting;
+            type Term = When;
+
+            fn sequencer() -> Self::Sequencer {
+                Starting
+            }
+
+            fn fold(
+                &mut self,
+                branch: &BranchKind<'t, A>,
+                terms: Vec<Self::Term>,
+            ) -> Option<Self::Term> {
+                terms
+                    .into_iter()
+                    .reduce(match branch.composition() {
+                        Composition::Conjunctive(_) => When::or,
+                        Composition::Disjunctive(_) => When::certainty,
+                    })
+                    .map(|term| {
+                        if let BranchKind::Repetition(ref repetition) = branch {
+                            if repetition.variance().lower().into_bound().is_unbounded() {
+                                return term.and(When::Sometimes);
+                            }
+                        }
+                        term
+                    })
+            }
+
+            fn term(&mut self, leaf: &LeafKind<'t>) -> Self::Term {
+                leaf.is_rooting().into()
+            }
+        }
+
+        self.fold(IsRooting).unwrap_or(When::Never)
+    }
+
+    pub fn has_boundary(&self) -> bool {
+        walk::forward(self)
+            .map(TokenEntry::into_token)
+            .any(|token| token.boundary().is_some())
+    }
+
+    pub fn is_boundary(&self) -> bool {
+        self.boundary().is_some()
+    }
+
+    pub fn is_capturing(&self) -> bool {
+        match self.topology {
+            TokenTopology::Branch(ref branch) => branch.is_capturing(),
+            TokenTopology::Leaf(ref leaf) => leaf.is_capturing(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self.as_literal() {
+            Some(literal) => literal == &Literal::EMPTY,
+            _ => false,
+        }
+    }
+
+    // TODO: Exhaustiveness should be expressed with `When` rather than `bool`. In particular,
+    //       alternations may _sometimes_ be exhaustive.
+    // TODO: There is a distinction between exhaustiveness of a glob and exhaustiveness of a match
+    //       (this is also true of other properties). The latter can be important for performance
+    //       optimization, but may also be useful in the public API (perhaps as part of
+    //       `MatchedText`).
+    // NOTE: False positives in this function may cause logic errors and are completely
+    //       unacceptable. The discovery of a false positive here almost cetainly indicates a
+    //       serious bug. False positives in negative patterns cause matching to incorrectly
+    //       discard directory trees in the `FileIterator::not` combinator.
+    pub fn is_exhaustive(&self) -> bool {
+        self.fold(TreeExhaustiveness)
+            .as_ref()
+            .map_or(false, Variance::is_exhaustive)
     }
 }
 
-impl<'t, A> AsRef<TokenKind<'t, A>> for Token<'t, A> {
-    fn as_ref(&self) -> &TokenKind<'t, A> {
-        &self.kind
+impl<'t, A> Token<'t, A> {
+    pub fn as_branch(&self) -> Option<&BranchKind<'t, A>> {
+        match self.topology {
+            TokenTopology::Branch(ref branch) => Some(branch),
+            _ => None,
+        }
+    }
+
+    fn as_branch_mut(&mut self) -> Option<&mut BranchKind<'t, A>> {
+        match self.topology {
+            TokenTopology::Branch(ref mut branch) => Some(branch),
+            _ => None,
+        }
+    }
+
+    pub fn as_leaf(&self) -> Option<&LeafKind<'t>> {
+        match self.topology {
+            TokenTopology::Leaf(ref leaf) => Some(leaf),
+            _ => None,
+        }
+    }
+
+    pub fn as_alternation(&self) -> Option<&Alternation<'t, A>> {
+        self.as_branch().and_then(|branch| match branch {
+            BranchKind::Alternation(ref alternation) => Some(alternation),
+            _ => None,
+        })
+    }
+
+    pub fn as_class(&self) -> Option<&Class> {
+        self.as_leaf().and_then(|leaf| match leaf {
+            LeafKind::Class(ref class) => Some(class),
+            _ => None,
+        })
+    }
+
+    pub fn as_concatenation(&self) -> Option<&Concatenation<'t, A>> {
+        self.as_branch().and_then(|branch| match branch {
+            BranchKind::Concatenation(ref concatenation) => Some(concatenation),
+            _ => None,
+        })
+    }
+
+    fn as_concatenation_mut(&mut self) -> Option<&mut Concatenation<'t, A>> {
+        self.as_branch_mut().and_then(|branch| match branch {
+            BranchKind::Concatenation(ref mut concatenation) => Some(concatenation),
+            _ => None,
+        })
+    }
+
+    pub fn as_literal(&self) -> Option<&Literal<'t>> {
+        self.as_leaf().and_then(|leaf| match leaf {
+            LeafKind::Literal(ref literal) => Some(literal),
+            _ => None,
+        })
+    }
+
+    pub fn as_repetition(&self) -> Option<&Repetition<'t, A>> {
+        self.as_branch().and_then(|branch| match branch {
+            BranchKind::Repetition(ref repetition) => Some(repetition),
+            _ => None,
+        })
+    }
+
+    pub fn as_separator(&self) -> Option<&Separator> {
+        self.as_leaf().and_then(|leaf| match leaf {
+            LeafKind::Separator(ref separator) => Some(separator),
+            _ => None,
+        })
+    }
+
+    pub fn as_wildcard(&self) -> Option<&Wildcard> {
+        self.as_leaf().and_then(|leaf| match leaf {
+            LeafKind::Wildcard(ref wildcard) => Some(wildcard),
+            _ => None,
+        })
+    }
+}
+
+impl<'t, A> Token<'t, A> {
+    pub fn is_branch(&self) -> bool {
+        self.as_branch().is_some()
+    }
+
+    pub fn is_leaf(&self) -> bool {
+        self.as_leaf().is_some()
+    }
+
+    pub fn is_concatenation(&self) -> bool {
+        self.as_concatenation().is_some()
+    }
+
+    pub fn is_literal(&self) -> bool {
+        self.as_literal().is_some()
     }
 }
 
@@ -193,19 +717,14 @@ impl<'t, A> AsRef<A> for Token<'t, A> {
     }
 }
 
-impl<'t, A> Deref for Token<'t, A> {
-    type Target = TokenKind<'t, A>;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
-    }
-}
-
-impl<'t> From<TokenKind<'t, ()>> for Token<'t, ()> {
-    fn from(kind: TokenKind<'t, ()>) -> Self {
+impl<'t, A> From<TokenTopology<'t, A>> for Token<'t, A>
+where
+    A: Default,
+{
+    fn from(topology: TokenTopology<'t, A>) -> Self {
         Token {
-            kind,
-            annotation: (),
+            topology,
+            annotation: A::default(),
         }
     }
 }
@@ -213,276 +732,312 @@ impl<'t> From<TokenKind<'t, ()>> for Token<'t, ()> {
 impl<'t, A> TokenTree<'t> for Token<'t, A> {
     type Annotation = A;
 
-    fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>> {
-        vec![self]
+    fn into_token(self) -> Token<'t, Self::Annotation> {
+        self
     }
 
-    fn tokens(&self) -> &[Token<'t, Self::Annotation>] {
-        slice::from_ref(self)
+    fn as_token(&self) -> &Token<'t, Self::Annotation> {
+        self
     }
 }
 
-impl<'i, 't, A> UnitBreadth for &'i Token<'t, A> {
-    fn unit_breadth(self) -> Boundedness {
-        self.kind.unit_breadth()
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Topology<B, L> {
+    Branch(B),
+    Leaf(L),
+}
+
+pub type TokenTopology<'t, A> = Topology<BranchKind<'t, A>, LeafKind<'t>>;
+
+impl<'t, A> From<BranchKind<'t, A>> for TokenTopology<'t, A> {
+    fn from(kind: BranchKind<'t, A>) -> Self {
+        TokenTopology::Branch(kind)
     }
 }
 
-impl<'i, 't, A> UnitDepth for &'i Token<'t, A> {
-    fn unit_depth(self) -> Boundedness {
-        self.kind.unit_depth()
+impl<'t, A> From<LeafKind<'t>> for TokenTopology<'t, A> {
+    fn from(kind: LeafKind<'t>) -> Self {
+        TokenTopology::Leaf(kind)
     }
 }
 
-impl<'i, 't, A, T> UnitVariance<T> for &'i Token<'t, A>
-where
-    &'i TokenKind<'t, A>: UnitVariance<T>,
-    T: Invariance,
-{
-    fn unit_variance(self) -> Variance<T> {
-        self.kind.unit_variance()
-    }
+// TODO: The use of this trait and `BranchFold` in `Token::fold_map` is a very unfortunate
+//       consequence of using an intrusive tree: the data and topology of a token tree cannot be
+//       cleanly separated. Remove these APIs if and when the tree is implemented via an
+//       unintrusive data structure. See `BranchFold`.
+trait BranchComposition<'t>: Sized {
+    type Annotation;
+    type BranchData;
+
+    fn compose(
+        data: Self::BranchData,
+        tokens: Vec<Token<'t, Self::Annotation>>,
+    ) -> Result<Self, ()>;
+
+    fn decompose(self) -> (Self::BranchData, Vec<Token<'t, Self::Annotation>>);
 }
 
 #[derive(Clone, Debug)]
-pub enum TokenKind<'t, A = ()> {
-    Alternative(Alternative<'t, A>),
+pub enum BranchKind<'t, A> {
+    Alternation(Alternation<'t, A>),
+    Concatenation(Concatenation<'t, A>),
+    Repetition(Repetition<'t, A>),
+}
+
+impl<'t, A> BranchKind<'t, A> {
+    fn compose<T>(data: T::BranchData, tokens: Vec<Token<'t, A>>) -> Result<Self, ()>
+    where
+        Self: From<T>,
+        T: BranchComposition<'t, Annotation = A>,
+    {
+        T::compose(data, tokens).map(From::from)
+    }
+
+    fn decompose(self) -> (BranchFold, Vec<Token<'t, A>>) {
+        match self {
+            BranchKind::Alternation(alternation) => {
+                let (data, tokens) = alternation.decompose();
+                (BranchFold::Alternation(data), tokens)
+            },
+            BranchKind::Concatenation(concatenation) => {
+                let (data, tokens) = concatenation.decompose();
+                (BranchFold::Concatenation(data), tokens)
+            },
+            BranchKind::Repetition(repetition) => {
+                let (data, tokens) = repetition.decompose();
+                (BranchFold::Repetition(data), tokens)
+            },
+        }
+    }
+
+    pub fn tokens(&self) -> TokenComposition<&[Token<'t, A>]> {
+        use BranchKind::{Alternation, Concatenation, Repetition};
+        use Composition::{Conjunctive, Disjunctive};
+
+        match self {
+            Alternation(ref alternation) => Disjunctive(alternation.tokens()),
+            Concatenation(ref concatenation) => Conjunctive(concatenation.tokens()),
+            Repetition(ref repetition) => Conjunctive(slice::from_ref(repetition.token())),
+        }
+    }
+
+    pub fn composition(&self) -> TokenComposition<()> {
+        self.tokens().map(|_| ())
+    }
+
+    pub fn is_capturing(&self) -> bool {
+        matches!(self, BranchKind::Alternation(_) | BranchKind::Repetition(_))
+    }
+}
+
+impl<'t, A> From<Alternation<'t, A>> for BranchKind<'t, A> {
+    fn from(alternation: Alternation<'t, A>) -> Self {
+        BranchKind::Alternation(alternation)
+    }
+}
+
+impl<'t, A> From<Concatenation<'t, A>> for BranchKind<'t, A> {
+    fn from(concatenation: Concatenation<'t, A>) -> Self {
+        BranchKind::Concatenation(concatenation)
+    }
+}
+
+impl<'t, A> From<Repetition<'t, A>> for BranchKind<'t, A> {
+    fn from(repetition: Repetition<'t, A>) -> Self {
+        BranchKind::Repetition(repetition)
+    }
+}
+
+impl<'t, A, T> VarianceFold<T> for BranchKind<'t, A>
+where
+    Alternation<'t, A>: VarianceFold<T>,
+    Concatenation<'t, A>: VarianceFold<T>,
+    Repetition<'t, A>: VarianceFold<T>,
+    T: Invariant,
+{
+    fn fold(&self, terms: Vec<GlobVariance<T>>) -> Option<GlobVariance<T>> {
+        use BranchKind::{Alternation, Concatenation, Repetition};
+
+        match self {
+            Alternation(ref alternation) => alternation.fold(terms),
+            Concatenation(ref concatenation) => concatenation.fold(terms),
+            Repetition(ref repetition) => repetition.fold(terms),
+        }
+    }
+
+    fn finalize(&self, term: GlobVariance<T>) -> GlobVariance<T> {
+        use BranchKind::{Alternation, Concatenation, Repetition};
+
+        match self {
+            Alternation(ref alternation) => alternation.finalize(term),
+            Concatenation(ref concatenation) => concatenation.finalize(term),
+            Repetition(ref repetition) => repetition.finalize(term),
+        }
+    }
+}
+
+trait Unroot<A> {
+    type Output;
+
+    fn unroot(&mut self, annotation: &mut A) -> Self::Output;
+}
+
+#[derive(Clone, Debug)]
+pub enum LeafKind<'t> {
     Class(Class),
     Literal(Literal<'t>),
-    Repetition(Repetition<'t, A>),
     Separator(Separator),
     Wildcard(Wildcard),
 }
 
-impl<'t, A> TokenKind<'t, A> {
-    pub fn into_owned(self) -> TokenKind<'static, A> {
+impl<'t> LeafKind<'t> {
+    pub fn into_owned(self) -> LeafKind<'static> {
         match self {
-            TokenKind::Alternative(alternative) => alternative.into_owned().into(),
-            TokenKind::Class(class) => TokenKind::Class(class),
-            TokenKind::Literal(Literal {
-                text,
-                is_case_insensitive,
-            }) => TokenKind::Literal(Literal {
-                text: text.into_owned().into(),
-                is_case_insensitive,
-            }),
-            TokenKind::Repetition(repetition) => repetition.into_owned().into(),
-            TokenKind::Separator(_) => TokenKind::Separator(Separator),
-            TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
+            LeafKind::Class(class) => LeafKind::Class(class),
+            LeafKind::Literal(literal) => LeafKind::Literal(literal.into_owned()),
+            LeafKind::Separator(separator) => LeafKind::Separator(separator),
+            LeafKind::Wildcard(wildcard) => LeafKind::Wildcard(wildcard),
         }
     }
 
-    pub fn unannotate(self) -> TokenKind<'t, ()> {
+    pub fn boundary(&self) -> Option<Boundary> {
         match self {
-            TokenKind::Alternative(alternative) => TokenKind::Alternative(alternative.unannotate()),
-            TokenKind::Class(class) => TokenKind::Class(class),
-            TokenKind::Literal(literal) => TokenKind::Literal(literal),
-            TokenKind::Repetition(repetition) => TokenKind::Repetition(repetition.unannotate()),
-            TokenKind::Separator(_) => TokenKind::Separator(Separator),
-            TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
+            LeafKind::Separator(_) => Some(Boundary::Separator),
+            LeafKind::Wildcard(Wildcard::Tree { .. }) => Some(Boundary::Component),
+            _ => None,
         }
     }
 
-    pub fn unroot(&mut self) -> bool {
-        match self {
-            TokenKind::Wildcard(Wildcard::Tree { ref mut has_root }) => {
-                mem::replace(has_root, false)
-            },
-            _ => false,
-        }
-    }
-
-    pub fn variance<T>(&self) -> Variance<T>
-    where
-        T: Invariance,
-        for<'i> &'i TokenKind<'t, A>: UnitVariance<T>,
-    {
-        self.unit_variance()
-    }
-
-    pub fn has_sub_tokens(&self) -> bool {
-        // It is not necessary to detect empty branches or sub-expressions.
-        matches!(self, TokenKind::Alternative(_) | TokenKind::Repetition(_))
-    }
-
-    pub fn is_component_boundary(&self) -> bool {
+    pub fn is_rooting(&self) -> bool {
         matches!(
             self,
-            TokenKind::Separator(_) | TokenKind::Wildcard(Wildcard::Tree { .. })
+            LeafKind::Separator(_) | LeafKind::Wildcard(Wildcard::Tree { has_root: true })
         )
     }
 
     pub fn is_capturing(&self) -> bool {
-        use TokenKind::{Alternative, Class, Repetition, Wildcard};
-
-        matches!(
-            self,
-            Alternative(_) | Class(_) | Repetition(_) | Wildcard(_),
-        )
+        matches!(self, LeafKind::Class(_) | LeafKind::Wildcard(_))
     }
 }
 
-impl<'t, A> From<Alternative<'t, A>> for TokenKind<'t, A> {
-    fn from(alternative: Alternative<'t, A>) -> Self {
-        TokenKind::Alternative(alternative)
-    }
-}
-
-impl<A> From<Class> for TokenKind<'_, A> {
+impl From<Class> for LeafKind<'static> {
     fn from(class: Class) -> Self {
-        TokenKind::Class(class)
+        LeafKind::Class(class)
     }
 }
 
-impl<'t, A> From<Repetition<'t, A>> for TokenKind<'t, A> {
-    fn from(repetition: Repetition<'t, A>) -> Self {
-        TokenKind::Repetition(repetition)
+impl<'t> From<Literal<'t>> for LeafKind<'t> {
+    fn from(literal: Literal<'t>) -> Self {
+        LeafKind::Literal(literal)
     }
 }
 
-impl<A> From<Wildcard> for TokenKind<'static, A> {
+impl From<Separator> for LeafKind<'static> {
+    fn from(separator: Separator) -> Self {
+        LeafKind::Separator(separator)
+    }
+}
+
+impl From<Wildcard> for LeafKind<'static> {
     fn from(wildcard: Wildcard) -> Self {
-        TokenKind::Wildcard(wildcard)
+        LeafKind::Wildcard(wildcard)
     }
 }
 
-impl<'i, 't, A> UnitBreadth for &'i TokenKind<'t, A> {
-    fn unit_breadth(self) -> Boundedness {
-        match self {
-            TokenKind::Alternative(ref alternative) => alternative.unit_breadth(),
-            TokenKind::Class(ref class) => class.unit_breadth(),
-            TokenKind::Literal(ref literal) => literal.unit_breadth(),
-            TokenKind::Repetition(ref repetition) => repetition.unit_breadth(),
-            TokenKind::Separator(ref separator) => separator.unit_breadth(),
-            TokenKind::Wildcard(ref wildcard) => wildcard.unit_breadth(),
-        }
-    }
-}
-
-impl<'i, 't, A> UnitDepth for &'i TokenKind<'t, A> {
-    fn unit_depth(self) -> Boundedness {
-        match self {
-            TokenKind::Alternative(ref alternative) => alternative.unit_depth(),
-            TokenKind::Class(ref class) => class.unit_depth(),
-            TokenKind::Literal(ref literal) => literal.unit_depth(),
-            TokenKind::Repetition(ref repetition) => repetition.unit_depth(),
-            TokenKind::Separator(ref separator) => separator.unit_depth(),
-            TokenKind::Wildcard(ref wildcard) => wildcard.unit_depth(),
-        }
-    }
-}
-
-impl<'i, 't, A, T> UnitVariance<T> for &'i TokenKind<'t, A>
+impl<'t, A> Unroot<A> for LeafKind<'t>
 where
-    &'i Class: UnitVariance<T>,
-    &'i Literal<'t>: UnitVariance<T>,
-    &'i Separator: UnitVariance<T>,
-    T: Invariance,
+    Wildcard: Unroot<A>,
+    <Wildcard as Unroot<A>>::Output: Default,
 {
-    fn unit_variance(self) -> Variance<T> {
+    type Output = <Wildcard as Unroot<A>>::Output;
+
+    fn unroot(&mut self, annotation: &mut A) -> Self::Output {
         match self {
-            TokenKind::Alternative(ref alternative) => alternative.unit_variance(),
-            TokenKind::Class(ref class) => class.unit_variance(),
-            TokenKind::Literal(ref literal) => literal.unit_variance(),
-            TokenKind::Repetition(ref repetition) => repetition.unit_variance(),
-            TokenKind::Separator(ref separator) => separator.unit_variance(),
-            TokenKind::Wildcard(_) => Variance::Variant(Boundedness::Open),
+            LeafKind::Wildcard(ref mut wildcard) => Unroot::unroot(wildcard, annotation),
+            _ => Default::default(),
+        }
+    }
+}
+
+impl<'t, T> VarianceTerm<T> for LeafKind<'t>
+where
+    Class: VarianceTerm<T>,
+    Literal<'t>: VarianceTerm<T>,
+    Separator: VarianceTerm<T>,
+    Wildcard: VarianceTerm<T>,
+    T: Invariant,
+{
+    fn term(&self) -> GlobVariance<T> {
+        use LeafKind::{Class, Literal, Separator, Wildcard};
+
+        match self {
+            Class(ref class) => class.term(),
+            Literal(ref literal) => literal.term(),
+            Separator(ref separator) => separator.term(),
+            Wildcard(ref wildcard) => wildcard.term(),
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Alternative<'t, A = ()>(Vec<Vec<Token<'t, A>>>);
+pub struct Alternation<'t, A>(Vec<Token<'t, A>>);
 
-impl<'t, A> Alternative<'t, A> {
-    pub fn into_owned(self) -> Alternative<'static, A> {
-        Alternative(
-            self.0
-                .into_iter()
-                .map(|tokens| tokens.into_iter().map(Token::into_owned).collect())
-                .collect(),
-        )
-    }
-
-    pub fn unannotate(self) -> Alternative<'t, ()> {
-        let Alternative(branches) = self;
-        Alternative(
-            branches
-                .into_iter()
-                .map(|branch| branch.into_iter().map(Token::unannotate).collect())
-                .collect(),
-        )
-    }
-
-    pub fn branches(&self) -> &Vec<Vec<Token<'t, A>>> {
+impl<'t, A> Alternation<'t, A> {
+    pub fn tokens(&self) -> &[Token<'t, A>] {
         &self.0
     }
 }
 
-impl<'t, A> From<Vec<Vec<Token<'t, A>>>> for Alternative<'t, A> {
-    fn from(alternatives: Vec<Vec<Token<'t, A>>>) -> Self {
-        Alternative(alternatives)
+impl<'t, A> BranchComposition<'t> for Alternation<'t, A> {
+    type Annotation = A;
+    type BranchData = ();
+
+    fn compose(_: Self::BranchData, tokens: Vec<Token<'t, Self::Annotation>>) -> Result<Self, ()> {
+        Ok(Alternation(tokens))
+    }
+
+    fn decompose(self) -> (Self::BranchData, Vec<Token<'t, Self::Annotation>>) {
+        ((), self.0)
     }
 }
 
-impl<'i, 't, A> UnitBreadth for &'i Alternative<'t, A> {
-    fn unit_breadth(self) -> Boundedness {
-        self.branches()
-            .iter()
-            .map(|tokens| tokens.iter().composite_breadth())
-            .composite_breadth()
+impl<'t, A> From<Vec<Token<'t, A>>> for Alternation<'t, A> {
+    fn from(tokens: Vec<Token<'t, A>>) -> Self {
+        Alternation(tokens)
     }
 }
 
-impl<'i, 't, A> UnitDepth for &'i Alternative<'t, A> {
-    fn unit_depth(self) -> Boundedness {
-        self.branches()
-            .iter()
-            .map(|tokens| tokens.iter().composite_depth())
-            .composite_depth()
+impl<'t, A> VarianceFold<Depth> for Alternation<'t, A> {
+    fn fold(&self, terms: Vec<GlobVariance<Depth>>) -> Option<GlobVariance<Depth>> {
+        terms.into_iter().reduce(ops::disjunction)
     }
 }
 
-impl<'i, 't, A, T> UnitVariance<T> for &'i Alternative<'t, A>
-where
-    T: Invariance,
-    &'i Token<'t, A>: UnitVariance<T>,
-{
-    fn unit_variance(self) -> Variance<T> {
-        self.branches()
-            .iter()
-            .map(|tokens| tokens.iter().conjunctive_variance())
-            .disjunctive_variance()
+impl<'t, A> VarianceFold<Size> for Alternation<'t, A> {
+    fn fold(&self, terms: Vec<GlobVariance<Size>>) -> Option<GlobVariance<Size>> {
+        terms.into_iter().reduce(ops::disjunction)
+    }
+}
+
+impl<'t, A> VarianceFold<Text<'t>> for Alternation<'t, A> {
+    fn fold(&self, terms: Vec<GlobVariance<Text<'t>>>) -> Option<GlobVariance<Text<'t>>> {
+        terms.into_iter().reduce(ops::disjunction)
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum Archetype {
     Character(char),
+    // TODO: A range archetype spans Unicode code points. This should be clearly documented and
+    //       should elegantly handle Unicode arguments that cannot be represented this way. For
+    //       example, what happens if a user specifies a range between two grapheme clusters that
+    //       each require more than one 32-bit code point?
+    //
+    //       It may be reasonable to restrict ranges to ASCII, though that isn't strictly
+    //       necessary. Either way, support for predefined classes will be important. For example,
+    //       it isn't yet possible to select classes like `{greek}` or `{flag}`. Such support may
+    //       relieve the limitations of a code point range.
     Range(char, char),
-}
-
-impl Archetype {
-    fn domain_variance(&self) -> Variance<char> {
-        match self {
-            Archetype::Character(x) => {
-                if PATHS_ARE_CASE_INSENSITIVE {
-                    Variance::Variant(Boundedness::Closed)
-                }
-                else {
-                    Variance::Invariant(*x)
-                }
-            },
-            Archetype::Range(a, b) => {
-                if (a != b) || PATHS_ARE_CASE_INSENSITIVE {
-                    Variance::Variant(Boundedness::Closed)
-                }
-                else {
-                    Variance::Invariant(*a)
-                }
-            },
-        }
-    }
 }
 
 impl From<char> for Archetype {
@@ -497,19 +1052,39 @@ impl From<(char, char)> for Archetype {
     }
 }
 
-impl<'i, 't> UnitVariance<InvariantText<'t>> for &'i Archetype {
-    fn unit_variance(self) -> Variance<InvariantText<'t>> {
-        self.domain_variance()
-            .map_invariance(|invariance| invariance.to_string().into_nominal_text())
+impl VarianceTerm<Size> for Archetype {
+    fn term(&self) -> GlobVariance<Size> {
+        // TODO: Examine the archetype instead of blindly assuming a constant size. This becomes
+        //       especially important if character classes gain support for named classes, as these
+        //       may contain graphemes that cannot be encoded as a single code point. See related
+        //       comments on `Archetype::Range`.
+        // This is pessimistic and assumes that the code point will require four bytes when encoded
+        // as UTF-8. This is possible, but most commonly only one or two bytes will be required.
+        Variance::Invariant(4.into())
     }
 }
 
-impl<'i> UnitVariance<InvariantSize> for &'i Archetype {
-    fn unit_variance(self) -> Variance<InvariantSize> {
-        // This is pessimistic and assumes that the code point will require four bytes when encoded
-        // as UTF-8. This is technically possible, but most commonly only one or two bytes will be
-        // required.
-        self.domain_variance().map_invariance(|_| 4.into())
+impl<'t> VarianceTerm<Text<'t>> for Archetype {
+    fn term(&self) -> GlobVariance<Text<'t>> {
+        match self {
+            Archetype::Character(x) => {
+                if PATHS_ARE_CASE_INSENSITIVE {
+                    Variance::Variant(Boundedness::BOUNDED)
+                }
+                else {
+                    Variance::Invariant(*x)
+                }
+            },
+            Archetype::Range(a, b) => {
+                if (a != b) || PATHS_ARE_CASE_INSENSITIVE {
+                    Variance::Variant(Boundedness::BOUNDED)
+                }
+                else {
+                    Variance::Invariant(*a)
+                }
+            },
+        }
+        .map_invariant(|invariant| invariant.to_string().into_nominal_text())
     }
 }
 
@@ -527,51 +1102,138 @@ impl Class {
     pub fn is_negated(&self) -> bool {
         self.is_negated
     }
+
+    fn fold<T, F>(&self, f: F) -> GlobVariance<T>
+    where
+        Archetype: VarianceTerm<T>,
+        T: Invariant,
+        F: FnMut(GlobVariance<T>, GlobVariance<T>) -> GlobVariance<T>,
+    {
+        self.archetypes()
+            .iter()
+            .map(Archetype::term)
+            .reduce(f)
+            .unwrap_or_else(Variance::zero)
+    }
 }
 
-impl<'i> UnitBreadth for &'i Class {}
+impl VarianceTerm<Breadth> for Class {
+    fn term(&self) -> GlobVariance<Breadth> {
+        Variance::zero()
+    }
+}
 
-impl<'i> UnitDepth for &'i Class {}
+impl VarianceTerm<Depth> for Class {
+    fn term(&self) -> GlobVariance<Depth> {
+        Variance::zero()
+    }
+}
 
-impl<'i, T> UnitVariance<T> for &'i Class
-where
-    &'i Archetype: UnitVariance<T>,
-    T: Invariance,
-{
-    fn unit_variance(self) -> Variance<T> {
+impl VarianceTerm<Size> for Class {
+    fn term(&self) -> GlobVariance<Size> {
+        self.fold(ops::disjunction)
+    }
+}
+
+impl<'t> VarianceTerm<Text<'t>> for Class {
+    fn term(&self) -> GlobVariance<Text<'t>> {
         if self.is_negated {
             // It is not feasible to encode a character class that matches all UTF-8 text and
             // therefore nothing when negated, and so a character class must be variant if it is
-            // negated.
-            Variance::Variant(Boundedness::Closed)
+            // negated and is furthermore assumed to be bounded.
+            Variance::Variant(Boundedness::BOUNDED)
         }
         else {
             // TODO: This ignores casing groups, such as in the pattern `[aA]`.
-            self.archetypes().iter().disjunctive_variance()
+            self.fold(ops::disjunction)
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
+pub struct Concatenation<'t, A>(Vec<Token<'t, A>>);
+
+impl<'t, A> Concatenation<'t, A> {
+    pub fn tokens(&self) -> &[Token<'t, A>] {
+        &self.0
+    }
+}
+
+impl<'t, A> BranchComposition<'t> for Concatenation<'t, A> {
+    type Annotation = A;
+    type BranchData = ();
+
+    fn compose(_: Self::BranchData, tokens: Vec<Token<'t, Self::Annotation>>) -> Result<Self, ()> {
+        Ok(Concatenation(tokens))
+    }
+
+    fn decompose(self) -> (Self::BranchData, Vec<Token<'t, Self::Annotation>>) {
+        ((), self.0)
+    }
+}
+
+impl<'t, A> From<Vec<Token<'t, A>>> for Concatenation<'t, A> {
+    fn from(tokens: Vec<Token<'t, A>>) -> Self {
+        Concatenation(tokens)
+    }
+}
+
+impl<'t, A> VarianceFold<Depth> for Concatenation<'t, A> {
+    fn fold(&self, terms: Vec<GlobVariance<Depth>>) -> Option<GlobVariance<Depth>> {
+        terms.into_iter().reduce(ops::conjunction)
+    }
+}
+
+impl<'t, A> VarianceFold<Size> for Concatenation<'t, A> {
+    fn fold(&self, terms: Vec<GlobVariance<Size>>) -> Option<GlobVariance<Size>> {
+        terms.into_iter().reduce(ops::conjunction)
+    }
+}
+
+impl<'t, A> VarianceFold<Text<'t>> for Concatenation<'t, A> {
+    fn fold(&self, terms: Vec<GlobVariance<Text<'t>>>) -> Option<GlobVariance<Text<'t>>> {
+        terms.into_iter().reduce(ops::conjunction)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Evaluation {
     Eager,
     Lazy,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Literal<'t> {
     text: Cow<'t, str>,
     is_case_insensitive: bool,
 }
 
+impl Literal<'static> {
+    const EMPTY: Self = Literal {
+        text: Cow::Borrowed(""),
+        is_case_insensitive: false,
+    };
+}
+
 impl<'t> Literal<'t> {
+    pub fn into_owned(self) -> Literal<'static> {
+        let Literal {
+            text,
+            is_case_insensitive,
+        } = self;
+        Literal {
+            text: text.into_owned().into(),
+            is_case_insensitive,
+        }
+    }
+
     pub fn text(&self) -> &str {
         self.text.as_ref()
     }
 
-    fn domain_variance(&self) -> Variance<&Cow<'t, str>> {
+    fn variance(&self) -> Variance<&Cow<'t, str>> {
         if self.has_variant_casing() {
-            Variance::Variant(Boundedness::Closed)
+            Variance::Variant(Boundedness::BOUNDED)
         }
         else {
             Variance::Invariant(&self.text)
@@ -589,27 +1251,40 @@ impl<'t> Literal<'t> {
     }
 }
 
-impl<'i, 't> UnitBreadth for &'i Literal<'t> {}
-
-impl<'i, 't> UnitDepth for &'i Literal<'t> {}
-
-impl<'i, 't> UnitVariance<InvariantText<'t>> for &'i Literal<'t> {
-    fn unit_variance(self) -> Variance<InvariantText<'t>> {
-        self.domain_variance()
-            .map_invariance(|invariance| invariance.clone().into_nominal_text())
+impl<'t> VarianceTerm<Breadth> for Literal<'t> {
+    fn term(&self) -> GlobVariance<Breadth> {
+        Variance::zero()
     }
 }
 
-impl<'i, 't> UnitVariance<InvariantSize> for &'i Literal<'t> {
-    fn unit_variance(self) -> Variance<InvariantSize> {
-        self.domain_variance()
-            .map_invariance(|invariance| invariance.as_bytes().len().into())
+impl<'t> VarianceTerm<Depth> for Literal<'t> {
+    fn term(&self) -> GlobVariance<Depth> {
+        Variance::zero()
     }
 }
 
+impl<'t> VarianceTerm<Size> for Literal<'t> {
+    fn term(&self) -> GlobVariance<Size> {
+        // TODO: This assumes that the size of graphemes in a casing set are the same. Is that
+        //       correct?
+        Variance::Invariant(self.text.as_bytes().len().into())
+    }
+}
+
+impl<'t> VarianceTerm<Text<'t>> for Literal<'t> {
+    fn term(&self) -> GlobVariance<Text<'t>> {
+        self.variance()
+            .map_invariant(|invariant| invariant.clone().into_nominal_text())
+    }
+}
+
+// TODO: The `VarianceFold` implementations for `Repetition` reimplement concatenation in `fold`.
+//       Moreover, `Repetition`s have only one token, so `fold` can simply forward its term. Can
+//       `VarianceFold` be decomposed in a way that avoids this redundancy? Note too that no other
+//       token (at time of writing) has an interesting `finalize` implementation.
 #[derive(Clone, Debug)]
-pub struct Repetition<'t, A = ()> {
-    tokens: Vec<Token<'t, A>>,
+pub struct Repetition<'t, A> {
+    token: Box<Token<'t, A>>,
     lower: usize,
     // This representation is not ideal, as it does not statically enforce the invariant that the
     // upper bound is greater than or equal to the lower bound. For example, this field could
@@ -620,107 +1295,67 @@ pub struct Repetition<'t, A = ()> {
 }
 
 impl<'t, A> Repetition<'t, A> {
-    pub fn into_owned(self) -> Repetition<'static, A> {
-        let Repetition {
-            tokens,
-            lower,
-            upper,
-        } = self;
-        Repetition {
-            tokens: tokens.into_iter().map(Token::into_owned).collect(),
-            lower,
-            upper,
-        }
+    pub fn token(&self) -> &Token<'t, A> {
+        &self.token
     }
 
-    pub fn unannotate(self) -> Repetition<'t, ()> {
-        let Repetition {
-            tokens,
-            lower,
-            upper,
-        } = self;
-        Repetition {
-            tokens: tokens.into_iter().map(Token::unannotate).collect(),
-            lower,
-            upper,
-        }
-    }
-
-    pub fn tokens(&self) -> &Vec<Token<'t, A>> {
-        &self.tokens
-    }
-
-    pub fn bounds(&self) -> (usize, Option<usize>) {
+    pub(crate) fn bound_specification(&self) -> (usize, Option<usize>) {
         (self.lower, self.upper)
     }
 
-    pub fn is_converged(&self) -> bool {
-        self.upper.map_or(false, |upper| self.lower == upper)
-    }
-
-    fn walk(&self) -> Walk<'_, 't, A> {
-        Walk::from(&self.tokens)
+    pub fn variance(&self) -> NaturalRange {
+        self.bound_specification().into()
     }
 }
 
-impl<'i, 't, A> UnitBreadth for &'i Repetition<'t, A> {
-    fn unit_breadth(self) -> Boundedness {
-        self.tokens().iter().composite_breadth()
+impl<'t, A> BranchComposition<'t> for Repetition<'t, A> {
+    type Annotation = A;
+    type BranchData = NaturalRange;
+
+    fn compose(
+        variance: Self::BranchData,
+        tokens: Vec<Token<'t, Self::Annotation>>,
+    ) -> Result<Self, ()> {
+        tokens.into_iter().next().ok_or(()).map(|token| Repetition {
+            token: Box::new(token),
+            lower: variance.lower().into_usize(),
+            upper: variance.upper().into_usize(),
+        })
+    }
+
+    fn decompose(self) -> (Self::BranchData, Vec<Token<'t, Self::Annotation>>) {
+        let variance = self.variance();
+        (variance, vec![*self.token])
     }
 }
 
-impl<'i, 't, A> UnitDepth for &'i Repetition<'t, A> {
-    fn unit_depth(self) -> Boundedness {
-        let (_, upper) = self.bounds();
-        if upper.is_none() && self.walk().any(|(_, token)| token.is_component_boundary()) {
-            Boundedness::Open
-        }
-        else {
-            Boundedness::Closed
-        }
+impl<'t, A> VarianceFold<Depth> for Repetition<'t, A> {
+    fn fold(&self, terms: Vec<GlobVariance<Depth>>) -> Option<GlobVariance<Depth>> {
+        terms.into_iter().reduce(ops::conjunction)
+    }
+
+    fn finalize(&self, term: GlobVariance<Depth>) -> GlobVariance<Depth> {
+        ops::product(term, self.variance())
     }
 }
 
-impl<'i, 't, A, T> UnitVariance<T> for &'i Repetition<'t, A>
-where
-    T: Invariance,
-    &'i Token<'t, A>: UnitVariance<T>,
-{
-    fn unit_variance(self) -> Variance<T> {
-        use Boundedness::Open;
-        use TokenKind::Separator;
-        use Variance::Variant;
+impl<'t, A> VarianceFold<Size> for Repetition<'t, A> {
+    fn fold(&self, terms: Vec<GlobVariance<Size>>) -> Option<GlobVariance<Size>> {
+        terms.into_iter().reduce(ops::conjunction)
+    }
 
-        let variance = self
-            .tokens()
-            .iter()
-            // Coalesce tokens with open variance with separators. This isn't destructive and
-            // doesn't affect invariance, because this only happens in the presence of open
-            // variance, which means that the repetition is variant (and has no invariant size or
-            // text).
-            .coalesce(|left, right| {
-                match (
-                    (left.kind(), left.unit_variance()),
-                    (right.kind(), right.unit_variance()),
-                ) {
-                    ((Separator(_), _), (_, Variant(Open))) => Ok(right),
-                    ((_, Variant(Open)), (Separator(_), _)) => Ok(left),
-                    _ => Err((left, right)),
-                }
-            })
-            .conjunctive_variance();
-        match self.upper {
-            // Repeating invariance can cause overflows, very large allocations, and very
-            // inefficient comparisons (e.g., comparing very large strings). This is detected by
-            // both `encode::compile` and `rule::check` (in distinct but similar ways). Querying
-            // token trees for their invariance must be done with care (after using these
-            // functions) to avoid expanding pathological invariant expressions like
-            // `<long:9999999999999>`.
-            Some(_) if self.is_converged() => {
-                variance.map_invariance(|invariance| invariance * self.lower)
-            },
-            _ => variance + Variant(Open),
-        }
+    fn finalize(&self, term: GlobVariance<Size>) -> GlobVariance<Size> {
+        ops::product(term, self.variance())
+    }
+}
+
+impl<'t, A> VarianceFold<Text<'t>> for Repetition<'t, A> {
+    fn fold(&self, terms: Vec<GlobVariance<Text<'t>>>) -> Option<GlobVariance<Text<'t>>> {
+        terms.into_iter().reduce(ops::conjunction)
+    }
+
+    fn finalize(&self, term: GlobVariance<Text<'t>>) -> GlobVariance<Text<'t>> {
+        ops::product(term, self.variance())
     }
 }
 
@@ -728,187 +1363,108 @@ where
 pub struct Separator;
 
 impl Separator {
-    pub fn invariant_text() -> String {
-        MAIN_SEPARATOR.to_string()
+    const INVARIANT_TEXT: &'static str = MAIN_SEPARATOR_STR;
+}
+
+impl VarianceTerm<Breadth> for Separator {
+    fn term(&self) -> GlobVariance<Breadth> {
+        Variance::zero()
     }
 }
 
-impl<'i> UnitBreadth for &'i Separator {}
-
-impl<'i> UnitDepth for &'i Separator {}
-
-impl<'i, 't> UnitVariance<InvariantText<'t>> for &'i Separator {
-    fn unit_variance(self) -> Variance<InvariantText<'t>> {
-        Variance::Invariant(Separator::invariant_text().into_structural_text())
+impl VarianceTerm<Depth> for Separator {
+    fn term(&self) -> GlobVariance<Depth> {
+        Variance::Invariant(1.into())
     }
 }
 
-impl<'i> UnitVariance<InvariantSize> for &'i Separator {
-    fn unit_variance(self) -> Variance<InvariantSize> {
-        Variance::Invariant(Separator::invariant_text().as_bytes().len().into())
+impl VarianceTerm<Size> for Separator {
+    fn term(&self) -> GlobVariance<Size> {
+        // TODO: This is incorrect. The compiled regular expression may ignore a terminating
+        //       separator, in which case the size is a bounded range.
+        Variance::Invariant(Separator::INVARIANT_TEXT.as_bytes().len().into())
     }
 }
 
-#[derive(Clone, Debug)]
+impl<'t> VarianceTerm<Text<'t>> for Separator {
+    fn term(&self) -> GlobVariance<Text<'t>> {
+        Variance::Invariant(Separator::INVARIANT_TEXT.into_structural_text())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum Wildcard {
     One,
     ZeroOrMore(Evaluation),
     Tree { has_root: bool },
 }
 
-impl<'i> UnitBreadth for &'i Wildcard {
-    fn unit_breadth(self) -> Boundedness {
+impl Wildcard {
+    fn unroot(&mut self) -> bool {
         match self {
-            Wildcard::One => Boundedness::Closed,
-            _ => Boundedness::Open,
+            Wildcard::Tree { ref mut has_root } => mem::replace(has_root, false),
+            _ => false,
         }
     }
 }
 
-impl<'i> UnitDepth for &'i Wildcard {
-    fn unit_depth(self) -> Boundedness {
-        match self {
-            Wildcard::Tree { .. } => Boundedness::Open,
-            _ => Boundedness::Closed,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Position {
-    Conjunctive { depth: usize },
-    Disjunctive { depth: usize, branch: usize },
-}
-
-impl Position {
-    pub fn depth(&self) -> usize {
-        match self {
-            Position::Conjunctive { ref depth } | Position::Disjunctive { ref depth, .. } => *depth,
-        }
-    }
-
-    // This may appear to operate in place.
-    #[must_use]
-    fn converge(self) -> Self {
-        match self {
-            Position::Conjunctive { depth } | Position::Disjunctive { depth, .. } => {
-                Position::Conjunctive { depth: depth + 1 }
-            },
-        }
-    }
-
-    // This may appear to operate in place.
-    #[must_use]
-    fn diverge(self, branch: usize) -> Self {
-        match self {
-            Position::Conjunctive { depth } | Position::Disjunctive { depth, .. } => {
-                Position::Disjunctive {
-                    depth: depth + 1,
-                    branch,
-                }
-            },
-        }
-    }
-}
-
-impl Default for Position {
-    fn default() -> Self {
-        Position::Conjunctive { depth: 0 }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Walk<'i, 't, A> {
-    buffer: VecDeque<(Position, &'i Token<'t, A>)>,
-}
-
-impl<'i, 't, A> Walk<'i, 't, A>
+impl<A> Unroot<A> for Wildcard
 where
-    't: 'i,
-    A: 't,
+    A: Spanned,
 {
-    pub fn starting(self) -> impl 'i + Iterator<Item = (Position, &'i Token<'t, A>)> {
-        self.peekable().batching(|tokens| {
-            if let Some((position, token)) = tokens.next() {
-                tokens
-                    .peeking_take_while(|(next, _)| *next == position)
-                    .for_each(drop);
-                Some((position, token))
-            }
-            else {
-                None
-            }
-        })
-    }
+    type Output = usize;
 
-    pub fn ending(self) -> impl 'i + Iterator<Item = (Position, &'i Token<'t, A>)> {
-        self.peekable().batching(|tokens| {
-            if let Some((position, _)) = tokens.peek().copied() {
-                tokens
-                    .peeking_take_while(|(next, _)| *next == position)
-                    .last()
-            }
-            else {
-                None
-            }
-        })
-    }
-}
-
-impl<'i, 't, A> From<&'i Token<'t, A>> for Walk<'i, 't, A> {
-    fn from(token: &'i Token<'t, A>) -> Self {
-        Walk {
-            buffer: Some((Position::default(), token)).into_iter().collect(),
-        }
-    }
-}
-
-impl<'i, 't, A> From<&'i Vec<Token<'t, A>>> for Walk<'i, 't, A> {
-    fn from(tokens: &'i Vec<Token<'t, A>>) -> Self {
-        Walk {
-            buffer: tokens
-                .iter()
-                .map(|token| (Position::default(), token))
-                .collect(),
-        }
-    }
-}
-
-impl<'i, 't, A> Iterator for Walk<'i, 't, A>
-where
-    't: 'i,
-    A: 't,
-{
-    type Item = (Position, &'i Token<'t, A>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some((position, token)) = self.buffer.pop_front() {
-            match token.kind() {
-                TokenKind::Alternative(ref alternative) => {
-                    self.buffer
-                        .extend(alternative.branches().iter().enumerate().flat_map(
-                            |(branch, tokens)| {
-                                tokens
-                                    .iter()
-                                    .map(move |token| (position.diverge(branch), token))
-                            },
-                        ));
-                },
-                TokenKind::Repetition(ref repetition) => {
-                    self.buffer.extend(
-                        repetition
-                            .tokens()
-                            .iter()
-                            .map(|token| (position.converge(), token)),
-                    );
-                },
-                _ => {},
-            }
-            Some((position, token))
+    fn unroot(&mut self, annotation: &mut A) -> Self::Output {
+        if Wildcard::unroot(self) {
+            // Move the beginning of the span in the annotation forward to dissociate the token
+            // from any separator in the expression.
+            let n = ROOT_SEPARATOR_EXPRESSION.len();
+            let span = annotation.span_mut();
+            span.0 = span.0.saturating_add(n);
+            span.1 = span.1.saturating_sub(n);
+            n
         }
         else {
-            None
+            0
         }
+    }
+}
+
+impl VarianceTerm<Breadth> for Wildcard {
+    fn term(&self) -> GlobVariance<Breadth> {
+        match self {
+            Wildcard::One => Variance::zero(),
+            _ => Variance::unbounded(),
+        }
+    }
+}
+
+impl VarianceTerm<Depth> for Wildcard {
+    fn term(&self) -> GlobVariance<Depth> {
+        match self {
+            Wildcard::Tree { .. } => Variance::unbounded(),
+            _ => Variance::zero(),
+        }
+    }
+}
+
+impl VarianceTerm<Size> for Wildcard {
+    fn term(&self) -> GlobVariance<Size> {
+        match self {
+            // TODO: This is a bit pessimistic and, more importantly, incorrect! Clarity is needed
+            //       on what exactly an exactly-one wildcard matches in text. If it is a grapheme,
+            //       then size can vary wildly (though there is probably an upper bound that
+            //       depends on the version of Unicode). Use an appropriate range here.
+            //Wildcard::One => Variance::Variant(Size::from(1).into_lower_bound()),
+            Wildcard::One => Variance::Invariant(Size::from(4)),
+            _ => Variance::unbounded(),
+        }
+    }
+}
+
+impl<'t> VarianceTerm<Text<'t>> for Wildcard {
+    fn term(&self) -> GlobVariance<Text<'t>> {
+        Variance::unbounded()
     }
 }
 
@@ -945,144 +1501,96 @@ impl<'i, 't> LiteralSequence<'i, 't> {
 }
 
 #[derive(Debug)]
-pub struct Component<'i, 't, A = ()>(Vec<&'i Token<'t, A>>);
+pub struct Component<'i, 't, A>(&'i [Token<'t, A>]);
 
 impl<'i, 't, A> Component<'i, 't, A> {
-    pub fn tokens(&self) -> &[&'i Token<'t, A>] {
-        self.0.as_ref()
+    pub fn tokens(&self) -> &'i [Token<'t, A>] {
+        self.0
     }
 
     pub fn literal(&self) -> Option<LiteralSequence<'i, 't>> {
-        if self.0.is_empty() {
+        if self.tokens().is_empty() {
             None
         }
         else {
-            self.tokens()
-                .iter()
-                .all(|token| matches!(token.kind(), TokenKind::Literal(_)))
-                .then(|| {
-                    LiteralSequence(
-                        self.tokens()
-                            .iter()
-                            .map(|token| match token.kind() {
-                                TokenKind::Literal(ref literal) => literal,
-                                _ => unreachable!(), // See predicate above.
-                            })
-                            .collect(),
-                    )
-                })
+            self.tokens().iter().all(Token::is_literal).then(|| {
+                LiteralSequence(self.tokens().iter().filter_map(Token::as_literal).collect())
+            })
         }
-    }
-
-    pub fn variance<T>(&self) -> Variance<T>
-    where
-        T: Invariance,
-        &'i Token<'t, A>: UnitVariance<T>,
-    {
-        self.0.iter().copied().conjunctive_variance()
-    }
-
-    pub fn depth(&self) -> Boundedness {
-        self.0.iter().copied().composite_depth()
     }
 }
 
 impl<'i, 't, A> Clone for Component<'i, 't, A> {
     fn clone(&self) -> Self {
-        Component(self.0.clone())
+        Component(self.0)
     }
 }
 
-pub fn any<'t, A, I>(tokens: I) -> Token<'t, ()>
+impl<'i, 't, A> ConcatenationTree<'t> for Component<'i, 't, A> {
+    type Annotation = A;
+
+    fn concatenation(&self) -> &[Token<'t, Self::Annotation>] {
+        self.tokens()
+    }
+}
+
+pub fn any<'t, I>(trees: I) -> Token<'t, ()>
 where
     I: IntoIterator,
-    I::Item: IntoIterator<Item = Token<'t, A>>,
+    I::Item: TokenTree<'t>,
 {
     Token {
-        kind: Alternative(
-            tokens
+        topology: BranchKind::from(Alternation(
+            trees
                 .into_iter()
-                .map(|tokens| tokens.into_iter().map(Token::unannotate).collect())
+                .map(|tree| tree.into_token().fold_map(|_| ()))
                 .collect(),
-        )
+        ))
         .into(),
         annotation: (),
     }
 }
 
-pub fn components<'i, 't, A, I>(tokens: I) -> impl Iterator<Item = Component<'i, 't, A>>
-where
-    't: 'i,
-    A: 't,
-    I: IntoIterator<Item = &'i Token<'t, A>>,
-{
-    tokens.into_iter().peekable().batching(|tokens| {
-        let mut first = tokens.next();
-        while matches!(first.map(Token::kind), Some(TokenKind::Separator(_))) {
-            first = tokens.next();
+fn components<'i, 't, A>(tokens: &'i [Token<'t, A>]) -> impl Iterator<Item = Component<'i, 't, A>> {
+    tokens.iter().enumerate().peekable().batching(|batch| {
+        let mut first = batch.next();
+        while matches!(
+            first.and_then(|(_, token)| token.boundary()),
+            Some(Boundary::Separator)
+        ) {
+            first = batch.next();
         }
-        first.map(|first| match first.kind() {
-            TokenKind::Wildcard(Wildcard::Tree { .. }) => Component(vec![first]),
-            _ => Component(
-                Some(first)
-                    .into_iter()
-                    .chain(tokens.peeking_take_while(|token| !token.is_component_boundary()))
-                    .collect(),
-            ),
+        first.map(|(start, token)| match token.as_wildcard() {
+            Some(Wildcard::Tree { .. }) => Component(slice::from_ref(token)),
+            _ => {
+                let end = if let Some((end, _)) = batch
+                    .peeking_take_while(|(_, token)| token.boundary().is_none())
+                    .last()
+                {
+                    end
+                }
+                else {
+                    start
+                };
+                Component(&tokens[start..=end])
+            },
         })
     })
 }
 
-// TODO: This implementation allocates many `Vec`s.
-pub fn literals<'i, 't, A, I>(
-    tokens: I,
-) -> impl Iterator<Item = (Component<'i, 't, A>, LiteralSequence<'i, 't>)>
-where
-    't: 'i,
-    A: 't,
-    I: IntoIterator<Item = &'i Token<'t, A>>,
-{
-    components(tokens).flat_map(|component| {
-        if let Some(literal) = component.literal() {
-            vec![(component, literal)]
-        }
-        else {
-            component
-                .tokens()
-                .iter()
-                .filter_map(|token| match token.kind() {
-                    TokenKind::Alternative(ref alternative) => Some(
-                        alternative
-                            .branches()
-                            .iter()
-                            .flat_map(literals)
-                            .collect::<Vec<_>>(),
-                    ),
-                    TokenKind::Repetition(ref repetition) => {
-                        Some(literals(repetition.tokens()).collect::<Vec<_>>())
-                    },
-                    _ => None,
-                })
-                .flatten()
-                .collect::<Vec<_>>()
-        }
-    })
-}
-
+// TODO: Test also against token trees constructed directly from tokens rather than the parser.
 #[cfg(test)]
 mod tests {
-    use crate::token::{self, TokenKind, TokenTree};
+    use crate::token::{self, Token, TokenTree};
 
     #[test]
     fn literal_case_insensitivity() {
         let tokenized = token::parse("(?-i)../foo/(?i)**/bar/**(?-i)/baz/*(?i)qux").unwrap();
         let literals: Vec<_> = tokenized
-            .tokens()
+            .as_token()
+            .concatenation()
             .iter()
-            .filter_map(|token| match token.kind {
-                TokenKind::Literal(ref literal) => Some(literal),
-                _ => None,
-            })
+            .filter_map(Token::as_literal)
             .collect();
 
         assert!(!literals[0].is_case_insensitive); // `..`

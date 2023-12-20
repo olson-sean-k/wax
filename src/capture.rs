@@ -89,7 +89,7 @@ impl From<OwnedText> for MaybeOwnedText<'static> {
 /// # Examples
 ///
 /// Capturing tokens and matched text can be used to isolate sub-text in a match. For example, the
-/// file name of a match can be extracted using an alternative to group patterns.
+/// file name of a match can be extracted using an alternation to group patterns.
 ///
 /// ```rust
 /// use wax::{CandidatePath, Glob, Program};
@@ -155,7 +155,7 @@ impl<'t> MatchedText<'t> {
     /// implicit complete text. For example, the sub-expression `*` in the glob expression `*.txt`
     /// is at index one and will exclude the suffix `.txt` in its matched text.
     ///
-    /// Alternative and repetition patterns group their sub-globs into a single capture, so it is
+    /// Alternation and repetition patterns group their sub-globs into a single capture, so it is
     /// not possible to isolate matched text from their sub-globs. This can be used to explicitly
     /// group matched text, such as isolating an entire matched file name using an expression like
     /// `{*.{go,rs}}`.

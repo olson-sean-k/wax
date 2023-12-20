@@ -65,7 +65,6 @@
 #![cfg(feature = "walk")]
 #![cfg_attr(docsrs, doc(cfg(feature = "walk")))]
 
-mod filter;
 mod glob;
 
 use std::fs::{FileType, Metadata};
@@ -74,8 +73,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use walkdir::{self, DirEntry, WalkDir};
 
-use crate::walk::filter::{
-    CancelWalk, HierarchicalIterator, Isomeric, SeparatingFilter, SeparatingFilterInput,
+use crate::filter::{
+    self, CancelWalk, HierarchicalIterator, Isomeric, SeparatingFilter, SeparatingFilterInput,
     Separation, TreeResidue, WalkCancellation,
 };
 use crate::walk::glob::FilterAny;
@@ -1164,7 +1163,7 @@ mod tests {
     fn walk_glob_with_only_invariant_partitioned() {
         let (_root, path) = temptree();
 
-        let (prefix, glob) = Glob::new("src/lib.rs").unwrap().partition();
+        let (prefix, glob) = Glob::new("src/lib.rs").unwrap().partition_or_empty();
         let paths: HashSet<_> = glob
             .walk(path.join(prefix))
             .flatten()

@@ -8,9 +8,9 @@ use tardar::{
 };
 use thiserror::Error;
 
-use crate::diagnostics::SpanExt as _;
+use crate::diagnostics::{SpanExt, Spanned};
 use crate::rule::{self, Checked};
-use crate::token::{self, TokenKind, TokenTree, Tokenized};
+use crate::token::{self, Boundary, ExpressionMetadata, TokenTree, Tokenized};
 use crate::Glob;
 
 /// APIs for diagnosing globs.
@@ -40,7 +40,7 @@ impl<'t> Glob<'t> {
     /// [`Glob::new`]: crate::Glob::new
     pub fn diagnosed(expression: &'t str) -> DiagnosticResult<'t, Self> {
         parse_and_diagnose(expression).and_then_diagnose(|tree| {
-            Glob::compile(tree.as_ref().tokens())
+            Glob::compile::<Tokenized<_>>(tree.as_ref())
                 .into_error_diagnostic()
                 .map_output(|program| Glob { tree, program })
         })
@@ -84,10 +84,12 @@ pub struct TerminatingSeparatorWarning<'t> {
     span: SourceSpan,
 }
 
-fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Checked<Tokenized>> {
+fn parse_and_diagnose(
+    expression: &str,
+) -> DiagnosticResult<Checked<Tokenized<ExpressionMetadata>>> {
     token::parse(expression)
         .into_error_diagnostic()
-        .and_then_diagnose(|tokenized| rule::check(tokenized).into_error_diagnostic())
+        .and_then_diagnose(|tree| rule::check(tree).into_error_diagnostic())
         .and_then_diagnose(|checked| {
             // TODO: This should accept `&Checked`.
             diagnose(checked.as_ref())
@@ -96,37 +98,41 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Checked<Tokenized>> 
         })
 }
 
-fn diagnose<'i, 't>(
-    tokenized: &'i Tokenized<'t>,
-) -> impl 'i + Iterator<Item = BoxedDiagnostic<'t>> {
+fn diagnose<'i, 't, A>(tree: &'i Tokenized<'t, A>) -> impl 'i + Iterator<Item = BoxedDiagnostic<'t>>
+where
+    A: Spanned,
+{
+    let token = tree.as_token();
     None.into_iter()
         .chain(
-            token::literals(tokenized.tokens())
+            token
+                .literals()
                 .filter(|(_, literal)| literal.is_semantic_literal())
                 .map(|(component, literal)| {
                     Box::new(SemanticLiteralWarning {
-                        expression: tokenized.expression().clone(),
+                        expression: tree.expression().clone(),
                         literal: literal.text().clone(),
                         span: component
                             .tokens()
                             .iter()
-                            .map(|token| *token.annotation())
-                            .reduce(|left, right| left.union(&right))
+                            .map(|token| token.annotation().span())
+                            .copied()
+                            .reduce(SpanExt::union)
                             .map(SourceSpan::from)
                             .expect("no tokens in component"),
                     }) as BoxedDiagnostic
                 }),
         )
         .chain(
-            tokenized
-                .tokens()
+            token
+                .concatenation()
                 .last()
                 .into_iter()
-                .filter(|token| matches!(token.kind(), TokenKind::Separator(_)))
+                .filter(|token| matches!(token.boundary(), Some(Boundary::Separator)))
                 .map(|token| {
                     Box::new(TerminatingSeparatorWarning {
-                        expression: tokenized.expression().clone(),
-                        span: (*token.annotation()).into(),
+                        expression: tree.expression().clone(),
+                        span: (*token.annotation().span()).into(),
                     }) as BoxedDiagnostic
                 }),
         )

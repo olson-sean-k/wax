@@ -1,12 +1,13 @@
 use itertools::Itertools;
 use regex::Regex;
+use std::borrow::Borrow;
 use std::fs::{FileType, Metadata};
 use std::path::{Component, Path, PathBuf};
 
 use crate::capture::MatchedText;
 use crate::encode::CompileError;
-use crate::token::{self, Token, TokenTree};
-use crate::walk::filter::{HierarchicalIterator, Separation};
+use crate::filter::{HierarchicalIterator, Separation};
+use crate::token::{Token, TokenTree, Tokenized};
 use crate::walk::{
     Entry, EntryResidue, FileIterator, JoinAndGetDepth, SplitAtDepth, TreeEntry, WalkBehavior,
     WalkError, WalkTree,
@@ -15,6 +16,8 @@ use crate::{BuildError, CandidatePath, Glob, Pattern};
 
 /// APIs for matching globs against directory trees.
 impl<'t> Glob<'t> {
+    // TODO: Document the behavior of empty globs: they yield the root path of the walk and nothing
+    //       more, which is not at all obvious.
     /// Gets an iterator over matching file paths in a directory tree.
     ///
     /// This function matches a `Glob` against a directory tree, returning a [`FileIterator`] that
@@ -180,21 +183,16 @@ impl<'t> Glob<'t> {
     }
 
     fn anchor(&self, directory: impl Into<PathBuf>) -> Anchor {
-        fn invariant_path_prefix<'t, A, I>(tokens: I) -> Option<PathBuf>
-        where
-            A: 't,
-            I: IntoIterator<Item = &'t Token<'t, A>>,
-        {
-            let prefix = token::invariant_text_prefix(tokens);
+        let directory = directory.into();
+        let prefix: Option<PathBuf> = {
+            let (_, prefix) = self.tree.as_ref().as_token().invariant_text_prefix();
             if prefix.is_empty() {
                 None
             }
             else {
                 Some(prefix.into())
             }
-        }
-
-        let directory = directory.into();
+        };
         // Establish the root directory and any prefix in that root path that is not a part of the
         // glob expression. The directory tree is traversed from `root`, which may include an
         // invariant prefix from the glob. The `prefix` is an integer that specifies how many
@@ -205,7 +203,7 @@ impl<'t> Glob<'t> {
         // Note that a rooted glob, like in `Path::join`, replaces `directory` when establishing
         // the root path. In this case, there is no prefix, as the entire root path is present in
         // the glob expression.
-        let (root, prefix) = match invariant_path_prefix(self.tree.as_ref().tokens()) {
+        let (root, prefix) = match prefix {
             Some(prefix) => directory.join_and_get_depth(prefix),
             _ => (directory, 0),
         };
@@ -243,23 +241,18 @@ struct WalkProgram {
 }
 
 impl WalkProgram {
-    fn compile<'t, I>(tokens: I) -> Result<Vec<Regex>, CompileError>
+    fn compile<'t, T>(tree: impl Borrow<T>) -> Result<Vec<Regex>, CompileError>
     where
-        I: IntoIterator<Item = &'t Token<'t>>,
-        I::IntoIter: Clone,
+        T: TokenTree<'t>,
     {
         let mut regexes = Vec::new();
-        for component in token::components(tokens) {
-            if component
-                .tokens()
-                .iter()
-                .any(|token| token.has_component_boundary())
-            {
+        for component in tree.borrow().as_token().components() {
+            if component.tokens().iter().any(Token::has_boundary) {
                 // Stop at component boundaries, such as tree wildcards or any boundary within a
-                // group token.
+                // branch token.
                 break;
             }
-            regexes.push(Glob::compile(component.tokens().iter().copied())?);
+            regexes.push(Glob::compile(component)?);
         }
         Ok(regexes)
     }
@@ -267,8 +260,24 @@ impl WalkProgram {
     fn from_glob(glob: &Glob<'_>) -> Self {
         WalkProgram {
             complete: glob.program.clone(),
-            components: WalkProgram::compile(glob.tree.as_ref().tokens())
-                .expect("failed to compile glob sub-expressions"),
+            // Do not compile component programs for empty globs.
+            //
+            // An empty glob consists solely of an empty literal token and only matches empty text
+            // (""). A walk program compiled from such a glob has an empty component pattern and
+            // matches nothing. This means that walking an empty glob never yields any paths. At
+            // first blush, this seems consistent with an empty glob. However, walking conceptually
+            // matches a glob against the subtrees in a path and there is arguably an implicit
+            // empty tree. This is also more composable when partitioning and (re)building paths.
+            //
+            // The result is that matching an empty glob against the path `foo` yields `foo` and
+            // only `foo` (assuming that the path exists).
+            components: if glob.is_empty() {
+                vec![]
+            }
+            else {
+                WalkProgram::compile::<Tokenized<_>>(glob.tree.as_ref())
+                    .expect("failed to compile glob component expressions")
+            },
         }
     }
 }
@@ -436,6 +445,13 @@ impl GlobWalker {
     }
 }
 
+// TODO: Partitioned programs are important here, because there is no other way to determine the
+//       exhaustiveness of a match (which is not the same as the exhaustiveness of a glob). This
+//       partitioning leaks into the `FileIterator::not` API, which accepts a sequence of
+//       `Pattern`s rather than one `Pattern` as a best effort attempt to detect exhaustive
+//       negations. Consider instead a decomposition of token trees that separates the branches of
+//       level-adjacent alternations from the root. This may allow APIs to accept `Any` and still
+//       partition in this way when match exhaustiveness is important.
 #[derive(Clone, Debug)]
 enum FilterAnyProgram {
     Empty,
@@ -542,7 +558,7 @@ impl FilterAny {
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)?
             .into_iter()
-            .partition::<Vec<_>, _>(|tree| token::is_exhaustive(tree.as_ref().tokens()));
+            .partition::<Vec<_>, _>(|tree| tree.as_ref().as_token().is_exhaustive());
         Ok(FilterAny {
             program: FilterAnyProgram::from_partitions(exhaustive, nonexhaustive)?,
         })

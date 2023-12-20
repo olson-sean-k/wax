@@ -9,12 +9,10 @@ use thiserror::Error;
 
 use crate::diagnostics::{LocatedError, Span};
 use crate::token::{
-    Alternative, Archetype, Class, Evaluation, Literal, Repetition, Separator, Token, TokenKind,
-    Tokenized, Wildcard,
+    Alternation, Archetype, BranchKind, Class, Concatenation, Evaluation, ExpressionMetadata,
+    LeafKind, Literal, Repetition, Separator, Token, TokenTopology, Tokenized, Wildcard,
 };
 use crate::PATHS_ARE_CASE_INSENSITIVE;
-
-pub type Annotation = Span;
 
 type Expression<'i> = Located<'i, str>;
 type Input<'i> = Stateful<Expression<'i>, ParserState>;
@@ -89,8 +87,8 @@ impl LocatedError for ErrorEntry<'_> {
 
 /// Describes errors that occur when parsing a glob expression.
 ///
-/// Common examples of glob expressions that cannot be parsed are alternative and repetition
-/// patterns with missing delimiters and ambiguous patterns, such as `src/***/*.rs` or
+/// Common examples of glob expressions that cannot be parsed are alternations and repetitions with
+/// missing delimiters or ambiguous patterns, such as `src/***/*.rs` or
 /// `{.local,.config/**/*.toml`.
 #[derive(Clone, Debug, Error)]
 #[error("failed to parse glob expression")]
@@ -174,7 +172,7 @@ enum FlagToggle {
     CaseInsensitive(bool),
 }
 
-pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
+pub fn parse(expression: &str) -> Result<Tokenized<'_, ExpressionMetadata>, ParseError> {
     use nom::bytes::complete as bytes;
     use nom::character::complete as character;
     use nom::error;
@@ -235,7 +233,56 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
         flags(move |_| move |input: Input<'i>| Ok((input, ())))(input)
     }
 
-    fn literal(input: Input) -> ParseResult<TokenKind<Annotation>> {
+    fn annotate<'i, F>(
+        parser: F,
+    ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, ExpressionMetadata>>
+    where
+        F: 'i + Parser<Input<'i>, TokenTopology<'i, ExpressionMetadata>, ErrorStack<'i>>,
+    {
+        combinator::map(pori::span(parser), |(span, topology)| {
+            Token::new(topology, span)
+        })
+    }
+
+    fn class(input: Input) -> ParseResult<TokenTopology<ExpressionMetadata>> {
+        fn archetypes(input: Input) -> ParseResult<Vec<Archetype>> {
+            let escaped_character = |input| {
+                branch::alt((
+                    character::none_of("[]-\\"),
+                    branch::alt((
+                        combinator::value('[', bytes::tag("\\[")),
+                        combinator::value(']', bytes::tag("\\]")),
+                        combinator::value('-', bytes::tag("\\-")),
+                    )),
+                ))(input)
+            };
+
+            multi::many1(branch::alt((
+                combinator::map(
+                    sequence::separated_pair(escaped_character, bytes::tag("-"), escaped_character),
+                    Archetype::from,
+                ),
+                combinator::map(escaped_character, Archetype::from),
+            )))(input)
+        }
+
+        combinator::map(
+            sequence::delimited(
+                bytes::tag("["),
+                sequence::tuple((combinator::opt(bytes::tag("!")), archetypes)),
+                bytes::tag("]"),
+            ),
+            |(negation, archetypes)| {
+                LeafKind::from(Class {
+                    is_negated: negation.is_some(),
+                    archetypes,
+                })
+                .into()
+            },
+        )(input)
+    }
+
+    fn literal(input: Input) -> ParseResult<TokenTopology<ExpressionMetadata>> {
         combinator::map(
             combinator::verify(
                 bytes::escaped_transform(
@@ -260,25 +307,26 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                 |text: &str| !text.is_empty(),
             ),
             move |text| {
-                TokenKind::Literal(Literal {
+                LeafKind::from(Literal {
                     text: text.into(),
                     is_case_insensitive: input.state.flags.is_case_insensitive,
                 })
+                .into()
             },
         )(input)
     }
 
-    fn separator(input: Input) -> ParseResult<TokenKind<Annotation>> {
-        combinator::value(TokenKind::Separator(Separator), bytes::tag("/"))(input)
+    fn separator(input: Input) -> ParseResult<TokenTopology<ExpressionMetadata>> {
+        combinator::value(LeafKind::from(Separator).into(), bytes::tag("/"))(input)
     }
 
     fn wildcard<'i>(
         terminator: impl Clone + Parser<Input<'i>, Input<'i>, ErrorStack<'i>>,
-    ) -> impl FnMut(Input<'i>) -> ParseResult<'i, TokenKind<'i, Annotation>> {
+    ) -> impl FnMut(Input<'i>) -> ParseResult<'i, TokenTopology<'i, ExpressionMetadata>> {
         branch::alt((
             error::context(
                 "exactly-one",
-                combinator::map(bytes::tag("?"), |_| TokenKind::from(Wildcard::One)),
+                combinator::map(bytes::tag("?"), |_| LeafKind::from(Wildcard::One).into()),
             ),
             error::context(
                 "tree",
@@ -314,7 +362,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                             ),
                         ),
                     )),
-                    |(has_root, _)| Wildcard::Tree { has_root }.into(),
+                    |(has_root, _)| LeafKind::from(Wildcard::Tree { has_root }).into(),
                 ),
             ),
             error::context(
@@ -333,7 +381,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                             terminator.clone(),
                         )),
                     ),
-                    |_| Wildcard::ZeroOrMore(Evaluation::Eager).into(),
+                    |_| LeafKind::from(Wildcard::ZeroOrMore(Evaluation::Eager)).into(),
                 ),
             ),
             error::context(
@@ -352,13 +400,73 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                             terminator,
                         )),
                     ),
-                    |_| Wildcard::ZeroOrMore(Evaluation::Lazy).into(),
+                    |_| LeafKind::from(Wildcard::ZeroOrMore(Evaluation::Lazy)).into(),
                 ),
             ),
         ))
     }
 
-    fn repetition(input: Input) -> ParseResult<TokenKind<Annotation>> {
+    fn alternation(input: Input) -> ParseResult<TokenTopology<ExpressionMetadata>> {
+        sequence::delimited(
+            bytes::tag("{"),
+            combinator::map(
+                multi::separated_list1(
+                    bytes::tag(","),
+                    error::context(
+                        "sub-glob",
+                        glob(move |input| {
+                            combinator::peek(branch::alt((bytes::tag(","), bytes::tag("}"))))(input)
+                        }),
+                    ),
+                ),
+                |branches: Vec<Token<'_, _>>| BranchKind::from(Alternation::from(branches)).into(),
+            ),
+            bytes::tag("}"),
+        )(input)
+    }
+
+    fn concatenation<'i>(
+        terminator: impl 'i + Clone + Parser<Input<'i>, Input<'i>, ErrorStack<'i>>,
+    ) -> impl Parser<Input<'i>, TokenTopology<'i, ExpressionMetadata>, ErrorStack<'i>> {
+        move |mut input: Input<'i>| {
+            input.state.subexpression = input.location();
+            combinator::map(
+                sequence::terminated(
+                    multi::many1(branch::alt((
+                        annotate(error::context(
+                            "literal",
+                            sequence::preceded(flags_with_state, literal),
+                        )),
+                        annotate(error::context(
+                            "repetition",
+                            sequence::preceded(flags_with_state, repetition),
+                        )),
+                        annotate(error::context(
+                            "alternation",
+                            sequence::preceded(flags_with_state, alternation),
+                        )),
+                        annotate(error::context(
+                            "wildcard",
+                            sequence::preceded(flags_with_state, wildcard(terminator.clone())),
+                        )),
+                        annotate(error::context(
+                            "class",
+                            sequence::preceded(flags_with_state, class),
+                        )),
+                        annotate(error::context(
+                            "separator",
+                            sequence::preceded(flags_with_state, separator),
+                        )),
+                    ))),
+                    terminator.clone(),
+                ),
+                |tokens| BranchKind::from(Concatenation::from(tokens)).into(),
+            )
+            .parse(input)
+        }
+    }
+
+    fn repetition(input: Input) -> ParseResult<TokenTopology<ExpressionMetadata>> {
         fn bounds(input: Input) -> ParseResult<(usize, Option<usize>)> {
             type BoundResult<T> = Result<T, <usize as FromStr>::Err>;
 
@@ -410,135 +518,37 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                 )),
                 bytes::tag(">"),
             ),
-            |(tokens, (lower, upper))| {
-                Repetition {
-                    tokens,
+            |(token, (lower, upper))| {
+                BranchKind::from(Repetition {
+                    token: Box::new(token),
                     lower,
                     upper,
-                }
+                })
                 .into()
             },
-        )(input)
-    }
-
-    fn class(input: Input) -> ParseResult<TokenKind<Annotation>> {
-        fn archetypes(input: Input) -> ParseResult<Vec<Archetype>> {
-            let escaped_character = |input| {
-                branch::alt((
-                    character::none_of("[]-\\"),
-                    branch::alt((
-                        combinator::value('[', bytes::tag("\\[")),
-                        combinator::value(']', bytes::tag("\\]")),
-                        combinator::value('-', bytes::tag("\\-")),
-                    )),
-                ))(input)
-            };
-
-            multi::many1(branch::alt((
-                combinator::map(
-                    sequence::separated_pair(escaped_character, bytes::tag("-"), escaped_character),
-                    Archetype::from,
-                ),
-                combinator::map(escaped_character, Archetype::from),
-            )))(input)
-        }
-
-        combinator::map(
-            sequence::delimited(
-                bytes::tag("["),
-                sequence::tuple((combinator::opt(bytes::tag("!")), archetypes)),
-                bytes::tag("]"),
-            ),
-            |(negation, archetypes)| {
-                Class {
-                    is_negated: negation.is_some(),
-                    archetypes,
-                }
-                .into()
-            },
-        )(input)
-    }
-
-    fn alternative(input: Input) -> ParseResult<TokenKind<Annotation>> {
-        sequence::delimited(
-            bytes::tag("{"),
-            combinator::map(
-                multi::separated_list1(
-                    bytes::tag(","),
-                    error::context(
-                        "sub-glob",
-                        glob(move |input| {
-                            combinator::peek(branch::alt((bytes::tag(","), bytes::tag("}"))))(input)
-                        }),
-                    ),
-                ),
-                |alternatives: Vec<Vec<_>>| Alternative::from(alternatives).into(),
-            ),
-            bytes::tag("}"),
         )(input)
     }
 
     fn glob<'i>(
         terminator: impl 'i + Clone + Parser<Input<'i>, Input<'i>, ErrorStack<'i>>,
-    ) -> impl Parser<Input<'i>, Vec<Token<'i, Annotation>>, ErrorStack<'i>> {
-        fn annotate<'i, F>(
-            parser: F,
-        ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
-        where
-            F: 'i + Parser<Input<'i>, TokenKind<'i, Annotation>, ErrorStack<'i>>,
-        {
-            combinator::map(pori::span(parser), |(span, kind)| Token::new(kind, span))
-        }
-
-        move |mut input: Input<'i>| {
-            input.state.subexpression = input.location();
-            sequence::terminated(
-                multi::many1(branch::alt((
-                    annotate(error::context(
-                        "literal",
-                        sequence::preceded(flags_with_state, literal),
-                    )),
-                    annotate(error::context(
-                        "repetition",
-                        sequence::preceded(flags_with_state, repetition),
-                    )),
-                    annotate(error::context(
-                        "alternative",
-                        sequence::preceded(flags_with_state, alternative),
-                    )),
-                    annotate(error::context(
-                        "wildcard",
-                        sequence::preceded(flags_with_state, wildcard(terminator.clone())),
-                    )),
-                    annotate(error::context(
-                        "class",
-                        sequence::preceded(flags_with_state, class),
-                    )),
-                    annotate(error::context(
-                        "separator",
-                        sequence::preceded(flags_with_state, separator),
-                    )),
-                ))),
-                terminator.clone(),
-            )
-            .parse(input)
-        }
+    ) -> impl Parser<Input<'i>, Token<'i, ExpressionMetadata>, ErrorStack<'i>> {
+        move |input: Input<'i>| annotate(concatenation(terminator.clone())).parse(input)
     }
 
     if expression.is_empty() {
         Ok(Tokenized {
             expression: expression.into(),
-            tokens: vec![],
+            token: Token::empty(Default::default()),
         })
     }
     else {
         let input = Input::new(Expression::from(expression), ParserState::default());
-        let tokens = combinator::all_consuming(glob(combinator::eof))(input)
-            .map(|(_, tokens)| tokens)
+        let token = combinator::all_consuming(glob(combinator::eof))(input)
+            .map(|(_, token)| token)
             .map_err(|error| ParseError::new(expression, error))?;
         Ok(Tokenized {
             expression: expression.into(),
-            tokens,
+            token,
         })
     }
 }

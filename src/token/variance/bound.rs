@@ -1,0 +1,656 @@
+use std::cmp::{self, Ordering};
+use std::marker::PhantomData;
+use std::num::NonZeroUsize;
+
+use crate::token::variance::invariant::{Identity, UnitBound};
+use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
+use crate::token::variance::Variance;
+
+pub use Boundedness::{Bounded, Unbounded};
+
+pub trait Cobound: Sized {
+    type Bound;
+
+    fn cobound(&self) -> Boundedness<Self::Bound>;
+
+    fn into_lower(self) -> Lower<Self> {
+        Lower::new(self)
+    }
+
+    fn into_upper(self) -> Upper<Self> {
+        Upper::new(self)
+    }
+}
+
+impl Cobound for NaturalBound {
+    type Bound = usize;
+
+    fn cobound(&self) -> Boundedness<Self::Bound> {
+        use Variance::{Invariant, Variant};
+
+        match self {
+            Variant(Unbounded) => Unbounded,
+            Variant(Bounded(ref bound)) => Bounded(bound.get()),
+            Invariant(Zero) => Bounded(0),
+        }
+    }
+}
+
+impl Cobound for NonZeroBound {
+    type Bound = NonZeroUsize;
+
+    fn cobound(&self) -> Boundedness<Self::Bound> {
+        *self
+    }
+}
+
+pub trait OpenedUpperBound: Sized {
+    fn opened_upper_bound(self) -> Boundedness<Self>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct BinaryOperand<T> {
+    pub lhs: T,
+    pub rhs: T,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct LowerUpper<L, U> {
+    pub lower: L,
+    pub upper: U,
+}
+
+pub type LowerUpperBound<B> = LowerUpper<Lower<B>, Upper<B>>;
+pub type LowerUpperOperand<B> = LowerUpper<BinaryOperand<Lower<B>>, BinaryOperand<Upper<B>>>;
+
+pub type NaturalBound = Variance<Zero, NonZeroBound>;
+pub type NaturalRange = Variance<usize, VariantRange>;
+
+impl Conjunction for NaturalBound {
+    type Output = Self;
+
+    fn conjunction(self, rhs: Self) -> Self::Output {
+        use Variance::{Invariant, Variant};
+
+        let lhs = self;
+        match (lhs, rhs) {
+            (Variant(Unbounded), _) | (_, Variant(Unbounded)) => Variant(Unbounded),
+            (Invariant(Zero), nonzero) | (nonzero, Invariant(Zero)) => nonzero,
+            (Variant(Bounded(lhs)), Variant(Bounded(rhs))) => Variant(Bounded(
+                lhs.checked_add(rhs.into())
+                    .expect("overflow determining conjunction of natural bound"),
+            )),
+        }
+    }
+}
+
+impl From<NonZeroBound> for NaturalBound {
+    fn from(bound: NonZeroBound) -> Self {
+        Variance::Variant(bound)
+    }
+}
+
+impl From<usize> for NaturalBound {
+    fn from(n: usize) -> Self {
+        NonZeroUsize::new(n).map_or_else(NaturalBound::zero, |n| Bounded(n).into())
+    }
+}
+
+impl Product for NaturalBound {
+    type Output = Self;
+
+    fn product(self, rhs: Self) -> Self::Output {
+        use Variance::{Invariant, Variant};
+
+        let lhs = self;
+        match (lhs, rhs) {
+            (Variant(Unbounded), _) | (_, Variant(Unbounded)) => Variant(Unbounded),
+            (Invariant(Zero), _) | (_, Invariant(Zero)) => Invariant(Zero),
+            (Variant(Bounded(lhs)), Variant(Bounded(rhs))) => Variant(Bounded(
+                lhs.checked_mul(rhs)
+                    .expect("overflow determining product of natural bound"),
+            )),
+        }
+    }
+}
+
+impl NaturalRange {
+    // NOTE: There is a somewhat inconsistent behavior between the closed and open bound parameters
+    //       here: the closed bound is considered unbounded when zero, but the open bound is only
+    //       considered unbounded when `None`.
+    // NOTE: Given the naturals X and Y where X < Y, this defines an unconventional meaning for the
+    //       range [Y,X] and therefore repetitions like `<_:10,1>`: the bounds are reordered, so
+    //       `<_:10,1>` and `<_:1,10>` are the same.
+    pub fn from_closed_and_open<T>(closed: usize, open: T) -> Self
+    where
+        T: Into<Option<usize>>,
+    {
+        let open = open.into();
+        let (lower, upper) = match open {
+            Some(open) => match Ord::cmp(&closed, &open) {
+                Ordering::Greater => (open, Some(closed)),
+                _ => (closed, Some(open)),
+            },
+            _ => (closed, open),
+        };
+        match (lower, upper) {
+            (0, None) => Variance::Variant(Unbounded),
+            (lower, upper) => BoundedVariantRange::try_from_lower_and_upper(lower, upper)
+                .ok()
+                .map(Bounded)
+                .map_or_else(|| Variance::Invariant(lower), Variance::Variant),
+        }
+    }
+
+    fn by_bound_with<F>(self, rhs: Self, mut f: F) -> Self
+    where
+        F: FnMut(NaturalBound, NaturalBound) -> NaturalBound,
+    {
+        let lhs = self;
+        let lower = f(lhs.lower().into_bound(), rhs.lower().into_bound()).into_lower();
+        let upper = f(lhs.upper().into_bound(), rhs.upper().into_bound()).into_upper();
+        Self::from_closed_and_open(lower.into_usize(), upper.into_usize())
+    }
+
+    fn by_lower_and_upper_with<F>(self, rhs: Self, mut f: F) -> Self
+    where
+        F: FnMut(LowerUpperOperand<NaturalBound>) -> LowerUpperBound<NaturalBound>,
+    {
+        let lhs = self;
+        let LowerUpper { lower, upper } = f(LowerUpper {
+            lower: BinaryOperand {
+                lhs: lhs.lower(),
+                rhs: rhs.lower(),
+            },
+            upper: BinaryOperand {
+                lhs: lhs.upper(),
+                rhs: rhs.upper(),
+            },
+        });
+        Self::from_closed_and_open(lower.into_usize(), upper.into_usize())
+    }
+
+    pub fn lower(&self) -> Lower<NaturalBound> {
+        match self {
+            Variance::Invariant(ref n) => NaturalBound::from(*n).into_lower(),
+            Variance::Variant(ref range) => range.lower().map(Variance::Variant),
+        }
+    }
+
+    pub fn upper(&self) -> Upper<NaturalBound> {
+        match self {
+            Variance::Invariant(ref n) => NaturalBound::from(*n).into_upper(),
+            Variance::Variant(ref range) => range.upper().map(Variance::Variant),
+        }
+    }
+}
+
+impl From<BoundedVariantRange> for NaturalRange {
+    fn from(range: BoundedVariantRange) -> Self {
+        Variance::Variant(range.into())
+    }
+}
+
+impl From<usize> for NaturalRange {
+    fn from(n: usize) -> Self {
+        Variance::Invariant(n)
+    }
+}
+
+impl From<VariantRange> for NaturalRange {
+    fn from(range: VariantRange) -> Self {
+        Variance::Variant(range)
+    }
+}
+
+// NOTE: Given the naturals X and Y where X < Y, this defines an unconventional meaning for the
+//       range [Y,X] and repetitions like `<_:10,1>`: the bounds are reordered, so `<_:10,1>` and
+//       `<_:1,10>` are the same.
+impl<T> From<(usize, T)> for NaturalRange
+where
+    T: Into<Option<usize>>,
+{
+    fn from((closed, open): (usize, T)) -> Self {
+        Self::from_closed_and_open(closed, open)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Zero;
+
+impl Zero {
+    const USIZE: usize = 0;
+}
+
+impl From<Zero> for usize {
+    fn from(_: Zero) -> Self {
+        0
+    }
+}
+
+impl Identity for Zero {
+    fn zero() -> Self {
+        Zero
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Boundedness<T> {
+    Bounded(T),
+    Unbounded,
+}
+
+pub type NonZeroBound = Boundedness<NonZeroUsize>;
+pub type VariantRange = Boundedness<BoundedVariantRange>;
+
+impl Boundedness<UnitBound> {
+    pub const BOUNDED: Self = Bounded(UnitBound);
+}
+
+impl<T> Boundedness<T> {
+    pub fn map_bounded<U, F>(self, f: F) -> Boundedness<U>
+    where
+        F: FnOnce(T) -> U,
+    {
+        match self {
+            Bounded(bound) => Bounded(f(bound)),
+            _ => Unbounded,
+        }
+    }
+
+    pub fn bounded(self) -> Option<T> {
+        match self {
+            Bounded(bound) => Some(bound),
+            _ => None,
+        }
+    }
+
+    pub fn as_ref(&self) -> Boundedness<&T> {
+        match self {
+            Bounded(ref bound) => Bounded(bound),
+            _ => Unbounded,
+        }
+    }
+
+    pub fn is_bounded(&self) -> bool {
+        matches!(self, Bounded(_))
+    }
+
+    pub fn is_unbounded(&self) -> bool {
+        matches!(self, Unbounded)
+    }
+}
+
+impl<T> From<T> for Boundedness<T> {
+    fn from(bound: T) -> Boundedness<T> {
+        Bounded(bound)
+    }
+}
+
+impl From<Option<usize>> for NonZeroBound {
+    fn from(bound: Option<usize>) -> Self {
+        bound.unwrap_or(0).into()
+    }
+}
+
+impl From<usize> for NonZeroBound {
+    fn from(bound: usize) -> Self {
+        NonZeroUsize::try_from(bound).map_or(Unbounded, Bounded)
+    }
+}
+
+impl VariantRange {
+    pub fn lower(&self) -> Lower<NonZeroBound> {
+        self.as_ref()
+            .bounded()
+            .map_or_else(|| Unbounded.into_lower(), BoundedVariantRange::lower)
+    }
+
+    pub fn upper(&self) -> Upper<NonZeroBound> {
+        self.as_ref()
+            .bounded()
+            .map_or_else(|| Unbounded.into_upper(), BoundedVariantRange::upper)
+    }
+}
+
+impl Product<NonZeroUsize> for VariantRange {
+    type Output = Self;
+
+    fn product(self, rhs: NonZeroUsize) -> Self::Output {
+        self.map_bounded(|range| ops::product(range, rhs))
+    }
+}
+
+mod kind {
+    #[derive(Debug)]
+    pub enum LowerKind {}
+    #[derive(Debug)]
+    pub enum UpperKind {}
+}
+use kind::*;
+
+#[derive(Debug)]
+pub struct OrderedBound<K, B> {
+    bound: B,
+    _phantom: PhantomData<fn() -> K>,
+}
+
+impl<K, B> OrderedBound<K, B> {
+    fn new(bound: B) -> Self {
+        OrderedBound {
+            bound,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn into_bound(self) -> B {
+        self.bound
+    }
+
+    pub fn map<U, F>(self, f: F) -> OrderedBound<K, U>
+    where
+        F: FnOnce(B) -> U,
+    {
+        OrderedBound::new(f(self.bound))
+    }
+}
+
+impl<K, B> AsRef<B> for OrderedBound<K, B> {
+    fn as_ref(&self) -> &B {
+        &self.bound
+    }
+}
+
+impl<K, B> Clone for OrderedBound<K, B>
+where
+    B: Clone,
+{
+    fn clone(&self) -> Self {
+        Self::new(self.bound.clone())
+    }
+}
+
+impl<K, B> Copy for OrderedBound<K, B> where B: Copy {}
+
+impl<K, B> Eq for OrderedBound<K, B>
+where
+    B: Cobound,
+    B::Bound: Eq,
+{
+}
+
+impl<K, B> PartialEq for OrderedBound<K, B>
+where
+    B: Cobound,
+    B::Bound: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.bound.cobound().eq(&other.bound.cobound())
+    }
+}
+
+pub type Lower<B> = OrderedBound<LowerKind, B>;
+pub type Upper<B> = OrderedBound<UpperKind, B>;
+
+pub type NonZeroLower = Lower<NonZeroBound>;
+pub type NonZeroUpper = Upper<NonZeroBound>;
+
+pub type NaturalLower = Lower<NaturalBound>;
+pub type NaturalUpper = Upper<NaturalBound>;
+
+impl<B> Ord for Lower<B>
+where
+    B: Cobound,
+    B::Bound: Ord,
+{
+    fn cmp(&self, rhs: &Self) -> Ordering {
+        self.partial_cmp(rhs).unwrap()
+    }
+}
+
+impl<B> PartialOrd for Lower<B>
+where
+    B: Cobound,
+    B::Bound: PartialOrd,
+{
+    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
+        use Ordering::{Equal, Greater, Less};
+
+        match (self.bound.cobound(), rhs.bound.cobound()) {
+            (Unbounded, Bounded(_)) => Some(Less),
+            (Bounded(_), Unbounded) => Some(Greater),
+            (Bounded(ref lhs), Bounded(ref rhs)) => lhs.partial_cmp(rhs),
+            _ => Some(Equal),
+        }
+    }
+}
+
+impl NaturalLower {
+    pub fn into_usize(self) -> usize {
+        match self.into_bound() {
+            Variance::Invariant(Zero) => Zero::USIZE,
+            Variance::Variant(bound) => bound.into_lower().into_usize(),
+        }
+    }
+}
+
+impl NonZeroLower {
+    pub fn into_usize(self) -> usize {
+        self.into_bound().bounded().map_or(0, From::from)
+    }
+}
+
+impl<B> Ord for Upper<B>
+where
+    B: Cobound,
+    B::Bound: Ord,
+{
+    fn cmp(&self, rhs: &Self) -> Ordering {
+        self.partial_cmp(rhs).unwrap()
+    }
+}
+
+impl<B> PartialOrd for Upper<B>
+where
+    B: Cobound,
+    B::Bound: PartialOrd,
+{
+    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
+        use Ordering::{Equal, Greater, Less};
+
+        match (self.bound.cobound(), rhs.bound.cobound()) {
+            (Unbounded, Bounded(_)) => Some(Greater),
+            (Bounded(_), Unbounded) => Some(Less),
+            (Bounded(ref lhs), Bounded(ref rhs)) => lhs.partial_cmp(rhs),
+            _ => Some(Equal),
+        }
+    }
+}
+
+impl NaturalUpper {
+    pub fn into_usize(self) -> Option<usize> {
+        match self.into_bound() {
+            Variance::Invariant(Zero) => Some(0),
+            Variance::Variant(bound) => bound.into_upper().into_usize(),
+        }
+    }
+}
+
+impl NonZeroUpper {
+    pub fn into_usize(self) -> Option<usize> {
+        self.into_bound().bounded().map(From::from)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum BoundedVariantRange {
+    Lower(NonZeroUsize),
+    Upper(NonZeroUsize),
+    Both {
+        lower: NonZeroUsize,
+        // The extent must also be non-zero, as that represents an invariant range.
+        extent: NonZeroUsize,
+    },
+}
+
+impl BoundedVariantRange {
+    pub fn try_from_lower_and_upper(
+        lower: usize,
+        upper: impl Into<Option<usize>>,
+    ) -> Result<Self, ()> {
+        use BoundedVariantRange::{Both, Lower, Upper};
+
+        // SAFETY: The invariant that the value used to construct a `NonZeroUsize` is not zero is
+        //         explicitly checked here.
+        unsafe {
+            match (lower, upper.into().unwrap_or(0)) {
+                (0, 0) => Err(()),
+                (lower, 0) => Ok(Lower(NonZeroUsize::new_unchecked(lower))),
+                (0, upper) => Ok(Upper(NonZeroUsize::new_unchecked(upper))),
+                (lower, upper) if lower < upper => Ok(Both {
+                    lower: NonZeroUsize::new_unchecked(lower),
+                    extent: NonZeroUsize::new_unchecked(upper - lower),
+                }),
+                _ => Err(()),
+            }
+        }
+    }
+
+    pub fn union(self, other: impl Into<NaturalRange>) -> VariantRange {
+        match NaturalRange::by_lower_and_upper_with(
+            self.into(),
+            other.into(),
+            |LowerUpper { lower, upper }| LowerUpper {
+                lower: cmp::min(lower.lhs, lower.rhs),
+                upper: cmp::max(upper.lhs, upper.rhs),
+            },
+        ) {
+            Variance::Variant(range) => range,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn translation(self, vector: usize) -> Self {
+        use BoundedVariantRange::{Both, Lower, Upper};
+
+        let expect_add = move |m: NonZeroUsize| {
+            m.checked_add(vector)
+                .expect("overflow determining translation of range")
+        };
+        match self {
+            Both { lower, extent } => Both {
+                lower: expect_add(lower),
+                extent,
+            },
+            Lower(lower) => Lower(expect_add(lower)),
+            Upper(upper) => Upper(expect_add(upper)),
+        }
+    }
+
+    pub fn opened_lower_bound(self) -> VariantRange {
+        use BoundedVariantRange::{Both, Lower, Upper};
+
+        match &self {
+            Both { .. } => Upper(
+                self.upper()
+                    .into_bound()
+                    .bounded()
+                    .expect("closed range has no upper bound"),
+            )
+            .into(),
+            Lower(_) => VariantRange::Unbounded,
+            _ => self.into(),
+        }
+    }
+
+    pub fn lower(&self) -> Lower<NonZeroBound> {
+        use BoundedVariantRange::{Both, Lower, Upper};
+
+        match self {
+            Lower(ref lower) | Both { ref lower, .. } => Bounded(*lower),
+            Upper(_) => Unbounded,
+        }
+        .into_lower()
+    }
+
+    pub fn upper(&self) -> Upper<NonZeroBound> {
+        use BoundedVariantRange::{Both, Lower, Upper};
+
+        match self {
+            Both {
+                ref lower,
+                ref extent,
+            } => Bounded(Self::upper_from_lower_extent(*lower, *extent)),
+            Lower(_) => Unbounded,
+            Upper(ref upper) => Bounded(*upper),
+        }
+        .into_upper()
+    }
+
+    fn upper_from_lower_extent(lower: NonZeroUsize, extent: NonZeroUsize) -> NonZeroUsize {
+        lower
+            .checked_add(extent.get())
+            .expect("overflow determining upper bound of range")
+    }
+}
+
+impl Conjunction for BoundedVariantRange {
+    type Output = Self;
+
+    fn conjunction(self, rhs: Self) -> Self::Output {
+        match NaturalRange::by_bound_with(self.into(), rhs.into(), ops::conjunction) {
+            Variance::Variant(Bounded(range)) => range,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Disjunction for BoundedVariantRange {
+    type Output = VariantRange;
+
+    fn disjunction(self, rhs: Self) -> Self::Output {
+        self.union(rhs)
+    }
+}
+
+impl OpenedUpperBound for BoundedVariantRange {
+    fn opened_upper_bound(self) -> Boundedness<Self> {
+        use BoundedVariantRange::{Both, Lower, Upper};
+
+        match &self {
+            Both { .. } => Lower(
+                self.lower()
+                    .into_bound()
+                    .bounded()
+                    .expect("closed range has no lower bound"),
+            )
+            .into(),
+            Upper(_) => VariantRange::Unbounded,
+            _ => self.into(),
+        }
+    }
+}
+
+impl Product for BoundedVariantRange {
+    type Output = VariantRange;
+
+    fn product(self, rhs: Self) -> Self::Output {
+        match NaturalRange::by_bound_with(self.into(), rhs.into(), ops::product) {
+            Variance::Variant(range) => range,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Product<NonZeroUsize> for BoundedVariantRange {
+    type Output = Self;
+
+    fn product(self, rhs: NonZeroUsize) -> Self::Output {
+        use Variance::{Invariant, Variant};
+
+        match NaturalRange::by_bound_with(self.into(), Invariant(rhs.into()), ops::product) {
+            Variant(Bounded(range)) => range,
+            _ => unreachable!(),
+        }
+    }
+}
