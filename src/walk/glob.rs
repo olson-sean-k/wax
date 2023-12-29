@@ -92,7 +92,7 @@ impl<'t> Glob<'t> {
     pub fn walk(
         &self,
         directory: impl Into<PathBuf>,
-    ) -> impl 'static + FileIterator<Entry = GlobEntry> {
+    ) -> impl 'static + FileIterator<Entry = GlobEntry, Residue = TreeEntry> {
         self.walk_with_behavior(directory, WalkBehavior::default())
     }
 
@@ -143,7 +143,7 @@ impl<'t> Glob<'t> {
         &self,
         directory: impl Into<PathBuf>,
         behavior: impl Into<WalkBehavior>,
-    ) -> impl 'static + FileIterator<Entry = GlobEntry> {
+    ) -> impl 'static + FileIterator<Entry = GlobEntry, Residue = TreeEntry> {
         self.walker(directory).walk_with_behavior(behavior)
     }
 
@@ -231,7 +231,10 @@ impl Anchor {
         self.root.split_at_depth(self.prefix)
     }
 
-    pub fn walk_with_behavior(self, behavior: impl Into<WalkBehavior>) -> WalkTree {
+    pub fn walk_with_behavior(
+        self,
+        behavior: impl Into<WalkBehavior>,
+    ) -> impl 'static + FileIterator<Entry = TreeEntry, Residue = TreeEntry> {
         WalkTree::with_prefix_and_behavior(self.root, self.prefix, behavior)
     }
 }

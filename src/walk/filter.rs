@@ -186,6 +186,14 @@ impl<T, R> Feed for (T, R) {
     type Residue = R;
 }
 
+pub trait TreeFeed: Feed<Residue = TreeResidue<Self::Residual>> {
+    type Residual;
+}
+
+impl<T, R> TreeFeed for (T, TreeResidue<R>) {
+    type Residual = R;
+}
+
 /// A filter [`Feed`] wherein the filtrate and residue have or can produce a substituent.
 ///
 /// A substituent is data that is common to both the filtrate and residue (that is, the filtrate
@@ -505,19 +513,30 @@ impl<T> TreeResidue<T> {
 pub trait HierarchicalIterator:
     CancelWalk + Iterator<Item = <Self::Feed as Feed>::Filtrate> + SeparatingFilter
 {
-    fn filter_tree_by_substituent<F>(self, f: F) -> FilterTreeBySubstituent<Self, F>
+    fn filter_tree_by_substituent<F>(self, mut f: F) -> impl HierarchicalIterator<Feed = Self::Feed>
     where
         Self: Sized,
-        Self::Feed: Isomeric,
+        Self::Feed: TreeFeed + Isomeric,
+        <Self::Feed as TreeFeed>::Residual: From<<Self::Feed as Feed>::Filtrate>,
         F: FnMut(<Self::Feed as Isomeric>::Substituent<'_>) -> Option<TreeResidue<()>>,
     {
-        FilterTreeBySubstituent { input: self, f }
+        self.filter_map_tree(move |cancellation, separation| {
+            let substituent = separation.substituent();
+            match f(substituent) {
+                None => separation,
+                Some(residue) => match residue {
+                    TreeResidue::Node(_) => separation.filter_map_node(From::from),
+                    TreeResidue::Tree(_) => separation.filter_map_tree(cancellation, From::from),
+                },
+            }
+        })
     }
 
-    fn filter_map_tree<S, F>(self, f: F) -> FilterMapTree<Self, S, F>
+    fn filter_map_tree<S, F>(self, f: F) -> impl HierarchicalIterator<Feed = S>
     where
         Self: Sized,
-        S: Feed,
+        Self::Feed: TreeFeed,
+        S: TreeFeed,
         F: FnMut(WalkCancellation<Self>, Separation<Self::Feed>) -> Separation<S>,
     {
         FilterMapTree {
@@ -536,62 +555,7 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct FilterTreeBySubstituent<I, F> {
-    input: I,
-    f: F,
-}
-
-impl<I, F> CancelWalk for FilterTreeBySubstituent<I, F>
-where
-    I: CancelWalk,
-{
-    fn cancel_walk_tree(&mut self) {
-        self.input.cancel_walk_tree()
-    }
-}
-
-impl<R, I, F> SeparatingFilter for FilterTreeBySubstituent<I, F>
-where
-    R: From<<I::Feed as Feed>::Filtrate>,
-    I: HierarchicalIterator,
-    I::Feed: Feed<Residue = TreeResidue<R>> + Isomeric,
-    F: FnMut(<I::Feed as Isomeric>::Substituent<'_>) -> Option<TreeResidue<()>>,
-{
-    type Feed = I::Feed;
-
-    fn feed(&mut self) -> Option<Separation<Self::Feed>> {
-        let separation = self.input.feed();
-        separation.map(|separation| {
-            let substituent = separation.substituent();
-            match (self.f)(substituent) {
-                None => separation,
-                Some(residue) => match residue {
-                    TreeResidue::Node(_) => separation.filter_map_node(From::from),
-                    TreeResidue::Tree(_) => {
-                        separation.filter_map_tree(WalkCancellation(self), From::from)
-                    },
-                },
-            }
-        })
-    }
-}
-
-impl<R, I, F> Iterator for FilterTreeBySubstituent<I, F>
-where
-    R: From<<I::Feed as Feed>::Filtrate>,
-    I: HierarchicalIterator,
-    I::Feed: Feed<Residue = TreeResidue<R>> + Isomeric,
-    F: FnMut(<I::Feed as Isomeric>::Substituent<'_>) -> Option<TreeResidue<()>>,
-{
-    type Item = <I::Feed as Feed>::Filtrate;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        filtrate(self)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct FilterMapTree<I, S, F> {
+struct FilterMapTree<I, S, F> {
     input: I,
     f: F,
     _phantom: PhantomData<fn() -> S>,

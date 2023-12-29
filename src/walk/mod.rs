@@ -256,7 +256,7 @@ pub trait PathExt {
     ///
     /// [`PathExt::walk_with_behavior`]: crate::walk::PathExt::walk_with_behavior
     /// [`WalkBehavior`]: crate::walk::WalkBehavior
-    fn walk(&self) -> WalkTree {
+    fn walk(&self) -> impl FileIterator<Entry = TreeEntry, Residue = TreeEntry> {
         self.walk_with_behavior(WalkBehavior::default())
     }
 
@@ -281,11 +281,17 @@ pub trait PathExt {
     ///
     /// [`PathExt::walk`]: crate::walk::PathExt::walk
     /// [`WalkBehavior`]: crate::walk::WalkBehavior
-    fn walk_with_behavior(&self, behavior: impl Into<WalkBehavior>) -> WalkTree;
+    fn walk_with_behavior(
+        &self,
+        behavior: impl Into<WalkBehavior>,
+    ) -> impl FileIterator<Entry = TreeEntry, Residue = TreeEntry>;
 }
 
 impl PathExt for Path {
-    fn walk_with_behavior(&self, behavior: impl Into<WalkBehavior>) -> WalkTree {
+    fn walk_with_behavior(
+        &self,
+        behavior: impl Into<WalkBehavior>,
+    ) -> impl FileIterator<Entry = TreeEntry, Residue = TreeEntry> {
         WalkTree::with_behavior(self, behavior)
     }
 }
@@ -541,7 +547,7 @@ impl Entry for TreeEntry {
 /// [`PathExt`]: crate::walk::PathExt
 /// [`PathExt::walk`]: crate::walk::PathExt::walk
 #[derive(Debug)]
-pub struct WalkTree {
+struct WalkTree {
     prefix: usize,
     is_dir: bool,
     input: walkdir::IntoIter,
@@ -624,7 +630,7 @@ impl SeparatingFilterInput for WalkTree {
 /// [`Iterator`]: std::iter::Iterator
 pub trait FileIterator:
     HierarchicalIterator<Feed = FileFeed<Self::Entry, Self::Residue>>
-    + Iterator<Item = FileFiltrate<Self::Entry>>
+    + Iterator<Item = FileFiltrate<Self::Entry>> //+ Iterator<Item = <Self::Feed as Feed>::Filtrate>
 {
     /// The file entry type yielded by the iterator.
     ///
@@ -633,7 +639,7 @@ pub trait FileIterator:
     ///
     /// [`Result`]: std::result::Result
     type Entry: Entry;
-    type Residue: Entry + From<Self::Entry>;
+    type Residue: Entry;
 
     /// Filters file entries and controls the traversal of the directory tree.
     ///
@@ -702,12 +708,31 @@ pub trait FileIterator:
     /// [`not`]: crate::walk::FileIterator::not
     ///
     /// [attributes]: https://docs.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants
-    fn filter_entry<F>(self, f: F) -> FilterEntry<Self, F>
+    //fn filter_entry<F>(
+    //    self,
+    //    mut f: F,
+    //) -> impl FileIterator<Entry = Self::Entry, Residue = Self::Residue>
+    //where
+    //    Self: Sized,
+    //    Self::Feed: Feed<Filtrate = FileFiltrate<Self::Entry>, Residue = FileResidue<Self::Residue>>
+    //        + for<'a> Isomeric<Substituent<'a> = &'a dyn Entry>,
+    //    Self::Entry: 'static,
+    //    Self::Residue: 'static + From<FileFiltrate<Self::Entry>>,
+    //    F: FnMut(&dyn Entry) -> Option<EntryResidue>,
+    //{
+    //    self.filter_tree_by_substituent(move |entry| f(entry).map(From::from))
+    //}
+    fn filter_entry<F>(
+        self,
+        f: F,
+    ) -> impl FileIterator<Entry = Self::Entry, Residue = Self::Residue>
     where
         Self: Sized,
+        Self::Entry: 'static,
+        Self::Residue: 'static + From<Self::Entry>,
         F: FnMut(&dyn Entry) -> Option<EntryResidue>,
     {
-        FilterEntry { input: self, f }
+        filter_entry_by_substituent(self, f)
     }
 
     /// Filters file entries against negated glob expressions.
@@ -752,15 +777,19 @@ pub trait FileIterator:
     /// [`Iterator::filter`]: std::iter::Iterator::filter
     /// [`Program`]: crate::Program
     /// [`Program::is_exhaustive`]: crate::Program::is_exhaustive
-    fn not<'t, I>(self, patterns: I) -> Result<Not<Self>, BuildError>
+    fn not<'t, I>(
+        self,
+        patterns: I,
+    ) -> Result<impl FileIterator<Entry = Self::Entry, Residue = Self::Residue>, BuildError>
     where
         Self: Sized,
+        Self::Entry: 'static,
+        Self::Residue: 'static + From<Self::Entry>,
         I: IntoIterator,
         I::Item: Pattern<'t>,
     {
-        FilterAny::any(patterns).map(|filter| Not {
-            input: self,
-            filter,
+        FilterAny::any(patterns).map(|filter| {
+            filter_entry_by_substituent(self, move |substituent| filter.residue(substituent))
         })
     }
 }
@@ -768,7 +797,7 @@ pub trait FileIterator:
 impl<T, R, I> FileIterator for I
 where
     T: Entry,
-    R: Entry + From<T>,
+    R: Entry,
     I: HierarchicalIterator<Feed = FileFeed<T, R>> + Iterator<Item = FileFiltrate<T>>,
 {
     type Entry = T;
@@ -783,58 +812,58 @@ where
 ///
 /// [`FileIterator`]: crate::walk::FileIterator
 /// [`FileIterator::filter_entry`]: crate::walk::FileIterator::filter_entry
-#[derive(Clone, Debug)]
-pub struct FilterEntry<I, F> {
-    input: I,
-    f: F,
-}
-
-impl<I, F> CancelWalk for FilterEntry<I, F>
-where
-    I: CancelWalk,
-{
-    fn cancel_walk_tree(&mut self) {
-        self.input.cancel_walk_tree()
-    }
-}
-
-impl<T, R, I, F> SeparatingFilter for FilterEntry<I, F>
-where
-    T: 'static + Entry,
-    R: 'static + Entry + From<T>,
-    I: FileIterator<Entry = T, Residue = R>,
-    F: FnMut(&dyn Entry) -> Option<EntryResidue>,
-{
-    type Feed = I::Feed;
-
-    fn feed(&mut self) -> Option<Separation<Self::Feed>> {
-        self.input
-            .feed()
-            .map(|separation| match separation.transpose_filtrate() {
-                Ok(separation) => separation
-                    .filter_tree_by_substituent(
-                        WalkCancellation::unchecked(&mut self.input),
-                        |substituent| (self.f)(substituent).map(From::from),
-                    )
-                    .map_filtrate(Ok),
-                Err(error) => error.map(Err).into(),
-            })
-    }
-}
-
-impl<T, R, I, F> Iterator for FilterEntry<I, F>
-where
-    T: 'static + Entry,
-    R: 'static + Entry + From<T>,
-    I: FileIterator<Entry = T, Residue = R>,
-    F: FnMut(&dyn Entry) -> Option<EntryResidue>,
-{
-    type Item = I::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        filter::filtrate(self)
-    }
-}
+//#[derive(Clone, Debug)]
+//pub struct FilterEntry<I, F> {
+//    input: I,
+//    f: F,
+//}
+//
+//impl<I, F> CancelWalk for FilterEntry<I, F>
+//where
+//    I: CancelWalk,
+//{
+//    fn cancel_walk_tree(&mut self) {
+//        self.input.cancel_walk_tree()
+//    }
+//}
+//
+//impl<T, R, I, F> SeparatingFilter for FilterEntry<I, F>
+//where
+//    T: 'static + Entry,
+//    R: 'static + Entry + From<T>,
+//    I: FileIterator<Entry = T, Residue = R>,
+//    F: FnMut(&dyn Entry) -> Option<EntryResidue>,
+//{
+//    type Feed = I::Feed;
+//
+//    fn feed(&mut self) -> Option<Separation<Self::Feed>> {
+//        self.input
+//            .feed()
+//            .map(|separation| match separation.transpose_filtrate() {
+//                Ok(separation) => separation
+//                    .filter_tree_by_substituent(
+//                        WalkCancellation::unchecked(&mut self.input),
+//                        |substituent| (self.f)(substituent).map(From::from),
+//                    )
+//                    .map_filtrate(Ok),
+//                Err(error) => error.map(Err).into(),
+//            })
+//    }
+//}
+//
+//impl<T, R, I, F> Iterator for FilterEntry<I, F>
+//where
+//    T: 'static + Entry,
+//    R: 'static + Entry + From<T>,
+//    I: FileIterator<Entry = T, Residue = R>,
+//    F: FnMut(&dyn Entry) -> Option<EntryResidue>,
+//{
+//    type Item = I::Item;
+//
+//    fn next(&mut self) -> Option<Self::Item> {
+//        filter::filtrate(self)
+//    }
+//}
 
 // TODO: Implement this using combinators provided by the `filter` module and RPITIT once it lands
 //       in stable Rust. Remove any use of `WalkCancellation::unchecked`.
@@ -924,6 +953,32 @@ impl From<EntryResidue> for TreeResidue<()> {
             EntryResidue::Tree => TreeResidue::Tree(()),
         }
     }
+}
+
+// Due in some part to limitations of the Rust compiler, this function provides an alternative to
+// `HierarchicalIterator::filter_tree_by_substituent`, which requires repetitive and elaborate
+// bounds. Moreover, these bounds must be expressed in terms of `Feed` rather than more local entry
+// and file types and definitions.
+fn filter_entry_by_substituent<I, F>(
+    input: I,
+    mut f: F,
+) -> impl FileIterator<Entry = I::Entry, Residue = I::Residue>
+where
+    I: FileIterator,
+    I::Entry: 'static,
+    I::Residue: 'static + From<I::Entry>,
+    F: FnMut(&dyn Entry) -> Option<EntryResidue>,
+{
+    input.filter_map_tree(
+        move |cancellation, separation| match separation.transpose_filtrate() {
+            Ok(separation) => separation
+                .filter_tree_by_substituent(cancellation, |substituent| {
+                    f(substituent).map(From::from)
+                })
+                .map_filtrate(Ok),
+            Err(error) => error.map(Err).into(),
+        },
+    )
 }
 
 // TODO: Rust's testing framework does not provide a mechanism for maintaining shared state. This
