@@ -139,6 +139,9 @@ impl JoinAndGetDepth for Path {
                 .checked_add(1)
                 .expect("overflow determining join depth")
         }
+        else if path.has_root() {
+            depth
+        }
         else {
             depth.saturating_sub(self.components().count())
         };
@@ -932,6 +935,7 @@ impl From<EntryResidue> for TreeResidue<()> {
 #[cfg(test)]
 mod tests {
     use build_fs_tree::{dir, file, Build, FileSystemTree};
+    use path_slash::PathBufExt;
     use std::collections::HashSet;
     use std::path::PathBuf;
     use tempfile::{self, TempDir};
@@ -1148,6 +1152,33 @@ mod tests {
             [path.join("src/glob.rs"), path.join("src/lib.rs"),]
                 .into_iter()
                 .collect(),
+        );
+    }
+
+    #[test]
+    fn walk_with_anchored_glob() {
+        let (_root, path) = temptree();
+        let slash_path = path.to_slash().unwrap();
+        let glob_exp = format!(
+            "{}/{}",
+            // slash path on windows includes the drive, just strip it since wax ignores it
+            slash_path.strip_prefix("C:").unwrap_or(&slash_path),
+            "**/*.rs"
+        );
+
+        let glob = Glob::new(&glob_exp).unwrap();
+        let paths: HashSet<_> = glob.walk(&path).flatten().map(Entry::into_path).collect();
+        assert_set_eq!(
+            paths,
+            [
+                "src/glob.rs",
+                "src/lib.rs",
+                "tests/harness/mod.rs",
+                "tests/walk.rs"
+            ]
+            .into_iter()
+            .map(|c| path.join(c))
+            .collect(),
         );
     }
 
