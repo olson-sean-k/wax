@@ -521,6 +521,16 @@ impl<'b> From<&'b OsStr> for CandidatePath<'b> {
 
 impl<'b> From<&'b Path> for CandidatePath<'b> {
     fn from(path: &'b Path) -> Self {
+        // on windows, paths may have a prefix that are not supported in globbing syntax.
+        // to this end, remove them for the purposes of matching
+        #[cfg(windows)]
+        let path = if let Some(std::path::Component::Prefix(pre)) = path.components().next() {
+            path.strip_prefix(pre.as_os_str()).expect("we have checked")
+        }
+        else {
+            path
+        };
+
         CandidatePath::from(path.as_os_str())
     }
 }
