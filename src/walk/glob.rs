@@ -190,7 +190,27 @@ impl<'t> Glob<'t> {
                 None
             }
             else {
-                Some(prefix.into())
+                // here, we don't know if the glob will be walked with or without symlinks,
+                // so we need to ensure that the invariant prefix optimisation doesn't cross a
+                // symlink todo: `anchor` knows nothing about the walk behaviour. if it did, we
+                // could probably skip this conditionally for a small perf bonus
+                let prefix: PathBuf = prefix.into();
+                let mut curr_prefix = prefix.as_path();
+                let mut last_symlink = None;
+                while let Some(parent) = curr_prefix.parent() {
+                    if parent.is_symlink() {
+                        last_symlink = Some(parent);
+                    }
+                    curr_prefix = parent;
+                }
+                // we found the last symlink, but we need the chance to
+                // filter it, so take the parent one more time
+                Some(
+                    last_symlink
+                        .and_then(Path::parent)
+                        .map(Into::into)
+                        .unwrap_or(prefix),
+                )
             }
         }
 
