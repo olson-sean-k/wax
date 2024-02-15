@@ -57,7 +57,7 @@ use wax::Glob;
 let glob = Glob::new("**/*.{md,txt}").unwrap();
 for entry in glob
     .walk_with_behavior("doc", LinkBehavior::ReadTarget)
-    .not(["**/secret/**"])
+    .not("**/secret/**")
     .unwrap()
 {
     let entry = entry.unwrap();
@@ -284,10 +284,30 @@ let any = wax::any(["**/*.txt", "src/**/*.rs"]).unwrap();
 assert!(any.is_match("src/lib.rs"));
 ```
 
-Unlike [alternations](#alternations), `Any` supports patterns with overlapping
-trees (rooted and unrooted expressions). However, combinators can only perform
-logical matches and it is not possible to match an `Any` against a directory
-tree (as with `Glob::walk`).
+`Any` and the `any` combinator can be used anywhere a `Pattern` or `Program`
+can.
+
+```rust
+use wax::walk::FileIterator;
+use wax::Glob;
+
+let glob = Glob::new("**/*.{md,rs,toml,txt,yaml,yml}").unwrap();
+for entry in glob
+    .walk("projects")
+    .not(wax::any([
+        "**/{.git,.github,target}/**",
+        "**/{lib,main,mod}.rs",
+    ]))
+    .unwrap()
+{
+    let entry = entry.unwrap();
+    // ...
+}
+```
+
+Unlike `Glob`, an `Any` cannot be matched against a directory tree (as with
+`Glob::walk`). However, `Any` supports features that alternations do not and
+`Glob`s cannot represent, such as overlapping trees.
 
 ## Flags and Case Sensitivity
 

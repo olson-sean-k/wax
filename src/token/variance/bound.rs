@@ -183,6 +183,14 @@ impl NaturalRange {
             Variance::Variant(ref range) => range.upper().map(Variance::Variant),
         }
     }
+
+    pub fn is_one(&self) -> bool {
+        self.as_ref().invariant().map_or(false, |&n| n == 1)
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.as_ref().invariant().map_or(false, |&n| n == 0)
+    }
 }
 
 impl From<BoundedVariantRange> for NaturalRange {

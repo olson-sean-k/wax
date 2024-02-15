@@ -231,15 +231,49 @@ impl From<token::Variance<Text<'_>>> for Variance {
     }
 }
 
-/// A compiled glob expression that can be inspected and matched against paths.
+/// A representation of a glob expression.
+///
+/// This trait is implemented by types that can be converted into a [`Program`], such as `str`
+/// slices and, of course, [`Program`] types like [`Glob`].
+///
+/// [`Result`] types also implement this trait when the okay type is a [`Program`] and the error
+/// type is [`BuildError`]. This means that APIs that accept a `Pattern` can also accept the result
+/// of constructing a [`Program`] without the need to explicitly inspect the inner result first.
+///
+/// [`BuildError`]: crate::BuildError
+/// [`Glob`]: crate::Glob
+/// [`Program`]: crate::Program
+/// [`Result`]: std::result::Result
+pub trait Pattern<'t>:
+    TryInto<Checked<Self::Tokens>, Error = <Self as Pattern<'t>>::Error>
+{
+    type Tokens: TokenTree<'t>;
+    type Error: Into<BuildError>;
+}
+
+impl<'t, T> Pattern<'t> for Result<T, BuildError>
+where
+    T: Into<Checked<T::Tokens>> + Pattern<'t>,
+{
+    type Tokens = <T as Pattern<'t>>::Tokens;
+    type Error = BuildError;
+}
+
+impl<'t> Pattern<'t> for &'t str {
+    type Tokens = Tokenized<'t, ExpressionMetadata>;
+    type Error = BuildError;
+}
+
+/// A compiled [`Pattern`] that can be inspected and matched against paths.
 ///
 /// Matching is a logical operation and does **not** interact with a file system. To handle path
 /// operations, use [`Path`] and/or [`PathBuf`] and their associated functions. See
-/// [`Glob::partition`] for more about globs and path operations.
+/// [`Glob::partition`] and `Glob::walk` for more about globs and path operations.
 ///
 /// [`Glob::partition`]: crate::Glob::partition
 /// [`Path`]: std::path::Path
 /// [`PathBuf`]: std::path::PathBuf
+/// [`Pattern`]: crate::Pattern
 pub trait Program<'t>: Pattern<'t, Error = Infallible> {
     /// Returns `true` if a path matches the pattern.
     ///
@@ -267,24 +301,6 @@ pub trait Program<'t>: Pattern<'t, Error = Infallible> {
     /// A glob expression is exhaustive if its terminating component matches any and all sub-trees,
     /// such as in the expressions `/home/**` and `local/<<?>/>*`.
     fn is_exhaustive(&self) -> bool;
-}
-
-/// A representation of a glob expression.
-///
-/// This trait is implemented by types that can be converted into a [`Program`], such as `str`
-/// slices. These types may or may not have been compiled into a [`Program`].
-///
-/// [`Program`]: crate::Program
-pub trait Pattern<'t>:
-    TryInto<Checked<Self::Tokens>, Error = <Self as Pattern<'t>>::Error>
-{
-    type Tokens: TokenTree<'t>;
-    type Error: Into<BuildError>;
-}
-
-impl<'t> Pattern<'t> for &'t str {
-    type Tokens = Tokenized<'t, ExpressionMetadata>;
-    type Error = BuildError;
 }
 
 /// General errors concerning [`Program`]s.
@@ -791,6 +807,11 @@ impl FromStr for Glob<'static> {
     }
 }
 
+impl<'t> Pattern<'t> for Glob<'t> {
+    type Tokens = Tokenized<'t, ExpressionMetadata>;
+    type Error = Infallible;
+}
+
 impl<'t> Program<'t> for Glob<'t> {
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
@@ -818,11 +839,6 @@ impl<'t> TryFrom<&'t str> for Glob<'t> {
     }
 }
 
-impl<'t> Pattern<'t> for Glob<'t> {
-    type Tokens = Tokenized<'t, ExpressionMetadata>;
-    type Error = Infallible;
-}
-
 /// Combinator that matches any of its component [`Program`]s.
 ///
 /// An instance of `Any` is constructed using the [`any`] function, which combines multiple
@@ -842,6 +858,11 @@ impl<'t> Any<'t> {
     }
 }
 
+impl<'t> Pattern<'t> for Any<'t> {
+    type Tokens = Token<'t, ()>;
+    type Error = Infallible;
+}
+
 impl<'t> Program<'t> for Any<'t> {
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
@@ -859,11 +880,6 @@ impl<'t> Program<'t> for Any<'t> {
     fn is_exhaustive(&self) -> bool {
         self.tree.as_ref().as_token().is_exhaustive()
     }
-}
-
-impl<'t> Pattern<'t> for Any<'t> {
-    type Tokens = Token<'t, ()>;
-    type Error = Infallible;
 }
 
 // TODO: It may be useful to use dynamic dispatch via trait objects instead. This would allow for a
@@ -920,11 +936,11 @@ impl<'t> Pattern<'t> for Any<'t> {
 ///
 /// #[rustfmt::skip]
 /// let any = wax::any([
-///     wax::any([glob])?,
+///     wax::any([glob]),
 ///     wax::any([
 ///         "**/*.pdf",
 ///         "**/*.tex",
-///     ])?,
+///     ]),
 /// ])?;
 /// assert!(any.is_match("doc/lattice.tex"));
 /// # Ok(())

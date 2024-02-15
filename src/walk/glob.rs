@@ -71,7 +71,7 @@ impl<'t> Glob<'t> {
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg,png}").unwrap();
     /// for entry in glob
     ///     .walk("./Pictures")
-    ///     .not(["**/(i?){background<s:0,1>,wallpaper<s:0,1>}/**"])
+    ///     .not("**/(i?){background<s:0,1>,wallpaper<s:0,1>}/**")
     ///     .unwrap()
     /// {
     ///     let entry = entry.unwrap();
@@ -445,18 +445,15 @@ impl GlobWalker {
     }
 }
 
-// TODO: Partitioned programs are important here, because there is no other way to determine the
-//       exhaustiveness of a match (which is not the same as the exhaustiveness of a glob). This
-//       partitioning leaks into the `FileIterator::not` API, which accepts a sequence of
-//       `Pattern`s rather than one `Pattern` as a best effort attempt to detect exhaustive
-//       negations. Consider instead a decomposition of token trees that separates the branches of
-//       level-adjacent alternations from the root. This may allow APIs to accept `Any` and still
-//       partition in this way when match exhaustiveness is important.
 #[derive(Clone, Debug)]
 enum FilterAnyProgram {
     Empty,
     Exhaustive(Regex),
     Nonexhaustive(Regex),
+    // Partitioned programs are important here and are used to more reliably determine the
+    // exhaustiveness of a match and avoid unnecessary reads. The exhaustiveness of a glob is not
+    // the same as the exhaustiveness of a particular match. The former is not certain in the
+    // absence of search text (that is, it may be exhaustive only sometimes), but the latter is.
     Partitioned {
         exhaustive: Regex,
         nonexhaustive: Regex,
@@ -479,7 +476,7 @@ impl FilterAnyProgram {
         }
     }
 
-    fn from_partitions<'t, I>(exhaustive: I, nonexhaustive: I) -> Result<Self, BuildError>
+    fn try_from_partitions<'t, I>(exhaustive: I, nonexhaustive: I) -> Result<Self, BuildError>
     where
         I: IntoIterator,
         I::Item: Pattern<'t>,
@@ -559,9 +556,8 @@ impl FilterAny {
             .map_err(Into::into)?
             .into_iter()
             .partition::<Vec<_>, _>(|tree| tree.as_ref().as_token().is_exhaustive());
-        Ok(FilterAny {
-            program: FilterAnyProgram::from_partitions(exhaustive, nonexhaustive)?,
-        })
+        FilterAnyProgram::try_from_partitions(exhaustive, nonexhaustive)
+            .map(|program| FilterAny { program })
     }
 
     /// Gets the appropriate [`EntryResidue`] for the given [`Entry`].

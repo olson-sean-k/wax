@@ -44,7 +44,7 @@
 //! use wax::walk::{Entry, FileIterator, PathExt as _};
 //!
 //! let root = Path::new(".config");
-//! for entry in root.walk().not(["**/*.xml"]).unwrap() {
+//! for entry in root.walk().not("**/*.xml").unwrap() {
 //!     let entry = entry.unwrap();
 //!     println!("{:?}", entry.path());
 //! }
@@ -670,7 +670,7 @@ pub trait FileIterator:
     /// // Filter out nominally hidden files on Unix. Like `filter_entry`, `not` does not perform
     /// // unnecessary reads of directory trees.
     /// #[cfg(unix)]
-    /// let walk = walk.not(["**/.*/**"]).unwrap();
+    /// let walk = walk.not("**/.*/**").unwrap();
     /// // Filter out files with the hidden attribute on Windows.
     /// #[cfg(windows)]
     /// let walk = walk.filter_entry(|entry| {
@@ -709,24 +709,23 @@ pub trait FileIterator:
         FilterEntry { input: self, f }
     }
 
-    /// Filters file entries against negated glob expressions.
+    /// Filters file entries against a negated glob.
     ///
-    /// This function constructs a combinator that discards files with paths that match **any** of
-    /// the given glob expressions. When matching a [`Glob`] against a directory tree, this allows
-    /// for broad negations that cannot be achieved using a positive glob expression alone.
+    /// This function constructs a combinator that discards files with paths that match the given
+    /// pattern. When matching a [`Glob`] against a directory tree, this allows for broad negations
+    /// that cannot be achieved using a positive glob expression alone.
     ///
     /// The combinator does **not** read directory trees from the file system when a directory
     /// matches an [exhaustive glob expression][`Program::is_exhaustive`] such as `**/private/**`
     /// or `hidden/<<?>/>*`.
     ///
     /// **Prefer this combinator over matching each file entry against [`Program`]s, since it
-    /// avoids potentially large and unnecessary reads.**
+    /// avoids potentially large and unnecessary reads and may have better performance.**
     ///
     /// # Errors
     ///
-    /// Returns an error if any of the inputs fail to build. If the inputs are a compiled
-    /// [`Program`] type such as [`Glob`], then this only occurs if the compiled program is too
-    /// large (i.e., there are too many component patterns).
+    /// Returns an error if the pattern fails to build. If the pattern is a compiled [`Program`]
+    /// type such as [`Glob`], then this only occurs if the combinator program is too large.
     ///
     /// # Examples
     ///
@@ -738,26 +737,25 @@ pub trait FileIterator:
     /// use wax::walk::FileIterator;
     /// use wax::Glob;
     ///
-    /// // Find image files, but not if they are beneath a directory with a name that suggests that
-    /// // they are private.
+    /// // Find image files by extension, but not if they are beneath a directory with a name that
+    /// // suggests that they are private.
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg,png}").unwrap();
-    /// for entry in glob.walk(".").not(["**/(?i)<.:0,1>private/**"]).unwrap() {
+    /// for entry in glob.walk(".").not("**/(?i)<.:0,1>private/**").unwrap() {
     ///     let entry = entry.unwrap();
     ///     // ...
     /// }
     /// ```
     ///
     /// [`Glob`]: crate::Glob
-    /// [`Iterator::filter`]: std::iter::Iterator::filter
     /// [`Program`]: crate::Program
     /// [`Program::is_exhaustive`]: crate::Program::is_exhaustive
-    fn not<'t, I>(self, patterns: I) -> Result<Not<Self>, BuildError>
+    fn not<'t, T>(self, pattern: T) -> Result<Not<Self>, BuildError>
     where
         Self: Sized,
-        I: IntoIterator,
-        I::Item: Pattern<'t>,
+        T: Pattern<'t>,
     {
-        FilterAny::any(patterns).map(|filter| Not {
+        let tree = pattern.try_into().map_err(Into::into)?;
+        FilterAny::any(tree.into_alternatives()).map(|filter| Not {
             input: self,
             filter,
         })
@@ -1041,7 +1039,7 @@ mod tests {
 
         let paths: HashSet<_> = path
             .walk()
-            .not(["tests/**"])
+            .not("tests/**")
             .unwrap()
             .flatten()
             .map(Entry::into_path)
@@ -1064,12 +1062,38 @@ mod tests {
     }
 
     #[test]
+    fn walk_tree_with_not_any() {
+        let (_root, path) = temptree();
+
+        let paths: HashSet<_> = path
+            .walk()
+            .not(crate::any(["**/*.rs", "tests/**"]))
+            .unwrap()
+            .flatten()
+            .map(Entry::into_path)
+            .collect();
+        assert_set_eq!(
+            paths,
+            [
+                #[allow(clippy::redundant_clone)]
+                path.to_path_buf(),
+                path.join("doc"),
+                path.join("doc/guide.md"),
+                path.join("src"),
+                path.join("README.md"),
+            ]
+            .into_iter()
+            .collect(),
+        );
+    }
+
+    #[test]
     fn walk_tree_with_empty_not() {
         let (_root, path) = temptree();
 
         let paths: HashSet<_> = path
             .walk()
-            .not([""])
+            .not("")
             .unwrap()
             .flatten()
             .map(Entry::into_path)
@@ -1187,7 +1211,7 @@ mod tests {
         let glob = Glob::new("**/*.{md,rs}").unwrap();
         let mut paths = HashSet::new();
         glob.walk(&path)
-            .not(["**/harness/**"])
+            .not("**/harness/**")
             .unwrap()
             // Inspect the feed rather than the `Iterator` output (filtrate). While it is trivial
             // to provide a way to collect the feed, it is difficult to inspect its contents. In

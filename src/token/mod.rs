@@ -372,6 +372,57 @@ impl<'t, A> Token<'t, A> {
         self.fold_map(IntoOwned)
     }
 
+    pub fn into_alternatives(self) -> Vec<Self> {
+        let mut alternatives = vec![];
+        let mut tokens: VecDeque<Self> = [self.into_non_trivial()].into_iter().collect();
+        while let Some(mut token) = tokens.pop_front() {
+            match token.as_branch_mut() {
+                Some(BranchKind::Alternation(ref mut alternation)) => {
+                    for token in alternation.0.drain(..).map(Token::into_non_trivial) {
+                        if token.is_alternation() {
+                            tokens.push_back(token);
+                        }
+                        else {
+                            alternatives.push(token);
+                        }
+                    }
+                },
+                _ => {
+                    alternatives.push(token);
+                },
+            }
+        }
+        alternatives
+    }
+
+    fn into_non_trivial(self) -> Self {
+        use BranchKind::{
+            Alternation as AlternationKind, Concatenation as ConcatenationKind,
+            Repetition as RepetitionKind,
+        };
+        use Topology::Branch;
+
+        // Collapse trivial branch tokens. Branch tokens are trivial if they have no semantic
+        // effect.
+        let mut token = self;
+        loop {
+            token = match token.topology {
+                // Alternations and concatenations with only one child token are trivial.
+                Branch(
+                    AlternationKind(Alternation(mut tokens))
+                    | ConcatenationKind(Concatenation(mut tokens)),
+                ) if tokens.len() == 1 => tokens.drain(..).next().unwrap(),
+                // Repetitions that occur exactly once are trivial.
+                Branch(RepetitionKind(repetition)) if repetition.variance().is_one() => {
+                    *repetition.token
+                },
+                _ => {
+                    return token;
+                },
+            };
+        }
+    }
+
     fn pop_prefix_tokens_with<F>(mut self, n: usize, f: F) -> (Vec<Self>, Option<Self>)
     where
         F: FnOnce(&mut Self),
@@ -700,6 +751,10 @@ impl<'t, A> Token<'t, A> {
 
     pub fn is_leaf(&self) -> bool {
         self.as_leaf().is_some()
+    }
+
+    pub fn is_alternation(&self) -> bool {
+        self.as_alternation().is_some()
     }
 
     pub fn is_concatenation(&self) -> bool {

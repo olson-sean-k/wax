@@ -272,6 +272,7 @@ enum RuleErrorKind {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
 pub struct Checked<T> {
     inner: T,
 }
@@ -279,6 +280,20 @@ pub struct Checked<T> {
 impl<T> Checked<T> {
     pub fn release(self) -> T {
         self.inner
+    }
+}
+
+impl<'t, T> Checked<T>
+where
+    T: TokenTree<'t>,
+{
+    pub fn into_alternatives(self) -> Vec<Checked<Token<'t, T::Annotation>>> {
+        self.release()
+            .into_token()
+            .into_alternatives()
+            .into_iter()
+            .map(|token| Checked { inner: token })
+            .collect()
     }
 }
 
@@ -357,6 +372,17 @@ where
 {
     type Tokens = T;
     type Error = Infallible;
+}
+
+impl<'t, T> TryFrom<Result<T, BuildError>> for Checked<T::Tokens>
+where
+    T: Into<Checked<T::Tokens>> + Pattern<'t>,
+{
+    type Error = BuildError;
+
+    fn try_from(result: Result<T, BuildError>) -> Result<Self, Self::Error> {
+        result.map(Into::into)
+    }
 }
 
 impl<'t> TryFrom<&'t str> for Checked<Tokenized<'t, ExpressionMetadata>> {
