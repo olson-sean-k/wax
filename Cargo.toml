@@ -64,4 +64,6 @@ optional = true
 [dev-dependencies]
 build-fs-tree = "^0.6.0"
 dunce = "^1.0.0"
+expect_macro = "^0.2.0"
+rstest = "^0.18.0"
 tempfile = "^3.8.0"

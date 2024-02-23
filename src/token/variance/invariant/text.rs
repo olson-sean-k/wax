@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -7,6 +8,7 @@ use crate::token::variance::bound::{Boundedness, VariantRange};
 use crate::token::variance::invariant::{GlobVariance, Identity, Invariant, UnitBound};
 use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
 use crate::token::variance::Variance;
+use crate::token::Separator;
 use crate::PATHS_ARE_CASE_INSENSITIVE;
 
 use Fragment::{Nominal, Structural};
@@ -57,7 +59,8 @@ impl IntoStructuralText<'static> for String {
 
 // TODO: The derived `PartialEq` implementation is incomplete and does not detect contiguous like
 //       fragments that are equivalent to an aggregated fragment. This works, but relies on
-//       constructing `InvariantText` by consistently appending fragments.
+//       constructing `InvariantText` by consistently appending fragments from tokens.
+//       `Text::from_components` is sensitive to this.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Text<'t> {
     fragments: VecDeque<Fragment<'t>>,
@@ -68,6 +71,21 @@ impl<'t> Text<'t> {
         Text {
             fragments: VecDeque::new(),
         }
+    }
+
+    pub fn from_components<I>(components: I) -> Option<Self>
+    where
+        I: IntoIterator,
+        I::Item: Into<Cow<'t, str>>,
+    {
+        Itertools::intersperse(
+            components
+                .into_iter()
+                .map(Into::into)
+                .map(IntoNominalText::into_nominal_text),
+            Separator::INVARIANT_TEXT.into_structural_text(),
+        )
+        .reduce(Conjunction::conjunction)
     }
 
     pub fn into_owned(self) -> Text<'static> {

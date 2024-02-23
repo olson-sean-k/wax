@@ -552,3 +552,18 @@ pub fn parse(expression: &str) -> Result<Tokenized<'_, ExpressionMetadata>, Pars
         })
     }
 }
+
+#[cfg(test)]
+pub mod harness {
+    use expect_macro::expect;
+
+    use crate::token::{parse, ExpressionMetadata, Tokenized};
+
+    pub fn assert_parse_expression_is_ok(expression: &str) -> Tokenized<'_, ExpressionMetadata> {
+        expect!(
+            parse::parse(expression),
+            "`parse::parse` is `Err`, but expected `Ok`: in expression: `{}`",
+            expression,
+        )
+    }
+}

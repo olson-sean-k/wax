@@ -177,7 +177,7 @@ impl<T> Terminals<T> {
 /// documentation](https://github.com/olson-sean-k/wax/blob/master/README.md). These rules are
 /// designed to avoid nonsense glob expressions and ambiguity. If a glob expression parses but
 /// violates these rules or is otherwise malformed, then this error is returned by some APIs.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("malformed glob expression: {kind}")]
 pub struct RuleError<'t> {
     expression: Cow<'t, str>,
@@ -255,7 +255,7 @@ impl Diagnostic for RuleError<'_> {
 #[derive(Clone, Debug, Error)]
 #[non_exhaustive]
 enum RuleErrorKind {
-    #[error("rooted sub-glob in branch")]
+    #[error("uncertain or overlapping roots in branch")]
     RootedSubGlob,
     #[error("singular tree wildcard `**` in branch")]
     SingularTree,
@@ -855,31 +855,50 @@ where
 
 #[cfg(test)]
 mod tests {
+    use itertools::Itertools;
+    use rstest::rstest;
+
     use crate::rule::{Adjacency, IteratorExt as _};
 
-    #[test]
-    fn adjacent() {
-        let mut adjacent = Option::<i32>::None.into_iter().adjacent();
-        assert_eq!(adjacent.next(), None);
-
-        let mut adjacent = Some(0i32).into_iter().adjacent();
-        assert_eq!(adjacent.next(), Some(Adjacency::Only { item: 0 }));
-        assert_eq!(adjacent.next(), None);
-
-        let mut adjacent = (0i32..3).adjacent();
-        assert_eq!(
-            adjacent.next(),
-            Some(Adjacency::First { item: 0, right: 1 })
-        );
-        assert_eq!(
-            adjacent.next(),
-            Some(Adjacency::Middle {
+    #[rstest]
+    #[case::empty([], [])]
+    #[case::only([0], [Adjacency::Only { item: 0 }])]
+    #[case::first_middle_last(
+        0..3,
+        [
+            Adjacency::First { item: 0, right: 1 },
+            Adjacency::Middle {
                 left: 0,
                 item: 1,
-                right: 2
-            })
-        );
-        assert_eq!(adjacent.next(), Some(Adjacency::Last { left: 1, item: 2 }));
-        assert_eq!(adjacent.next(), None);
+                right: 2,
+            },
+            Adjacency::Last { left: 1, item: 2 },
+        ],
+    )]
+    fn into_iter_adjacent_eq(
+        #[case] items: impl IntoIterator<Item = i32>,
+        #[case] expected: impl IntoIterator<Item = Adjacency<i32>>,
+    ) {
+        use itertools::EitherOrBoth::{Both, Left, Right};
+
+        for (index, zipped) in items
+            .into_iter()
+            .adjacent()
+            .zip_longest(expected)
+            .enumerate()
+        {
+            if let Err((item, expected)) = match zipped {
+                Both(item, expected) if item != expected => Err((Some(item), Some(expected))),
+                Left(item) => Err((Some(item), None)),
+                Right(expected) => Err((None, Some(expected))),
+                _ => Ok(()),
+            } {
+                panic!(
+                    "unexpected item at index {} in `Iterator::<Item = i32>::adjacent`:\
+                    \n\titem: `{:?}`\n\texpected: `{:?}`",
+                    index, item, expected,
+                );
+            }
+        }
     }
 }

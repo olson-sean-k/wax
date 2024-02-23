@@ -139,32 +139,70 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub mod harness {
+    use expect_macro::expect;
+    use tardar::{BoxedDiagnostic, DiagnosticResult, DiagnosticResultExt as _};
+
     use crate::Glob;
 
     // It is non-trivial to downcast `&dyn Diagnostic`, so diagnostics are identified in tests by
-    // their code.
-    const CODE_SEMANTIC_LITERAL: &str = "wax::glob::semantic_literal";
-    const CODE_TERMINATING_SEPARATOR: &str = "wax::glob::terminating_separator";
+    // code.
+    pub const CODE_SEMANTIC_LITERAL: &str = "wax::glob::semantic_literal";
+    pub const CODE_TERMINATING_SEPARATOR: &str = "wax::glob::terminating_separator";
 
-    #[cfg(any(unix, windows))]
-    #[test]
-    fn diagnose_glob_semantic_literal_warning() {
-        let glob = Glob::new("../foo").unwrap();
-        let diagnostics: Vec<_> = glob.diagnose().collect();
-
-        assert!(diagnostics.iter().any(|diagnostic| diagnostic
-            .code()
-            .map_or(false, |code| code.to_string() == CODE_SEMANTIC_LITERAL)));
+    pub fn assert_diagnosed_glob_is_ok(expression: &str) -> (Glob<'_>, Vec<BoxedDiagnostic<'_>>) {
+        expect!(
+            Glob::diagnosed(expression),
+            "`Glob::diagnosed` is `Err`, but expected `Ok`: expression: `{}`",
+            expression,
+        )
     }
 
-    #[test]
-    fn diagnose_glob_terminating_separator_warning() {
-        let glob = Glob::new("**/foo/").unwrap();
-        let diagnostics: Vec<_> = glob.diagnose().collect();
+    // TODO: This function does not compose well: the glob expression may not be available, so the
+    //       message is less clear.
+    pub fn assert_diagnosed_glob_has_code<'t>(
+        result: DiagnosticResult<'t, Glob<'t>>,
+        expected: &str,
+    ) -> DiagnosticResult<'t, Glob<'t>> {
+        let diagnostics: Vec<_> = result.diagnostics().iter().collect();
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic
+                .code()
+                .map_or(false, |code| code.to_string() == expected)),
+            "expected diagnostic code `{}`, but not found: diagnostics: `{:?}`",
+            expected,
+            diagnostics,
+        );
+        result
+    }
+}
 
-        assert!(diagnostics.iter().any(|diagnostic| diagnostic
-            .code()
-            .map_or(false, |code| code.to_string() == CODE_TERMINATING_SEPARATOR)));
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use crate::diagnostics::miette::harness;
+
+    #[cfg(any(unix, windows))]
+    #[rstest]
+    #[case("../a")]
+    #[case("a/..")]
+    #[case("a/../b")]
+    #[case("{a/,../,b/}")]
+    fn diagnosed_glob_has_semantic_literal_warning(#[case] expression: &str) {
+        let _ = harness::assert_diagnosed_glob_has_code(
+            Ok(harness::assert_diagnosed_glob_is_ok(expression)),
+            harness::CODE_SEMANTIC_LITERAL,
+        );
+    }
+
+    #[rstest]
+    #[case("a/b/c/")]
+    #[case("**/a/")]
+    fn diagnosed_glob_has_terminating_separator_warning(#[case] expression: &str) {
+        let _ = harness::assert_diagnosed_glob_has_code(
+            Ok(harness::assert_diagnosed_glob_is_ok(expression)),
+            harness::CODE_TERMINATING_SEPARATOR,
+        );
     }
 }

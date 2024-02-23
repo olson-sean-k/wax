@@ -321,16 +321,56 @@ fn encode<'t, T>(
 }
 
 #[cfg(test)]
-mod tests {
+pub mod harness {
     use crate::encode;
 
-    #[test]
-    fn case_folded_eq() {
-        assert!(encode::case_folded_eq("a", "a"));
-        assert!(encode::case_folded_eq("a", "A"));
+    pub fn assert_case_folded_eq_eq(lhs: &str, rhs: &str, expected: bool) -> bool {
+        let eq = encode::case_folded_eq(lhs, rhs);
+        assert!(
+            eq == expected,
+            "`encode::case_folded_eq` is `{}`, but expected `{}`",
+            eq,
+            expected,
+        );
+        eq
+    }
+}
 
-        assert!(!encode::case_folded_eq("a", "b"));
-        assert!(!encode::case_folded_eq("aa", "a"));
-        assert!(!encode::case_folded_eq("a", "aa"));
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use crate::encode::harness;
+
+    #[rstest]
+    #[case::ascii_with_no_casing("", "")]
+    #[case::ascii_with_no_casing("0", "0")]
+    #[case::ascii_with_no_casing("_", "_")]
+    #[case::ascii_with_casing("a", "a")]
+    #[case::ascii_with_casing("a", "A")]
+    #[case::ascii_with_casing("aa", "aa")]
+    #[case::ascii_with_casing("aa", "aA")]
+    #[case::ascii_with_casing("aa", "Aa")]
+    #[case::ascii_with_casing("aa", "AA")]
+    #[case::ascii_with_casing("z", "z")]
+    #[case::ascii_with_casing("z", "Z")]
+    #[case::cjk("愛", "愛")]
+    #[case::cjk("グロブ", "グロブ")]
+    fn case_folded_eq_eq(#[case] lhs: &str, #[case] rhs: &str) {
+        harness::assert_case_folded_eq_eq(lhs, rhs, true);
+    }
+
+    #[rstest]
+    #[case::whitespace("", " ")]
+    #[case::whitespace(" ", "\t")]
+    #[case::whitespace(" ", "  ")]
+    #[case::length("a", "aa")]
+    #[case::ascii_with_no_casing("0", "1")]
+    #[case::ascii_with_casing("a", "b")]
+    #[case::ascii_with_casing("a", "B")]
+    #[case::cjk("金", "銀")]
+    #[case::cjk("もー", "もぉ")]
+    fn case_folded_eq_not_eq(#[case] lhs: &str, #[case] rhs: &str) {
+        harness::assert_case_folded_eq_eq(lhs, rhs, false);
     }
 }

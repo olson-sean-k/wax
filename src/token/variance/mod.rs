@@ -393,136 +393,209 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
 }
 
 #[cfg(test)]
+pub mod harness {
+    use std::fmt::Debug;
+
+    use crate::token::variance::bound::{BoundedVariantRange, NaturalRange};
+    use crate::token::variance::invariant::{GlobVariance, Invariant, UnitBound};
+    use crate::token::variance::ops::Conjunction;
+    use crate::token::variance::{TreeVariance, Variance};
+    use crate::token::{Fold, TokenTree, Tokenized};
+
+    pub fn invariant<T, U>(invariant: U) -> GlobVariance<T>
+    where
+        T: From<U> + Invariant,
+    {
+        Variance::Invariant(invariant.into())
+    }
+
+    pub fn bounded<T>() -> GlobVariance<T>
+    where
+        T: Invariant<Bound = UnitBound>,
+    {
+        Variance::Variant(UnitBound.into())
+    }
+
+    pub fn range<T>(lower: usize, upper: Option<usize>) -> GlobVariance<T>
+    where
+        T: From<usize> + Invariant<Bound = BoundedVariantRange>,
+    {
+        NaturalRange::from_closed_and_open(lower, upper).map_invariant(From::from)
+    }
+
+    pub fn assert_tokenized_variance_eq<'t, A, T>(
+        tokenized: Tokenized<'t, A>,
+        expected: GlobVariance<T>,
+    ) -> Tokenized<'t, A>
+    where
+        TreeVariance<T>: Fold<'t, A, Term = GlobVariance<T>>,
+        T: Conjunction<Output = T> + Debug + Eq + Invariant,
+        T::Bound: Debug + Eq,
+    {
+        let variance = tokenized.as_token().variance::<T>();
+        assert!(
+            variance == expected,
+            "`Token::variance` is `{:?}`, but expected `{:?}`: in `Tokenized`: `{}`",
+            variance,
+            expected,
+            tokenized.expression(),
+        );
+        tokenized
+    }
+
+    pub fn assert_tokenized_exhaustiveness_eq<A>(
+        tokenized: Tokenized<'_, A>,
+        expected: bool,
+    ) -> Tokenized<'_, A> {
+        let is_exhaustive = tokenized.as_token().is_exhaustive();
+        assert!(
+            is_exhaustive == expected,
+            "`Token::is_exhaustive` is `{}`, but expected `{}`: in `Tokenized`: `{}`",
+            is_exhaustive,
+            expected,
+            tokenized.expression(),
+        );
+        tokenized
+    }
+}
+
+#[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use rstest::rstest;
 
-    use crate::token::variance::bound::Unbounded;
-    use crate::token::variance::invariant::{GlobVariance, Size};
-    use crate::token::variance::{NaturalRange, Variance};
-    use crate::token::{self, TokenTree};
+    use crate::token::parse;
+    use crate::token::variance::invariant::{Depth, GlobVariance, Size, Text};
+    use crate::token::variance::{harness, Variance};
 
-    // TODO: Move this test into the `token` module.
-    #[test]
-    fn invariant_text_prefix() {
-        fn invariant_path_prefix(expression: &str) -> PathBuf {
-            let (_, text) = token::parse(expression)
-                .unwrap()
-                .into_token()
-                .invariant_text_prefix();
-            text.into()
-        }
-
-        assert_eq!(invariant_path_prefix("/a/b"), Path::new("/a/b"));
-        assert_eq!(invariant_path_prefix("a/b"), Path::new("a/b"));
-        assert_eq!(invariant_path_prefix("a/*"), Path::new("a"));
-        assert_eq!(invariant_path_prefix("a/*b"), Path::new("a"));
-        assert_eq!(invariant_path_prefix("a/b*"), Path::new("a"));
-        assert_eq!(invariant_path_prefix("a/b/*/c"), Path::new("a/b"));
-
-        #[cfg(any(unix, windows))]
-        let prefix = invariant_path_prefix("../foo/(?i)bar/(?-i)baz");
-        #[cfg(unix)]
-        assert_eq!(prefix, Path::new("../foo"));
-        #[cfg(windows)]
-        assert_eq!(prefix, Path::new("../foo/bar"));
-
-        assert_eq!(invariant_path_prefix("**"), Path::new(""));
-        assert_eq!(invariant_path_prefix("a*"), Path::new(""));
-        assert_eq!(invariant_path_prefix("*/b"), Path::new(""));
-        assert_eq!(invariant_path_prefix("a?/b"), Path::new(""));
+    #[rstest]
+    #[case("a", harness::invariant(1))]
+    #[case("a/b", harness::invariant(2))]
+    #[case("a/**", harness::range(1, None))]
+    #[case("a/**/b", harness::range(2, None))]
+    #[case("a/**/b/**/c", harness::range(3, None))]
+    #[case("<a*/:1,>*", harness::range(1, None))]
+    #[case("**", Variance::unbounded())]
+    #[case("<*/>*", Variance::unbounded())]
+    #[case("<<?>/>*", Variance::unbounded())]
+    #[case("<a*/>*", Variance::unbounded())]
+    fn parse_expression_depth_variance_eq(
+        #[case] expression: &str,
+        #[case] expected: GlobVariance<Depth>,
+    ) {
+        harness::assert_tokenized_variance_eq(
+            parse::harness::assert_parse_expression_is_ok(expression),
+            expected,
+        );
     }
 
-    // TODO: Rename and expand upon this test. Query other invariants.
-    #[test]
-    fn tree_expression_variance() {
-        use Variance::Variant;
-
-        fn range(lower: usize, upper: Option<usize>) -> GlobVariance<Size> {
-            NaturalRange::from_closed_and_open(lower, upper).map_invariant(From::from)
-        }
-
-        let token = token::parse("**").unwrap().into_token();
-        assert_eq!(token.variance::<Size>(), Variant(Unbounded));
-        let token = token::parse("<*/>*").unwrap().into_token();
-        assert_eq!(token.variance::<Size>(), Variant(Unbounded));
-        let token = token::parse("<<?>/>*").unwrap().into_token();
-        assert_eq!(token.variance::<Size>(), Variant(Unbounded));
-        let token = token::parse("<foo*/>*").unwrap().into_token();
-        assert_eq!(token.variance::<Size>(), Variant(Unbounded));
-
-        let token = token::parse("foo/**").unwrap().into_token();
-        assert_eq!(token.variance::<Size>(), range(3, None));
-        let token = token::parse("<foo*/:1,>*").unwrap().into_token();
-        assert_eq!(token.variance::<Size>(), range(4, None));
+    #[rstest]
+    #[case("a", harness::invariant(1))]
+    #[case("a/b", harness::invariant(3))]
+    #[case("a/**", harness::range(1, None))]
+    #[case("<a*/:1,>*", harness::range(2, None))]
+    #[case("**", Variance::unbounded())]
+    #[case("<*/>*", Variance::unbounded())]
+    #[case("<<?>/>*", Variance::unbounded())]
+    #[case("<a*/>*", Variance::unbounded())]
+    fn parse_expression_size_variance_eq(
+        #[case] expression: &str,
+        #[case] expected: GlobVariance<Size>,
+    ) {
+        harness::assert_tokenized_variance_eq(
+            parse::harness::assert_parse_expression_is_ok(expression),
+            expected,
+        );
     }
 
-    // TODO: Document the expressions in this important test, especially non-exhaustive
-    //       expressions. False positives are bad news.
-    #[test]
-    fn exhaustiveness() {
-        // This function does not check token trees against rules. This allows the test to examine
-        // interesting trees, including some that may not occur in `Glob` but may occur elsewhere
-        // like `Any`. For example, initial alternations with roots are rejected by `rule::check`
-        // but not `Checked::any`. Expressions given to this function require extra scrutiny.
-        fn is_exhaustive(expression: &str) -> bool {
-            token::parse(expression)
-                .unwrap()
-                .into_token()
-                .is_exhaustive()
-        }
+    #[rstest]
+    #[case("a", harness::invariant(Text::from_components(["a"]).unwrap()))]
+    #[case("a/b", harness::invariant(Text::from_components(["a", "b"]).unwrap()))]
+    #[case("a/**", harness::bounded())]
+    #[case("<a*/:1,>*", harness::bounded())]
+    #[case("**", Variance::unbounded())]
+    #[case("<*/>*", Variance::unbounded())]
+    #[case("<<?>/>*", Variance::unbounded())]
+    #[case("<a*/>*", Variance::unbounded())]
+    fn parse_expression_text_variance_eq(
+        #[case] expression: &str,
+        #[case] expected: GlobVariance<Text>,
+    ) {
+        harness::assert_tokenized_variance_eq(
+            parse::harness::assert_parse_expression_is_ok(expression),
+            expected,
+        );
+    }
 
-        assert!(is_exhaustive("**"));
-        assert!(is_exhaustive("a/**"));
-        assert!(is_exhaustive("<a/**>"));
-        assert!(is_exhaustive("<a/**:1,2>"));
-        assert!(is_exhaustive("<a/<*/:3,>>"));
-        assert!(is_exhaustive("<*/:1,>"));
-        assert!(is_exhaustive("<*/>"));
-        assert!(is_exhaustive("<a/<*/>>"));
-        assert!(is_exhaustive("a/<*/>"));
-        assert!(is_exhaustive("a/<*/>*"));
-        assert!(is_exhaustive("a/<<?>/>*"));
-        assert!(is_exhaustive("{a/**,b/**}"));
-        assert!(is_exhaustive("{{a/**,b/**},c/**}"));
-        assert!(is_exhaustive("<{{a/**,b/**},c/**}:2,4>"));
-        assert!(is_exhaustive("{a/**,b/**,[xyz]<*/>}"));
-        assert!(is_exhaustive("<<?>/>"));
-        assert!(is_exhaustive("<<?>/>*"));
-        assert!(is_exhaustive("<*{/}>"));
-        assert!(is_exhaustive("<*{/,/}>"));
-        assert!(is_exhaustive("<*{/,/**}>"));
-        assert!(is_exhaustive("<{<<{{a/b}}{{/**}}>>}>"));
+    #[rstest]
+    #[case("**")]
+    #[case("a/**")]
+    #[case("<a/**>")]
+    #[case("<a/**:1,2>")]
+    #[case("<a/<*/:3,>>")]
+    #[case("<*/:1,>")]
+    #[case("<*/>")]
+    #[case("<a/<*/>>")]
+    #[case("a/<*/>")]
+    #[case("a/<*/>*")]
+    #[case("a/<<?>/>*")]
+    #[case("{a/**,b/**}")]
+    #[case("{{a/**,b/**},c/**}")]
+    #[case("<{{a/**,b/**},c/**}:2,4>")]
+    #[case("{a/**,b/**,[xyz]<*/>}")]
+    #[case("<<?>/>")]
+    #[case("<<?>/>*")]
+    #[case("<*{/}>")]
+    #[case("<*{/,/}>")]
+    #[case("<*{/,/**}>")]
+    #[case("<{<<{{a/b}}{{/**}}>>}>")]
+    // TODO: This expression is exhaustive. The `/**` alternative generalizes the `/**/a`
+    //       alternative. However, exhaustiveness applies a heuristic that rejects this (but
+    //       importantly rejects nonexhaustive patterns like `{a/**,**/b}`). Remove generalized
+    //       branches in an optimization step or remove their terms when determining
+    //       exhaustiveness.
+    //#[case("{/**,/**/a}")]
+    fn parse_expression_is_exhaustive(#[case] expression: &str) {
+        harness::assert_tokenized_exhaustiveness_eq(
+            parse::harness::assert_parse_expression_is_ok(expression),
+            true,
+        );
+    }
 
-        assert!(!is_exhaustive(""));
-        assert!(!is_exhaustive("**/a"));
-        assert!(!is_exhaustive("a/**/b"));
-        assert!(!is_exhaustive("a/*"));
-        assert!(!is_exhaustive("<a/*>"));
-        assert!(!is_exhaustive("<*/a>"));
-        assert!(!is_exhaustive("<a/*>/*"));
-        // This pattern only matches components in groups of two.
-        assert!(!is_exhaustive("<*/*/>"));
-        // This pattern only matches at most four components.
-        assert!(!is_exhaustive("<*/:0,4>"));
-        assert!(!is_exhaustive("a/<?>"));
-        assert!(!is_exhaustive("a</**/b>"));
-        assert!(!is_exhaustive("<?>"));
-        assert!(!is_exhaustive("<?/>"));
-        // This pattern may match a nonexhaustive branch that does **not** overlap with any
-        // exhaustive branch.
-        //
-        // To understand why this is not exhaustive, consider the match `foo/bar/b`. This matches
-        // the second branch of the alternation, but not the first. This pattern does not match any
-        // sub-tree of this match other than more `b` components (the first branch will never be
-        // matched).
-        assert!(!is_exhaustive("{a/**,**/b}"));
-        assert!(!is_exhaustive("<{a/**,**/b}:1>"));
-        assert!(!is_exhaustive("{{<a:1,>{/**},**/b},c/**}"));
-
-        // TODO: This expression is exhaustive. The `/**` branch generalizes the `/**/a` branch.
-        //       However, exhaustiveness applies a heuristic that rejects this (but importantly
-        //       rejects nonexhaustive patterns like `{a/**,**/b}`). Remove generalized branches in
-        //       an optimization step or remove their terms when determining exhaustiveness.
-        //assert!(is_exhaustive("{/**,/**/a}"));
+    // TODO: Document the expressions in this test more thoroughly.
+    // NOTE: This test is especially important, because false positives in `Token::is_exhaustive`
+    //       can cause matching bugs in patterns used as negations in `FileIterator::not`.
+    // This function name uses the term "not exhaustive" instead of "nonexhaustive" for emphasis
+    // and clarity.
+    #[rstest]
+    #[case("")]
+    #[case("**/a")]
+    #[case("a/**/b")]
+    #[case("a/*")]
+    #[case("<a/*>")]
+    #[case("<*/a>")]
+    #[case("<a/*>/*")]
+    // This pattern only matches components in groups of two.
+    #[case("<*/*/>")]
+    // This pattern only matches at most four components.
+    #[case("<*/:0,4>")]
+    #[case("a/<?>")]
+    #[case("a</**/b>")]
+    #[case("<?>")]
+    #[case("<?/>")]
+    // This pattern may match a nonexhaustive branch that does **not** overlap with any exhaustive
+    // branch.
+    //
+    // To understand why this is not exhaustive, consider the match `foo/bar/b`. This matches the
+    // second branch of the alternation, but not the first. This pattern does not match any
+    // sub-tree of this match other than more `b` components (the first branch will never be
+    // matched).
+    #[case("{a/**,**/b}")]
+    #[case("<{a/**,**/b}:1>")]
+    #[case("{{<a:1,>{/**},**/b},c/**}")]
+    fn parse_expression_is_not_exhaustive(#[case] expression: &str) {
+        harness::assert_tokenized_exhaustiveness_eq(
+            parse::harness::assert_parse_expression_is_ok(expression),
+            false,
+        );
     }
 }

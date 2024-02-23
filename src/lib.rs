@@ -376,7 +376,7 @@ impl From<WalkError> for GlobError {
 /// [`Program`]: crate::Program
 #[cfg_attr(feature = "miette", derive(Diagnostic))]
 #[cfg_attr(feature = "miette", diagnostic(transparent))]
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error(transparent)]
 pub struct BuildError {
     kind: BuildErrorKind,
@@ -475,7 +475,7 @@ impl<'t> From<RuleError<'t>> for BuildError {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[non_exhaustive]
 #[cfg_attr(feature = "miette", derive(Diagnostic))]
 enum BuildErrorKind {
@@ -973,6 +973,8 @@ where
     Ok(Any { tree, program })
 }
 
+// TODO: This function blindly escapes meta-characters, even if they are already escaped. Ignore
+//       escaped meta-characters in the input.
 /// Escapes text as a literal glob expression.
 ///
 /// This function escapes any and all meta-characters in the given string, such that all text is
@@ -1061,932 +1063,1193 @@ fn parse_and_check(
     Ok(checked)
 }
 
+#[cfg(test)]
+pub mod harness {
+    use expect_macro::expect;
+    use itertools::Itertools;
+    use std::fmt::Debug;
+    use std::path::{Path, PathBuf};
+
+    use crate::{Any, BuildError, CandidatePath, Glob, MatchedText, Pattern, Program};
+
+    pub trait PartitionNonEmpty<'t>: Sized {
+        fn assert_partition_non_empty(self) -> (PathBuf, Glob<'t>);
+    }
+
+    impl<'t> PartitionNonEmpty<'t> for Glob<'t> {
+        fn assert_partition_non_empty(self) -> (PathBuf, Glob<'t>) {
+            let (prefix, glob) = self.partition();
+            (
+                prefix,
+                glob.expect("`Glob::partition` is `None`, but expected `Some`"),
+            )
+        }
+    }
+
+    pub fn assert_escaped_text_eq(unescaped: &str, escaped: &str, expected: &str) {
+        assert!(
+            escaped == expected,
+            "unexpected output from `escape`:\
+            \n\tunescaped: `{}`\n\tescaped: `{}`\n\texpected: `{}`",
+            unescaped,
+            escaped,
+            expected,
+        );
+    }
+
+    pub fn assert_new_glob_is_ok(expression: &str) -> Glob<'_> {
+        let result = Glob::new(expression);
+        let error = result.as_ref().err().cloned();
+        expect!(
+            result,
+            "`Glob::new` is `Err`, but expected `Ok`: in expression: `{}`: error: \"{}\"",
+            expression,
+            error.unwrap(),
+        )
+    }
+
+    pub fn assert_new_glob_is_err(expression: &str) -> BuildError {
+        expect!(
+            Glob::new(expression).err(),
+            "`Glob::new` is `Ok`, but expected `Err`: in expression: `{}`",
+            expression,
+        )
+    }
+
+    pub fn assert_match_program_with<'t, T, F>(
+        program: impl Program<'t>,
+        candidate: impl Into<CandidatePath<'t>>,
+        f: F,
+    ) -> T
+    where
+        F: FnOnce(Option<MatchedText<'static>>) -> T,
+    {
+        let candidate = candidate.into();
+        f(program.matched(&candidate).map(MatchedText::into_owned))
+    }
+
+    pub fn assert_matched_is_some(matched: Option<MatchedText<'_>>) -> MatchedText<'_> {
+        matched.expect("matched text is `None`, but expected `Some`")
+    }
+
+    pub fn assert_matched_is_none(matched: Option<MatchedText<'_>>) {
+        assert!(
+            matched.is_none(),
+            "matched text is `Some`, but expected `None`"
+        );
+    }
+
+    pub fn assert_matched_has_text(
+        expected: impl IntoIterator<Item = (usize, &'static str)>,
+    ) -> impl FnOnce(Option<MatchedText<'_>>) {
+        move |matched| {
+            let mut has_matched_text = true;
+            let matched = assert_matched_is_some(matched);
+            let message = expected
+                .into_iter()
+                .filter_map(|(index, text)| match matched.get(index) {
+                    Some(matched) if matched == text => None,
+                    matched => Some(format!(
+                        "\tmatched text at capture {} is `{:?}`, but expected `{}`",
+                        index, matched, text,
+                    )),
+                })
+                .inspect(|_| {
+                    has_matched_text = false;
+                })
+                .join("\n");
+            assert!(has_matched_text, "unexpected matched text:\n{}", message);
+        }
+    }
+
+    pub fn assert_any_is_ok<'t, I>(patterns: I) -> Any<'t>
+    where
+        I: Clone + IntoIterator,
+        I::Item: Debug + Pattern<'t>,
+    {
+        match crate::any(patterns.clone()) {
+            Ok(any) => any,
+            Err(error) => {
+                panic!(
+                    "`any` is `Err`, but expected `Ok`: error: \"{}\":{}",
+                    error,
+                    patterns
+                        .into_iter()
+                        .map(|pattern| format!("\n\tpattern: `{:?}`", pattern))
+                        .join(""),
+                )
+            },
+        }
+    }
+
+    pub fn assert_any_is_err<'t, I>(patterns: I) -> BuildError
+    where
+        I: Clone + IntoIterator,
+        I::Item: Debug + Pattern<'t>,
+    {
+        match crate::any(patterns.clone()) {
+            Ok(_) => {
+                panic!(
+                    "`any` is `Ok`, but expected `Err`:{}",
+                    patterns
+                        .into_iter()
+                        .map(|pattern| format!("\n\tpattern: `{:?}`", pattern))
+                        .join(""),
+                )
+            },
+            Err(error) => error,
+        }
+    }
+
+    pub fn assert_partitioned_has_prefix_and_is_match<'p>(
+        partitioned: (PathBuf, Glob<'_>),
+        expected: (impl AsRef<Path>, impl Into<CandidatePath<'p>>),
+    ) -> MatchedText<'static> {
+        let expected = (expected.0.as_ref(), expected.1.into());
+        let (prefix, glob) = partitioned;
+        assert!(
+            prefix == expected.0,
+            "partitioned prefix is `{}`, but expected `{}`: in `Glob`: `{}`",
+            prefix.display(),
+            expected.0.display(),
+            glob,
+        );
+        assert_match_program_with(glob, expected.1, assert_matched_is_some)
+    }
+
+    pub fn assert_partitioned_has_prefix_and_expression<'t>(
+        partitioned: (PathBuf, Glob<'t>),
+        expected: (impl AsRef<Path>, &str),
+    ) -> (PathBuf, Glob<'t>) {
+        let (prefix, glob) = partitioned;
+        let expected = (expected.0.as_ref(), expected.1);
+        assert!(
+            prefix == expected.0,
+            "partitioned prefix is `{}`, but expected `{}`",
+            prefix.display(),
+            expected.0.display(),
+        );
+        let expression = glob.to_string();
+        assert!(
+            expression == expected.1,
+            "partitioned glob has expression `{}`, but expected `{}`",
+            expression,
+            expected.1,
+        );
+        (prefix, glob)
+    }
+}
+
+// TODO: Many of these tests need not be separated into distinct test functions, such as
+//       `new_glob_{}_is_ok`. Consider consolidating such functions using case labels for clarity.
+//       Finding the right balance may be tricky.
+// TODO: Most of these tests operate against public APIs like `Glob::new`, `Glob::partition`, and
+//       `crate::any`. Consider moving these into a `tests` directory as integration tests. Perhaps
+//       more importantly, some of these tests ought to have more local counterparts that directly
+//       test the parser, token tree, and encoder.
 // TODO: Construct paths from components in tests. In practice, using string literals works, but is
 //       technically specific to platforms that support `/` as a separator.
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use rstest::rstest;
+    use std::fmt::Debug;
 
-    use crate::{BuildError, BuildErrorKind, CandidatePath, Glob, Program};
+    use crate::diagnostics::Span;
+    use crate::harness::{self, PartitionNonEmpty};
+    use crate::{BuildError, BuildErrorKind, Glob, MatchedText, Pattern, Program};
 
-    trait PartitionNonEmpty<'t>: Sized {
-        fn partition_non_empty(self) -> (PathBuf, Glob<'t>);
+    #[rstest]
+    #[case::empty("", "")]
+    #[case::all("?*$:<>()[]{},", "\\?\\*\\$\\:\\<\\>\\(\\)\\[\\]\\{\\}\\,")]
+    #[case("record[D00,00].txt", "record\\[D00\\,00\\].txt")]
+    #[case::whitespace("Do You Remember Love?.mp4", "Do You Remember Love\\?.mp4")]
+    #[case::cjk("左{}右", "左\\{\\}右")]
+    #[case::cjk("*中*", "\\*中\\*")]
+    fn escape_with_unescaped_text_is_escaped(#[case] unescaped: &str, #[case] expected: &str) {
+        let escaped = crate::escape(unescaped);
+        harness::assert_escaped_text_eq(unescaped, escaped.as_ref(), expected);
     }
 
-    impl<'t> PartitionNonEmpty<'t> for Glob<'t> {
-        fn partition_non_empty(self) -> (PathBuf, Glob<'t>) {
-            let (prefix, glob) = self.partition();
-            (prefix, glob.expect("glob partition is empty"))
-        }
+    // TODO: See `escaped`.
+    //#[rstest]
+    //#[case("\\?", "\\?")]
+    //fn escape_with_escaped_text_is_not_escaped_again(
+    //    #[case] unescaped: &str,
+    //    #[case] expected: &str,
+    //) {
+    //    let escaped = crate::escape(unescaped);
+    //    harness::assert_escaped_text_eq(unescaped, escaped.as_ref(), expected);
+    //}
+
+    #[rstest]
+    #[case("a/[xy]")]
+    #[case("a/[x-z]")]
+    #[case("a/[xyi-k]")]
+    #[case("a/[i-kxy]")]
+    #[case("a/[!xy]")]
+    #[case("a/[!x-z]")]
+    #[case("a/[xy]b/c")]
+    fn new_glob_with_class_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn escape() {
-        assert_eq!(crate::escape(""), "");
-        assert_eq!(
-            crate::escape("?*$:<>()[]{},"),
-            "\\?\\*\\$\\:\\<\\>\\(\\)\\[\\]\\{\\}\\,",
-        );
-        assert_eq!(crate::escape("/usr/local/lib"), "/usr/local/lib");
-        assert_eq!(
-            crate::escape("record[D00,00].txt"),
-            "record\\[D00\\,00\\].txt",
-        );
-        assert_eq!(
-            crate::escape("Do You Remember Love?.mp4"),
-            "Do You Remember Love\\?.mp4",
-        );
-        assert_eq!(crate::escape("左{}右"), "左\\{\\}右");
-        assert_eq!(crate::escape("*中*"), "\\*中\\*");
+    #[rstest]
+    #[case("a/\\[a-z\\]/c")]
+    #[case("a/[\\[]/c")]
+    #[case("a/[\\]]/c")]
+    #[case("a/[a\\-z]/c")]
+    fn new_glob_with_literal_escaped_class_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_eager_zom_tokens() {
-        Glob::new("*").unwrap();
-        Glob::new("a/*").unwrap();
-        Glob::new("*a").unwrap();
-        Glob::new("a*").unwrap();
-        Glob::new("a*b").unwrap();
-        Glob::new("/*").unwrap();
+    #[rstest]
+    #[case("")]
+    #[case("a")]
+    #[case("a/b/c")]
+    #[case("abc")]
+    fn new_glob_with_literal_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_lazy_zom_tokens() {
-        Glob::new("$").unwrap();
-        Glob::new("a/$").unwrap();
-        Glob::new("$a").unwrap();
-        Glob::new("a$").unwrap();
-        Glob::new("a$b").unwrap();
-        Glob::new("/$").unwrap();
+    #[rstest]
+    #[case("?")]
+    #[case("a/?")]
+    #[case("?a")]
+    #[case("a?")]
+    #[case("a?b")]
+    #[case("??a??b??")]
+    #[case("/?")]
+    fn new_glob_with_exactly_one_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_one_tokens() {
-        Glob::new("?").unwrap();
-        Glob::new("a/?").unwrap();
-        Glob::new("?a").unwrap();
-        Glob::new("a?").unwrap();
-        Glob::new("a?b").unwrap();
-        Glob::new("??a??b??").unwrap();
-        Glob::new("/?").unwrap();
+    #[rstest]
+    #[case("?*")]
+    #[case("*?")]
+    #[case("*/?")]
+    #[case("?*?")]
+    #[case("/?*")]
+    #[case("?$")]
+    fn new_glob_with_exactly_one_and_zom_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_one_and_zom_tokens() {
-        Glob::new("?*").unwrap();
-        Glob::new("*?").unwrap();
-        Glob::new("*/?").unwrap();
-        Glob::new("?*?").unwrap();
-        Glob::new("/?*").unwrap();
-        Glob::new("?$").unwrap();
+    #[rstest]
+    #[case("*")]
+    #[case("a/*")]
+    #[case("*a")]
+    #[case("a*")]
+    #[case("a*b")]
+    #[case("/*")]
+    fn new_glob_with_eager_zom_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_tree_tokens() {
-        Glob::new("**").unwrap();
-        Glob::new("**/").unwrap();
-        Glob::new("/**").unwrap();
-        Glob::new("**/a").unwrap();
-        Glob::new("a/**").unwrap();
-        Glob::new("**/a/**/b/**").unwrap();
-        Glob::new("{**/a,b/c}").unwrap();
-        Glob::new("{a/b,c/**}").unwrap();
-        Glob::new("<**/a>").unwrap();
-        Glob::new("<a/**>").unwrap();
+    #[rstest]
+    #[case("$")]
+    #[case("a/$")]
+    #[case("$a")]
+    #[case("a$")]
+    #[case("a$b")]
+    #[case("/$")]
+    fn new_glob_with_lazy_zom_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_class_tokens() {
-        Glob::new("a/[xy]").unwrap();
-        Glob::new("a/[x-z]").unwrap();
-        Glob::new("a/[xyi-k]").unwrap();
-        Glob::new("a/[i-kxy]").unwrap();
-        Glob::new("a/[!xy]").unwrap();
-        Glob::new("a/[!x-z]").unwrap();
-        Glob::new("a/[xy]b/c").unwrap();
+    #[rstest]
+    #[case("**")]
+    #[case("**/")]
+    #[case("/**")]
+    #[case("**/a")]
+    #[case("a/**")]
+    #[case("**/a/**/b/**")]
+    #[case("{**/a,b/c}")]
+    #[case("{a/b,c/**}")]
+    #[case("<**/a>")]
+    #[case("<a/**>")]
+    fn new_glob_with_tree_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_alternation_tokens() {
-        Glob::new("a/{x?z,y$}b*").unwrap();
-        Glob::new("a/{???,x$y,frob}b*").unwrap();
-        Glob::new("a/{???,x$y,frob}b*").unwrap();
-        Glob::new("a/{???,{x*z,y$}}b*").unwrap();
-        Glob::new("a{/**/b/,/b/**/}ca{t,b/**}").unwrap();
+    #[rstest]
+    #[case("a/b\\?/c")]
+    #[case("a/b\\$/c")]
+    #[case("a/b\\*/c")]
+    #[case("a/b\\*\\*/c")]
+    fn new_glob_with_literal_escaped_wildcard_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_repetition_tokens() {
-        Glob::new("<a:0,1>").unwrap();
-        Glob::new("<a:0,>").unwrap();
-        Glob::new("<a:2>").unwrap();
-        Glob::new("<a:>").unwrap();
-        Glob::new("<a>").unwrap();
-        Glob::new("<a<b:0,>:0,>").unwrap();
-        // Rooted repetitions are accepted if the lower bound is one or greater.
-        Glob::new("</root:1,>").unwrap();
-        Glob::new("<[!.]*/:0,>[!.]*").unwrap();
+    #[rstest]
+    #[case("a/b[?]/c")]
+    #[case("a/b[$]/c")]
+    #[case("a/b[*]/c")]
+    #[case("a/b[*][*]/c")]
+    fn new_glob_with_class_escaped_wildcard_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_literal_escaped_wildcard_tokens() {
-        Glob::new("a/b\\?/c").unwrap();
-        Glob::new("a/b\\$/c").unwrap();
-        Glob::new("a/b\\*/c").unwrap();
-        Glob::new("a/b\\*\\*/c").unwrap();
+    #[rstest]
+    #[case("a/{x?z,y$}b*")]
+    #[case("a/{???,x$y,frob}b*")]
+    #[case("a/{???,x$y,frob}b*")]
+    #[case("a/{???,{x*z,y$}}b*")]
+    #[case("a{/**/b/,/b/**/}ca{t,b/**}")]
+    fn new_glob_with_alternation_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_class_escaped_wildcard_tokens() {
-        Glob::new("a/b[?]/c").unwrap();
-        Glob::new("a/b[$]/c").unwrap();
-        Glob::new("a/b[*]/c").unwrap();
-        Glob::new("a/b[*][*]/c").unwrap();
+    #[rstest]
+    #[case("a/\\{\\}/c")]
+    #[case("a/{x,y\\,,z}/c")]
+    fn new_glob_with_literal_escaped_alternation_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_literal_escaped_alternation_tokens() {
-        Glob::new("a/\\{\\}/c").unwrap();
-        Glob::new("a/{x,y\\,,z}/c").unwrap();
+    #[rstest]
+    #[case("a/[{][}]/c")]
+    #[case("a/{x,y[,],z}/c")]
+    fn new_glob_with_class_escaped_alternation_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_class_escaped_alternation_tokens() {
-        Glob::new("a/[{][}]/c").unwrap();
-        Glob::new("a/{x,y[,],z}/c").unwrap();
+    #[rstest]
+    #[case("<a:0,1>")]
+    #[case("<a:0,>")]
+    #[case("<a:2>")]
+    #[case("<a:>")]
+    #[case("<a>")]
+    #[case("<a<b:0,>:0,>")]
+    // Rooted repetitions are accepted if the lower bound is one or greater.
+    #[case("</root:1,>")]
+    #[case("<[!.]*/:0,>[!.]*")]
+    fn new_glob_with_repetition_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_literal_escaped_class_tokens() {
-        Glob::new("a/\\[a-z\\]/c").unwrap();
-        Glob::new("a/[\\[]/c").unwrap();
-        Glob::new("a/[\\]]/c").unwrap();
-        Glob::new("a/[a\\-z]/c").unwrap();
+    #[rstest]
+    #[case("(?i)a/b/c")]
+    #[case("(?-i)a/b/c")]
+    #[case("a/(?-i)b/c")]
+    #[case("a/b/(?-i)c")]
+    #[case("(?i)a/(?-i)b/(?i)c")]
+    fn new_glob_with_flag_is_ok(#[case] expression: &str) {
+        harness::assert_new_glob_is_ok(expression);
     }
 
-    #[test]
-    fn build_glob_with_flags() {
-        Glob::new("(?i)a/b/c").unwrap();
-        Glob::new("(?-i)a/b/c").unwrap();
-        Glob::new("a/(?-i)b/c").unwrap();
-        Glob::new("a/b/(?-i)c").unwrap();
-        Glob::new("(?i)a/(?-i)b/(?i)c").unwrap();
+    #[rstest]
+    #[case([
+        "src/**/*.rs",
+        "doc/**/*.md",
+        "pkg/**/PKGBUILD",
+    ])]
+    #[case([
+        Glob::new("src/**/*.rs"),
+        Glob::new("doc/**/*.md"),
+        Glob::new("pkg/**/PKGBUILD"),
+    ])]
+    #[case([
+        crate::any(["a/b", "c/d"]),
+        crate::any(["{e,f,g}", "{h,i}"]),
+    ])]
+    #[case::overlapping_trees(["/root", "relative"])]
+    fn any_is_ok<'t, I>(#[case] patterns: I)
+    where
+        I: Clone + IntoIterator,
+        I::Item: Debug + Pattern<'t>,
+    {
+        let _ = harness::assert_any_is_ok(patterns);
     }
 
-    #[test]
-    fn build_any_combinator() {
-        crate::any([
-            Glob::new("src/**/*.rs").unwrap(),
-            Glob::new("doc/**/*.md").unwrap(),
-            Glob::new("pkg/**/PKGBUILD").unwrap(),
-        ])
-        .unwrap();
-        crate::any(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
+    #[rstest]
+    #[case("//a")]
+    #[case("a//b")]
+    #[case("a/b//")]
+    #[case("a//**")]
+    #[case("{//}a")]
+    #[case("{**//}")]
+    fn new_glob_with_adjacent_separator_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn build_any_nested_combinator() {
-        crate::any([
-            crate::any(["a/b", "c/d"]).unwrap(),
-            crate::any(["{e,f,g}", "{h,i}"]).unwrap(),
-        ])
-        .unwrap();
+    #[rstest]
+    #[case("***")]
+    #[case("****")]
+    #[case("**/**")]
+    #[case("a{**/**,/b}")]
+    #[case("**/*/***")]
+    #[case("**$")]
+    #[case("**/$**")]
+    #[case("{*$}")]
+    #[case("<*$:1,>")]
+    fn new_glob_with_adjacent_tree_and_zom_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn reject_glob_with_invalid_separator_tokens() {
-        assert!(Glob::new("//a").is_err());
-        assert!(Glob::new("a//b").is_err());
-        assert!(Glob::new("a/b//").is_err());
-        assert!(Glob::new("a//**").is_err());
-        assert!(Glob::new("{//}a").is_err());
-        assert!(Glob::new("{**//}").is_err());
+    #[rstest]
+    #[case("**a")]
+    #[case("a**")]
+    #[case("a**b")]
+    #[case("a*b**")]
+    #[case("**/**a/**")]
+    fn new_glob_with_adjacent_tree_and_literal_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn reject_glob_with_adjacent_tree_or_zom_tokens() {
-        assert!(Glob::new("***").is_err());
-        assert!(Glob::new("****").is_err());
-        assert!(Glob::new("**/**").is_err());
-        assert!(Glob::new("a{**/**,/b}").is_err());
-        assert!(Glob::new("**/*/***").is_err());
-        assert!(Glob::new("**$").is_err());
-        assert!(Glob::new("**/$**").is_err());
-        assert!(Glob::new("{*$}").is_err());
-        assert!(Glob::new("<*$:1,>").is_err());
+    #[rstest]
+    #[case("**?")]
+    #[case("?**")]
+    #[case("?**?")]
+    #[case("?*?**")]
+    #[case("**/**?/**")]
+    fn new_glob_with_adjacent_tree_and_exactly_one_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn reject_glob_with_tree_adjacent_literal_tokens() {
-        assert!(Glob::new("**a").is_err());
-        assert!(Glob::new("a**").is_err());
-        assert!(Glob::new("a**b").is_err());
-        assert!(Glob::new("a*b**").is_err());
-        assert!(Glob::new("**/**a/**").is_err());
+    #[rstest]
+    #[case("a/[a-z-]/c")]
+    #[case("a/[-a-z]/c")]
+    #[case("a/[-]/c")]
+    // Without special attention to escaping and character parsing, this could be mistakenly
+    // interpreted as an empty range over the character `-`. This should be rejected.
+    #[case("a/[---]/c")]
+    #[case("a/[[]/c")]
+    #[case("a/[]]/c")]
+    fn new_glob_with_unescaped_meta_characters_in_class_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn reject_glob_with_adjacent_one_tokens() {
-        assert!(Glob::new("**?").is_err());
-        assert!(Glob::new("?**").is_err());
-        assert!(Glob::new("?**?").is_err());
-        assert!(Glob::new("?*?**").is_err());
-        assert!(Glob::new("**/**?/**").is_err());
+    #[rstest]
+    #[case("*{okay,*}")]
+    #[case("{okay,*}*")]
+    #[case("${okay,*error}")]
+    #[case("{okay,error*}$")]
+    #[case("{*,okay}{okay,*}")]
+    #[case("{okay,error*}{okay,*error}")]
+    fn new_glob_with_adjacent_zom_over_alternation_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn reject_glob_with_unescaped_meta_characters_in_class_tokens() {
-        assert!(Glob::new("a/[a-z-]/c").is_err());
-        assert!(Glob::new("a/[-a-z]/c").is_err());
-        assert!(Glob::new("a/[-]/c").is_err());
-        // NOTE: Without special attention to escaping and character parsing, this could be
-        //       mistakenly interpreted as an empty range over the character `-`. This should be
-        //       rejected.
-        assert!(Glob::new("a/[---]/c").is_err());
-        assert!(Glob::new("a/[[]/c").is_err());
-        assert!(Glob::new("a/[]]/c").is_err());
+    #[rstest]
+    #[case("/slash/{okay,/error}")]
+    #[case("{okay,error/}/slash")]
+    #[case("slash/{okay,/error/,okay}/slash")]
+    #[case("{okay,error/}{okay,/error}")]
+    // TODO: This is not really an adjacent boundary like the other test cases. Is there a better
+    //       place for this?
+    #[case("{**}")]
+    #[case("slash/{**/error}")]
+    #[case("{error/**}/slash")]
+    #[case("slash/{okay/**,**/error}")]
+    #[case("{**/okay,error/**}/slash")]
+    #[case("{**/okay,prefix{error/**}}/slash")]
+    #[case("{**/okay,slash/{**/error}}postfix")]
+    #[case("{error/**}{okay,**/error")]
+    fn new_glob_with_adjacent_boundary_over_alternation_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn reject_glob_with_invalid_alternation_zom_tokens() {
-        assert!(Glob::new("*{okay,*}").is_err());
-        assert!(Glob::new("{okay,*}*").is_err());
-        assert!(Glob::new("${okay,*error}").is_err());
-        assert!(Glob::new("{okay,error*}$").is_err());
-        assert!(Glob::new("{*,okay}{okay,*}").is_err());
-        assert!(Glob::new("{okay,error*}{okay,*error}").is_err());
+    #[rstest]
+    #[case("{okay,/}")]
+    #[case("{okay,/**}")]
+    #[case("{okay,/error}")]
+    #[case("{okay,/**/error}")]
+    fn new_glob_with_rooted_alternation_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn reject_glob_with_invalid_alternation_tree_tokens() {
-        assert!(Glob::new("{**}").is_err());
-        assert!(Glob::new("slash/{**/error}").is_err());
-        assert!(Glob::new("{error/**}/slash").is_err());
-        assert!(Glob::new("slash/{okay/**,**/error}").is_err());
-        assert!(Glob::new("{**/okay,error/**}/slash").is_err());
-        assert!(Glob::new("{**/okay,prefix{error/**}}/slash").is_err());
-        assert!(Glob::new("{**/okay,slash/{**/error}}postfix").is_err());
-        assert!(Glob::new("{error/**}{okay,**/error").is_err());
+    #[rstest]
+    // TODO: These are not really misordered bounds like the other test cases. Is there a better
+    //       place for this?
+    #[case("<a/:0,0>")]
+    #[case("<a/:,1>")]
+    #[case("<a/:1,0>")]
+    #[case("<a/:10,1>")]
+    #[case("<a/:10,9>")]
+    fn new_glob_with_misordered_repetition_bounds_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn reject_glob_with_invalid_alternation_separator_tokens() {
-        assert!(Glob::new("/slash/{okay,/error}").is_err());
-        assert!(Glob::new("{okay,error/}/slash").is_err());
-        assert!(Glob::new("slash/{okay,/error/,okay}/slash").is_err());
-        assert!(Glob::new("{okay,error/}{okay,/error}").is_err());
+    #[rstest]
+    #[case("<*:0,>")]
+    #[case("<a/*:0,>*")]
+    #[case("*<*a:0,>")]
+    fn new_glob_with_adjacent_zom_over_repetition_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn reject_glob_with_rooted_alternation_tokens() {
-        assert!(Glob::new("{okay,/}").is_err());
-        assert!(Glob::new("{okay,/**}").is_err());
-        assert!(Glob::new("{okay,/error}").is_err());
-        assert!(Glob::new("{okay,/**/error}").is_err());
-    }
-
-    #[test]
-    fn reject_glob_with_invalid_repetition_bounds_tokens() {
-        assert!(Glob::new("<a/:0,0>").is_err());
-    }
-
-    #[test]
-    fn reject_glob_with_invalid_repetition_zom_tokens() {
-        assert!(Glob::new("<*:0,>").is_err());
-        assert!(Glob::new("<a/*:0,>*").is_err());
-        assert!(Glob::new("*<*a:0,>").is_err());
-    }
-
-    #[test]
-    fn reject_glob_with_invalid_repetition_tree_tokens() {
-        assert!(Glob::new("<**:0,>").is_err());
-        assert!(Glob::new("</**/a/**:0,>").is_err());
-        assert!(Glob::new("<a/**:0,>/").is_err());
-        assert!(Glob::new("/**</a:0,>").is_err());
-    }
-
-    #[test]
-    fn reject_glob_with_invalid_repetition_separator_tokens() {
-        assert!(Glob::new("</:0,>").is_err());
-        assert!(Glob::new("</a/:0,>").is_err());
-        assert!(Glob::new("<a/:0,>/").is_err());
+    #[rstest]
+    #[case("</:0,>")]
+    #[case("</a/:0,>")]
+    #[case("<a/:0,>/")]
+    #[case("<**:0,>")]
+    #[case("</**/a/**:0,>")]
+    #[case("<a/**:0,>/")]
+    #[case("/**</a:0,>")]
+    fn new_glob_with_adjacent_boundary_over_repetition_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
     // Rooted repetitions are rejected if their lower bound is zero; any other lower bound is
     // accepted.
-    #[test]
-    fn reject_glob_with_rooted_repetition_tokens() {
-        assert!(Glob::new("</root:0,>maybe").is_err());
-        assert!(Glob::new("</root>").is_err());
+    #[rstest]
+    #[case("</root:0,>maybe")]
+    #[case("</root>")]
+    fn new_glob_with_sometimes_rooted_repetition_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn reject_glob_with_oversized_invariant_repetition_tokens() {
-        assert!(matches!(
-            Glob::new("<a:65536>"),
-            Err(BuildError {
-                kind: BuildErrorKind::Rule(_),
-                ..
-            }),
-        ));
-        assert!(matches!(
-            Glob::new("<long:16500>"),
-            Err(BuildError {
-                kind: BuildErrorKind::Rule(_),
-                ..
-            }),
-        ));
-        assert!(matches!(
-            Glob::new("a<long:16500>b"),
-            Err(BuildError {
-                kind: BuildErrorKind::Rule(_),
-                ..
-            }),
-        ));
-        assert!(matches!(
-            Glob::new("{<a:65536>,<long:16500>}"),
-            Err(BuildError {
-                kind: BuildErrorKind::Rule(_),
-                ..
-            }),
-        ));
-    }
-
-    #[test]
-    fn reject_glob_with_invalid_flags() {
-        assert!(Glob::new("(?)a").is_err());
-        assert!(Glob::new("(?-)a").is_err());
-        assert!(Glob::new("()a").is_err());
-    }
-
-    #[test]
-    fn reject_glob_with_adjacent_tokens_through_flags() {
-        assert!(Glob::new("/(?i)/").is_err());
-        assert!(Glob::new("$(?i)$").is_err());
-        assert!(Glob::new("*(?i)*").is_err());
-        assert!(Glob::new("**(?i)?").is_err());
-        assert!(Glob::new("a(?i)**").is_err());
-        assert!(Glob::new("**(?i)a").is_err());
-    }
-
-    #[test]
-    fn reject_glob_with_oversized_program() {
-        assert!(matches!(
-            Glob::new("<a*:1000000>"),
-            Err(BuildError {
-                kind: BuildErrorKind::Compile(_),
-                ..
-            }),
-        ));
-    }
-
-    #[test]
-    fn reject_any_combinator() {
-        assert!(crate::any(["{a,b,c}", "{d, e}", "f/{g,/error,h}",]).is_err())
-    }
-
-    #[test]
-    fn match_glob_with_empty_expression() {
-        let glob = Glob::new("").unwrap();
-
-        assert!(glob.is_match(Path::new("")));
-
-        assert!(!glob.is_match(Path::new("abc")));
-    }
-
-    #[test]
-    fn match_glob_with_only_invariant_tokens() {
-        let glob = Glob::new("a/b").unwrap();
-
-        assert!(glob.is_match(Path::new("a/b")));
-
-        assert!(!glob.is_match(Path::new("aa/b")));
-        assert!(!glob.is_match(Path::new("a/bb")));
-        assert!(!glob.is_match(Path::new("a/b/c")));
-
-        // There are no variant tokens with which to capture, but the matched text should always be
-        // available.
-        assert_eq!(
-            "a/b",
-            glob.matched(&CandidatePath::from(Path::new("a/b")))
-                .unwrap()
-                .complete(),
+    #[rstest]
+    #[case("<a:65536>")]
+    #[case("<long:16500>")]
+    #[case("a<long:16500>b")]
+    #[case("{<a:65536>,<long:16500>}")]
+    fn new_glob_with_oversized_invariant_repetition_is_rule_err(#[case] expression: &str) {
+        let error = harness::assert_new_glob_is_err(expression);
+        assert!(
+            matches!(
+                error,
+                BuildError {
+                    kind: BuildErrorKind::Rule(_),
+                    ..
+                },
+            ),
+            "`Glob::new` is {:?}, but expected `RuleError`",
+            error,
         );
     }
 
-    #[test]
-    fn match_glob_with_tree_tokens() {
-        let glob = Glob::new("a/**/b").unwrap();
-
-        assert!(glob.is_match(Path::new("a/b")));
-        assert!(glob.is_match(Path::new("a/x/b")));
-        assert!(glob.is_match(Path::new("a/x/y/z/b")));
-
-        assert!(!glob.is_match(Path::new("a")));
-        assert!(!glob.is_match(Path::new("b/a")));
-
-        assert_eq!(
-            "x/y/z/",
-            glob.matched(&CandidatePath::from(Path::new("a/x/y/z/b")))
-                .unwrap()
-                .get(1)
-                .unwrap(),
+    #[rstest]
+    #[case("<a*:1000000>")]
+    fn new_glob_with_oversized_program_is_compile_err(#[case] expression: &str) {
+        let error = harness::assert_new_glob_is_err(expression);
+        assert!(
+            matches!(
+                error,
+                BuildError {
+                    kind: BuildErrorKind::Compile(_),
+                    ..
+                },
+            ),
+            "`Glob::new` is {:?}, but expected `CompileError`",
+            error,
         );
     }
 
-    #[test]
-    fn match_glob_with_tree_and_zom_tokens() {
-        let glob = Glob::new("**/*.ext").unwrap();
-
-        assert!(glob.is_match(Path::new("file.ext")));
-        assert!(glob.is_match(Path::new("a/file.ext")));
-        assert!(glob.is_match(Path::new("a/b/file.ext")));
-
-        let path = CandidatePath::from(Path::new("a/file.ext"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("a/", matched.get(1).unwrap());
-        assert_eq!("file", matched.get(2).unwrap());
+    #[rstest]
+    #[case("(?)a")]
+    #[case("(?-)a")]
+    #[case("()a")]
+    fn new_glob_with_incomplete_flag_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn match_glob_with_eager_and_lazy_zom_tokens() {
-        let glob = Glob::new("$-*.*").unwrap();
-
-        assert!(glob.is_match(Path::new("prefix-file.ext")));
-        assert!(glob.is_match(Path::new("a-b-c.ext")));
-
-        let path = CandidatePath::from(Path::new("a-b-c.ext"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("a", matched.get(1).unwrap());
-        assert_eq!("b-c", matched.get(2).unwrap());
-        assert_eq!("ext", matched.get(3).unwrap());
+    #[rstest]
+    #[case("/(?i)/")]
+    #[case("$(?i)$")]
+    #[case("*(?i)*")]
+    #[case("**(?i)?")]
+    #[case("a(?i)**")]
+    #[case("**(?i)a")]
+    fn new_glob_with_adjacent_separator_and_zom_over_flag_is_err(#[case] expression: &str) {
+        harness::assert_new_glob_is_err(expression);
     }
 
-    #[test]
-    fn match_glob_with_class_tokens() {
-        let glob = Glob::new("a/[xyi-k]/**").unwrap();
-
-        assert!(glob.is_match(Path::new("a/x/file.ext")));
-        assert!(glob.is_match(Path::new("a/y/file.ext")));
-        assert!(glob.is_match(Path::new("a/j/file.ext")));
-
-        assert!(!glob.is_match(Path::new("a/b/file.ext")));
-
-        let path = CandidatePath::from(Path::new("a/i/file.ext"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("i", matched.get(1).unwrap());
+    #[rstest]
+    #[case([
+        "{a,b,c}",
+        "{d,e}",
+        "f/{g,/error,h}",
+    ])]
+    fn any_with_adjacent_boundary_is_err<'t, I>(#[case] patterns: I)
+    where
+        I: Clone + IntoIterator,
+        I::Item: Debug + Pattern<'t>,
+    {
+        harness::assert_any_is_err(patterns);
     }
 
-    #[test]
-    fn match_glob_with_non_ascii_class_tokens() {
-        let glob = Glob::new("a/[金銀]/**").unwrap();
-
-        assert!(glob.is_match(Path::new("a/金/file.ext")));
-        assert!(glob.is_match(Path::new("a/銀/file.ext")));
-
-        assert!(!glob.is_match(Path::new("a/銅/file.ext")));
-
-        let path = CandidatePath::from(Path::new("a/金/file.ext"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("金", matched.get(1).unwrap());
+    #[rstest]
+    #[case("", harness::assert_matched_has_text([(0, "")]))]
+    #[case("abc", harness::assert_matched_is_none)]
+    fn match_empty_glob<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok(""), path, f);
     }
 
-    #[test]
-    fn match_glob_with_literal_escaped_class_tokens() {
-        let glob = Glob::new("a/[\\[\\]\\-]/**").unwrap();
-
-        assert!(glob.is_match(Path::new("a/[/file.ext")));
-        assert!(glob.is_match(Path::new("a/]/file.ext")));
-        assert!(glob.is_match(Path::new("a/-/file.ext")));
-
-        assert!(!glob.is_match(Path::new("a/b/file.ext")));
-
-        let path = CandidatePath::from(Path::new("a/[/file.ext"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("[", matched.get(1).unwrap());
+    #[rstest]
+    #[case("a/b", harness::assert_matched_has_text([(0, "a/b")]))]
+    #[case("aa/b", harness::assert_matched_is_none)]
+    #[case("a/bb", harness::assert_matched_is_none)]
+    #[case("a/b/c", harness::assert_matched_is_none)]
+    fn match_invariant_glob<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok("a/b"), path, f);
     }
 
-    #[cfg(any(unix, windows))]
-    #[test]
-    fn match_glob_with_empty_class_tokens() {
-        // A character class is "empty" if it only matches separators on the target platform. Such
-        // a character class never matches anything.
-        let glob = Glob::new("a[/]b").unwrap();
-
-        assert!(!glob.is_match(Path::new("a/b")));
-        assert!(!glob.is_match(Path::new("ab")));
-        assert!(!glob.is_match(Path::new("a")));
-        assert!(!glob.is_match(Path::new("b")));
-        assert!(!glob.is_match(Path::new("")));
+    #[rstest]
+    #[case("a/b", harness::assert_matched_has_text([(0, "a/b")]))]
+    #[case("a/x/b", harness::assert_matched_has_text([(0, "a/x/b")]))]
+    #[case("a/x/y/z/b", harness::assert_matched_has_text([(0, "a/x/y/z/b"), (1, "x/y/z/")]))]
+    #[case("a", harness::assert_matched_is_none)]
+    #[case("b/a", harness::assert_matched_is_none)]
+    fn match_glob_with_tree<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok("a/**/b"), path, f);
     }
 
-    #[test]
-    fn match_glob_with_negated_class_tokens() {
-        let glob = Glob::new("a[!b]c").unwrap();
-
-        assert!(glob.is_match(Path::new("a-c")));
-        assert!(glob.is_match(Path::new("axc")));
-
-        assert!(!glob.is_match(Path::new("abc")));
-        assert!(!glob.is_match(Path::new("a/c")));
-
-        let glob = Glob::new("a[!0-4]b").unwrap();
-
-        assert!(glob.is_match(Path::new("a9b")));
-        assert!(glob.is_match(Path::new("axb")));
-
-        assert!(!glob.is_match(Path::new("a0b")));
-        assert!(!glob.is_match(Path::new("a4b")));
-        assert!(!glob.is_match(Path::new("a/b")));
+    #[rstest]
+    #[case(".ext", harness::assert_matched_has_text([(0, ".ext"), (2, "")]))]
+    #[case("file.ext", harness::assert_matched_has_text([(0, "file.ext"), (2, "file")]))]
+    #[case("a/b/file.ext", harness::assert_matched_has_text([
+        (0, "a/b/file.ext"),
+        (1, "a/b/"),
+        (2, "file"),
+    ]))]
+    #[case("file", harness::assert_matched_is_none)]
+    #[case("file.txt", harness::assert_matched_is_none)]
+    fn match_glob_with_tree_and_zom<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok("**/*.ext"), path, f);
     }
 
-    #[test]
-    fn match_glob_with_alternation_tokens() {
-        let glob = Glob::new("a/{x?z,y$}b/*").unwrap();
-
-        assert!(glob.is_match(Path::new("a/xyzb/file.ext")));
-        assert!(glob.is_match(Path::new("a/yb/file.ext")));
-
-        assert!(!glob.is_match(Path::new("a/xyz/file.ext")));
-        assert!(!glob.is_match(Path::new("a/y/file.ext")));
-        assert!(!glob.is_match(Path::new("a/xyzub/file.ext")));
-
-        let path = CandidatePath::from(Path::new("a/xyzb/file.ext"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("xyz", matched.get(1).unwrap());
+    #[rstest]
+    #[case("prefix-file.ext", harness::assert_matched_has_text([
+        (0, "prefix-file.ext"),
+        (1, "prefix"),
+        (2, "file"),
+        (3, "ext"),
+    ]))]
+    #[case("a-b-c.ext", harness::assert_matched_has_text([
+        (0, "a-b-c.ext"),
+        (1, "a"),
+        (2, "b-c"),
+        (3, "ext"),
+    ]))]
+    #[case("file.ext", harness::assert_matched_is_none)]
+    fn match_glob_with_eager_and_lazy_zom<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok("$-*.*"), path, f);
     }
 
-    #[test]
-    fn match_glob_with_nested_alternation_tokens() {
-        let glob = Glob::new("a/{y$,{x?z,?z}}b/*").unwrap();
-
-        let path = CandidatePath::from(Path::new("a/xyzb/file.ext"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("xyz", matched.get(1).unwrap());
+    #[rstest]
+    #[case("a/x/file.ext", harness::assert_matched_has_text([
+        (0, "a/x/file.ext"),
+        (1, "x"),
+        (2, "file.ext"),
+    ]))]
+    #[case("a/y/file.ext", harness::assert_matched_has_text([(1, "y")]))]
+    #[case("a/i/file.ext", harness::assert_matched_has_text([(1, "i")]))]
+    #[case("a/k/file.ext", harness::assert_matched_has_text([(1, "k")]))]
+    #[case("a/j/file.ext", harness::assert_matched_has_text([(1, "j")]))]
+    #[case("a/z/file.ext", harness::assert_matched_is_none)]
+    fn match_glob_with_ascii_class<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok("a/[xyi-k]/**"), path, f);
     }
 
-    #[test]
-    fn match_glob_with_alternation_tree_tokens() {
-        let glob = Glob::new("a{/foo,/bar,/**/baz}/qux").unwrap();
-
-        assert!(glob.is_match(Path::new("a/foo/qux")));
-        assert!(glob.is_match(Path::new("a/foo/baz/qux")));
-        assert!(glob.is_match(Path::new("a/foo/bar/baz/qux")));
-
-        assert!(!glob.is_match(Path::new("a/foo/bar/qux")));
+    #[rstest]
+    #[case("a/金/file.ext", harness::assert_matched_has_text([
+        (0, "a/金/file.ext"),
+        (1, "金"),
+        (2, "file.ext"),
+    ]))]
+    #[case("a/銀/file.ext", harness::assert_matched_has_text([(1, "銀")]))]
+    #[case("a/銅/file.ext", harness::assert_matched_is_none)]
+    #[case("a/b/file.ext", harness::assert_matched_is_none)]
+    fn match_glob_with_cjk_class<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok("a/[金銀]/**"), path, f);
     }
 
-    #[test]
-    fn match_glob_with_alternation_repetition_tokens() {
-        let glob = Glob::new("log-{<[0-9]:3>,<[0-9]:4>-<[0-9]:2>-<[0-9]:2>}.txt").unwrap();
-
-        assert!(glob.is_match(Path::new("log-000.txt")));
-        assert!(glob.is_match(Path::new("log-1970-01-01.txt")));
-
-        assert!(!glob.is_match(Path::new("log-abc.txt")));
-        assert!(!glob.is_match(Path::new("log-nope-no-no.txt")));
-    }
-
-    #[test]
-    fn match_glob_with_repetition_tokens() {
-        let glob = Glob::new("a/<[0-9]:6>/*").unwrap();
-
-        assert!(glob.is_match(Path::new("a/000000/file.ext")));
-        assert!(glob.is_match(Path::new("a/123456/file.ext")));
-
-        assert!(!glob.is_match(Path::new("a/00000/file.ext")));
-        assert!(!glob.is_match(Path::new("a/0000000/file.ext")));
-        assert!(!glob.is_match(Path::new("a/bbbbbb/file.ext")));
-
-        let path = CandidatePath::from(Path::new("a/999999/file.ext"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("999999", matched.get(1).unwrap());
-    }
-
-    #[test]
-    fn match_glob_with_negative_repetition_tokens() {
-        let glob = Glob::new("<[!.]*/>[!.]*").unwrap();
-
-        assert!(glob.is_match(Path::new("a/b/file.ext")));
-
-        assert!(!glob.is_match(Path::new(".a/b/file.ext")));
-        assert!(!glob.is_match(Path::new("a/.b/file.ext")));
-        assert!(!glob.is_match(Path::new("a/b/.file.ext")));
-    }
-
-    #[test]
-    fn match_glob_with_nested_repetition_tokens() {
-        let glob = Glob::new("log<-<[0-9]:3>:1,2>.txt").unwrap();
-
-        assert!(glob.is_match(Path::new("log-000.txt")));
-        assert!(glob.is_match(Path::new("log-123-456.txt")));
-
-        assert!(!glob.is_match(Path::new("log-abc.txt")));
-        assert!(!glob.is_match(Path::new("log-123-456-789.txt")));
-
-        let path = CandidatePath::from(Path::new("log-987-654.txt"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("-987-654", matched.get(1).unwrap());
-    }
-
-    #[test]
-    fn match_glob_with_repeated_alternation_tokens() {
-        let glob = Glob::new("<{a,b}:1,>/**").unwrap();
-
-        assert!(glob.is_match(Path::new("a/file.ext")));
-        assert!(glob.is_match(Path::new("b/file.ext")));
-        assert!(glob.is_match(Path::new("aaa/file.ext")));
-        assert!(glob.is_match(Path::new("bbb/file.ext")));
-
-        assert!(!glob.is_match(Path::new("file.ext")));
-        assert!(!glob.is_match(Path::new("c/file.ext")));
-
-        let path = CandidatePath::from(Path::new("aa/file.ext"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("aa", matched.get(1).unwrap());
-    }
-
-    #[test]
-    fn match_glob_with_rooted_tree_token() {
-        let glob = Glob::new("/**/{var,.var}/**/*.log").unwrap();
-
-        assert!(glob.is_match(Path::new("/var/log/network.log")));
-        assert!(glob.is_match(Path::new("/home/nobody/.var/network.log")));
-
-        assert!(!glob.is_match(Path::new("./var/cron.log")));
-        assert!(!glob.is_match(Path::new("mnt/var/log/cron.log")));
-
-        let path = CandidatePath::from(Path::new("/var/log/network.log"));
-        let matched = glob.matched(&path).unwrap();
-        assert_eq!("/", matched.get(1).unwrap());
-    }
-
-    #[test]
-    fn match_glob_with_flags() {
-        let glob = Glob::new("(?-i)photos/**/*.(?i){jpg,jpeg}").unwrap();
-
-        assert!(glob.is_match(Path::new("photos/flower.jpg")));
-        assert!(glob.is_match(Path::new("photos/flower.JPEG")));
-
-        assert!(!glob.is_match(Path::new("Photos/flower.jpeg")));
-    }
-
-    #[test]
-    fn match_glob_with_escaped_flags() {
-        let glob = Glob::new("a\\(b\\)").unwrap();
-
-        assert!(glob.is_match(Path::new("a(b)")));
-    }
-
-    #[test]
-    fn match_any_combinator() {
-        let any = crate::any(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
-
-        assert!(any.is_match("src/lib.rs"));
-        assert!(any.is_match("doc/api.md"));
-        assert!(any.is_match("pkg/arch/lib-git/PKGBUILD"));
-
-        assert!(!any.is_match("img/icon.png"));
-        assert!(!any.is_match("doc/LICENSE.tex"));
-        assert!(!any.is_match("pkg/lib.rs"));
-    }
-
-    #[test]
-    fn partition_glob_with_variant_and_invariant_parts() {
-        let (prefix, glob) = Glob::new("a/b/x?z/*.ext").unwrap().partition_non_empty();
-
-        assert_eq!(prefix, Path::new("a/b"));
-
-        assert!(glob.is_match(Path::new("xyz/file.ext")));
-        assert!(glob.is_match(Path::new("a/b/xyz/file.ext").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn partition_glob_with_only_variant_wildcard_parts() {
-        let (prefix, glob) = Glob::new("x?z/*.ext").unwrap().partition_non_empty();
-
-        assert_eq!(prefix, Path::new(""));
-
-        assert!(glob.is_match(Path::new("xyz/file.ext")));
-        assert!(glob.is_match(Path::new("xyz/file.ext").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn partition_glob_with_only_invariant_literal_parts() {
-        let (prefix, glob) = Glob::new("a/b").unwrap().partition_or_empty();
-
-        assert_eq!(prefix, Path::new("a/b"));
-
-        assert!(glob.is_match(Path::new("")));
-        assert!(glob.is_match(Path::new("a/b").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn partition_glob_with_variant_alternation_parts() {
-        let (prefix, glob) = Glob::new("{x,z}/*.ext").unwrap().partition_non_empty();
-
-        assert_eq!(prefix, Path::new(""));
-
-        assert!(glob.is_match(Path::new("x/file.ext")));
-        assert!(glob.is_match(Path::new("z/file.ext").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn partition_glob_with_invariant_alternation_parts() {
-        let (prefix, glob) = Glob::new("{a/b}/c").unwrap().partition_or_empty();
-
-        assert_eq!(prefix, Path::new("a/b/c"));
-
-        assert!(glob.is_match(Path::new("")));
-        assert!(glob.is_match(Path::new("a/b/c").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn partition_glob_with_invariant_repetition_parts() {
-        let (prefix, glob) = Glob::new("</a/b:3>/c").unwrap().partition_or_empty();
-
-        assert_eq!(prefix, Path::new("/a/b/a/b/a/b/c"));
-
-        assert!(glob.is_match(Path::new("")));
-        assert!(glob.is_match(Path::new("/a/b/a/b/a/b/c").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn partition_glob_with_literal_dots_and_tree_tokens() {
-        let (prefix, glob) = Glob::new("../**/*.ext").unwrap().partition_non_empty();
-
-        assert_eq!(prefix, Path::new(".."));
-
-        assert!(glob.is_match(Path::new("xyz/file.ext")));
-        assert!(glob.is_match(Path::new("../xyz/file.ext").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn partition_glob_with_rooted_tree_token() {
-        let (prefix, glob) = Glob::new("/**/*.ext").unwrap().partition_non_empty();
-
-        assert_eq!(prefix, Path::new("/"));
-        assert!(!glob.has_root());
-
-        assert!(glob.is_match(Path::new("file.ext")));
-        assert!(glob.is_match(Path::new("/root/file.ext").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn partition_glob_with_rooted_zom_token() {
-        let (prefix, glob) = Glob::new("/*/*.ext").unwrap().partition_non_empty();
-
-        assert_eq!(prefix, Path::new("/"));
-        assert!(!glob.has_root());
-
-        assert!(glob.is_match(Path::new("root/file.ext")));
-        assert!(glob.is_match(Path::new("/root/file.ext").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn partition_glob_with_rooted_literal_token() {
-        let (prefix, glob) = Glob::new("/root/**/*.ext").unwrap().partition_non_empty();
-
-        assert_eq!(prefix, Path::new("/root"));
-        assert!(!glob.has_root());
-
-        assert!(glob.is_match(Path::new("file.ext")));
-        assert!(glob.is_match(Path::new("/root/file.ext").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn partition_glob_with_invariant_expression_text() {
-        let (prefix, glob) = Glob::new("/root/file.ext").unwrap().partition_or_empty();
-        assert_eq!(prefix, Path::new("/root/file.ext"));
-        assert_eq!(format!("{}", glob), "");
-
-        let (prefix, glob) = Glob::new("<a:3>/file.ext").unwrap().partition_or_empty();
-        assert_eq!(prefix, Path::new("aaa/file.ext"));
-        assert_eq!(format!("{}", glob), "");
-    }
-
-    #[test]
-    fn partition_glob_with_variant_expression_text() {
-        let (prefix, glob) = Glob::new("**/file.ext").unwrap().partition_non_empty();
-        assert_eq!(prefix, Path::new(""));
-        assert_eq!(format!("{}", glob), "**/file.ext");
-
-        let (prefix, glob) = Glob::new("/root/**/file.ext")
-            .unwrap()
-            .partition_non_empty();
-        assert_eq!(prefix, Path::new("/root"));
-        assert_eq!(format!("{}", glob), "**/file.ext");
-
-        let (prefix, glob) = Glob::new("/root/**").unwrap().partition_non_empty();
-        assert_eq!(prefix, Path::new("/root"));
-        assert_eq!(format!("{}", glob), "**");
-    }
-
-    #[test]
-    fn repartition_glob_with_variant_tokens() {
-        let (prefix, glob) = Glob::new("/root/**/file.ext")
-            .unwrap()
-            .partition_non_empty();
-        assert_eq!(prefix, Path::new("/root"));
-        assert_eq!(format!("{}", glob), "**/file.ext");
-
-        let (prefix, glob) = glob.partition_non_empty();
-        assert_eq!(prefix, Path::new(""));
-        assert_eq!(format!("{}", glob), "**/file.ext");
-    }
-
-    #[test]
-    fn query_glob_has_root() {
-        assert!(Glob::new("/root").unwrap().has_root());
-        assert!(Glob::new("/**").unwrap().has_root());
-        assert!(Glob::new("</root:1,>").unwrap().has_root());
-
-        assert!(!Glob::new("").unwrap().has_root());
-        // This is not rooted, because character classes may not match separators. This example
-        // compiles an "empty" character class, which attempts to match `NUL` and so effectively
-        // matches nothing.
-        #[cfg(any(unix, windows))]
-        assert!(!Glob::new("[/]root").unwrap().has_root());
-        // The leading forward slash in tree tokens is meaningful. When omitted, at the beginning
-        // of an expression, the resulting glob is not rooted.
-        assert!(!Glob::new("**/").unwrap().has_root());
+    #[rstest]
+    #[case("a/[/file.ext", harness::assert_matched_has_text([
+        (0, "a/[/file.ext"),
+        (1, "["),
+        (2, "file.ext"),
+    ]))]
+    #[case("a/]/file.ext", harness::assert_matched_has_text([(1, "]")]))]
+    #[case("a/-/file.ext", harness::assert_matched_has_text([(1, "-")]))]
+    #[case("a/b/file.ext", harness::assert_matched_is_none)]
+    fn match_glob_with_literal_escaped_class<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("a/[\\[\\]\\-]/**"),
+            path,
+            f,
+        );
     }
 
     #[cfg(any(unix, windows))]
-    #[test]
-    fn query_glob_has_semantic_literals() {
-        assert!(Glob::new("../src/**").unwrap().has_semantic_literals());
-        assert!(Glob::new("*/a/../b.*").unwrap().has_semantic_literals());
-        assert!(Glob::new("{a,..}").unwrap().has_semantic_literals());
-        assert!(Glob::new("<a/..>").unwrap().has_semantic_literals());
-        assert!(Glob::new("<a/{b,..,c}/d>").unwrap().has_semantic_literals());
-        assert!(Glob::new("{a,<b/{c,..}/>}d")
-            .unwrap()
-            .has_semantic_literals());
-        assert!(Glob::new("./*.txt").unwrap().has_semantic_literals());
+    #[rstest]
+    #[case("", harness::assert_matched_is_none)]
+    #[case("a", harness::assert_matched_is_none)]
+    #[case("b", harness::assert_matched_is_none)]
+    #[case("ab", harness::assert_matched_is_none)]
+    #[case("a/b", harness::assert_matched_is_none)]
+    fn match_glob_with_empty_class<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        // A class is empty if it only matches separators on the target platform. Such a class
+        // never matches anything.
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok("a[/]b"), path, f);
     }
 
-    #[test]
-    fn query_glob_capture_indices() {
-        let glob = Glob::new("**/{foo*,bar*}/???").unwrap();
+    #[rstest]
+    #[case("a-c", harness::assert_matched_has_text([(0, "a-c"), (1, "-")]))]
+    #[case("axc", harness::assert_matched_has_text([(0, "axc"), (1, "x")]))]
+    #[case("a9c", harness::assert_matched_has_text([(0, "a9c"), (1, "9")]))]
+    #[case("abc", harness::assert_matched_is_none)]
+    #[case("a0c", harness::assert_matched_is_none)]
+    #[case("a4c", harness::assert_matched_is_none)]
+    #[case("a/c", harness::assert_matched_is_none)]
+    fn match_glob_with_negated_class<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok("a[!b0-4]c"), path, f);
+    }
+
+    #[rstest]
+    #[case("a/xyzb/file.ext", harness::assert_matched_has_text([
+        (0, "a/xyzb/file.ext"),
+        (1, "xyz"),
+        (2, "file.ext"),
+    ]))]
+    #[case("a/yb/file.ext", harness::assert_matched_has_text([
+        (0, "a/yb/file.ext"),
+        (1, "y"),
+        (2, "file.ext"),
+    ]))]
+    #[case("a/xyz/file.ext", harness::assert_matched_is_none)]
+    #[case("a/y/file.ext", harness::assert_matched_is_none)]
+    #[case("a/xyzub/file.ext", harness::assert_matched_is_none)]
+    fn match_glob_with_alternation<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("a/{x?z,y$}b/*"),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case("a/xyzb/file.ext", harness::assert_matched_has_text([
+        (0, "a/xyzb/file.ext"),
+        (1, "xyz"),
+        (2, "file.ext"),
+    ]))]
+    #[case("a/xyz/file.ext", harness::assert_matched_is_none)]
+    fn match_glob_with_nested_alternation<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("a/{y$,{x?z,?z}}b/*"),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case("prefix/a/b/c/postfix", harness::assert_matched_has_text([
+        (0, "prefix/a/b/c/postfix"),
+        (1, "/a/b/c"),
+    ]))]
+    #[case("prefix/a/c/postfix", harness::assert_matched_has_text([(1, "/a/c")]))]
+    #[case("prefix/a/postfix", harness::assert_matched_has_text([(1, "/a")]))]
+    #[case("prefix/a/b/postfix", harness::assert_matched_is_none)]
+    fn match_glob_with_tree_in_alternation<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("prefix{/a,/b,/**/c}/postfix"),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case("log-000.txt", harness::assert_matched_has_text([(0, "log-000.txt"), (1, "000")]))]
+    #[case("log-1970-01-01.txt", harness::assert_matched_has_text([
+        (0, "log-1970-01-01.txt"),
+        (1, "1970-01-01"),
+    ]))]
+    #[case("log-abc.txt", harness::assert_matched_is_none)]
+    #[case("log-nope-no-no.txt", harness::assert_matched_is_none)]
+    fn match_glob_with_repetition_in_alternation<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("log-{<[0-9]:3>,<[0-9]:4>-<[0-9]:2>-<[0-9]:2>}.txt"),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case("a/000000/file.ext", harness::assert_matched_has_text([
+        (0, "a/000000/file.ext"),
+        (1, "000000"),
+        (2, "file.ext"),
+    ]))]
+    #[case("a/123456/file.ext", harness::assert_matched_has_text([
+        (0, "a/123456/file.ext"),
+        (1, "123456"),
+        (2, "file.ext"),
+    ]))]
+    #[case("a/00000/file.ext", harness::assert_matched_is_none)]
+    #[case("a/0000000/file.ext", harness::assert_matched_is_none)]
+    #[case("a/bbbbbb/file.ext", harness::assert_matched_is_none)]
+    fn match_glob_with_repetition<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("a/<[0-9]:6>/*"),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case("a/b/file.ext", harness::assert_matched_has_text([
+        (0, "a/b/file.ext"),
+        (1, "a/b/"),
+        (2, "file.ext"),
+    ]))]
+    #[case(".a/b/file.ext", harness::assert_matched_is_none)]
+    #[case("a/.b/file.ext", harness::assert_matched_is_none)]
+    #[case("a/b/.file.ext", harness::assert_matched_is_none)]
+    fn match_glob_with_negated_class_in_repetition<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("<[!.]*/><[!.]*:0,1>"),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case("log-000.txt", harness::assert_matched_has_text([(0, "log-000.txt"), (1, "-000")]))]
+    #[case("log-123-456.txt", harness::assert_matched_has_text([
+        (0, "log-123-456.txt"),
+        (1, "-123-456"),
+    ]))]
+    #[case("log-abc.txt", harness::assert_matched_is_none)]
+    #[case("log-123-456-789.txt", harness::assert_matched_is_none)]
+    fn match_glob_with_nested_repetition<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("log<-<[0-9]:3>:1,2>.txt"),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case("a/file.ext", harness::assert_matched_has_text([
+        (0, "a/file.ext"),
+        (1, "a"),
+        (2, "file.ext"),
+    ]))]
+    #[case("aaa/file.ext", harness::assert_matched_has_text([
+        (0, "aaa/file.ext"),
+        (1, "aaa"),
+        (2, "file.ext"),
+    ]))]
+    #[case("b/file.ext", harness::assert_matched_has_text([(1, "b")]))]
+    #[case("bbb/file.ext", harness::assert_matched_has_text([(1, "bbb")]))]
+    #[case("file.ext", harness::assert_matched_is_none)]
+    #[case("c/file.ext", harness::assert_matched_is_none)]
+    fn match_glob_with_alternation_in_repetition<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("<{a,b}:1,>/**"),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case("/var/log/network.log", harness::assert_matched_has_text([
+        (0, "/var/log/network.log"),
+        (2, "var"),
+        (3, "log/"),
+        (4, "network"),
+    ]))]
+    #[case("/home/nobody/.var/network.log", harness::assert_matched_has_text([
+        (0, "/home/nobody/.var/network.log"),
+        // TODO: The match and capture behavior of `**` here seems not only to cross boundaries,
+        //       but match only part of a component! Greedy or not, tree wildcards ought to operate
+        //       exclusively on some number of **complete** components: 
+        (1, "/home/nobody/."),
+        (2, "var"),
+        (4, "network"),
+    ]))]
+    #[case("./var/cron.log", harness::assert_matched_is_none)]
+    #[case("mnt/var/log/cron.log", harness::assert_matched_is_none)]
+    fn match_glob_with_rooted_tree<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("/**/{var,.var}/**/*.log"),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case("photos/flower.jpg", harness::assert_matched_has_text([
+        (0, "photos/flower.jpg"),
+        (2, "flower"),
+        (3, "jpg"),
+    ]))]
+    #[case("photos/flower.JPEG", harness::assert_matched_has_text([(3, "JPEG")]))]
+    #[case("Photos/flower.jpeg", harness::assert_matched_is_none)]
+    fn match_glob_with_case_sensitivity_flag<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_new_glob_is_ok("(?-i)photos/**/*.(?i){jpg,jpeg}"),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case("a(b)", harness::assert_matched_has_text([(0, "a(b)")]))]
+    fn match_glob_with_literal_escaped_flag<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok("a\\(b\\)"), path, f);
+    }
+
+    #[rstest]
+    #[case("src/lib.rs", harness::assert_matched_has_text([(0, "src/lib.rs")]))]
+    #[case("doc/api.md", harness::assert_matched_has_text([(0, "doc/api.md")]))]
+    #[case(
+        "pkg/arch/lib-git/PKGBUILD",
+        harness::assert_matched_has_text([(0, "pkg/arch/lib-git/PKGBUILD")]),
+    )]
+    fn match_any<T, F>(#[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(
+            harness::assert_any_is_ok(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]),
+            path,
+            f,
+        );
+    }
+
+    #[rstest]
+    #[case::prefixed_and_non_empty("a/b/x?z/*.ext", "a/b", "xyz/file.ext")]
+    #[case::only_variant_wildcard("x?z/*.ext", "", "xyz/file.ext")]
+    #[case::only_invariant_literal("a/b", "a/b", "")]
+    #[case::variant_alternation("{x,z}/*.ext", "", "x/file.ext")]
+    #[case::invariant_alternation("{a/b}/c", "a/b/c", "")]
+    #[case::invariant_repetition("</a/b:3>/c", "/a/b/a/b/a/b/c", "")]
+    #[case::literal_dots_and_tree("../**/*.ext", "..", "xyz/file.ext")]
+    #[case::rooted_literal("/root/**/*.ext", "/root", "file.ext")]
+    #[case::rooted_zom("/*/*.ext", "/", "xyz/file.ext")]
+    #[case::rooted_tree("/**/*.ext", "/", "file.ext")]
+    fn partition_glob_has_prefix_and_is_match(
+        #[case] expression: &str,
+        #[case] prefix: &str,
+        #[case] path: &str,
+    ) {
+        harness::assert_partitioned_has_prefix_and_is_match(
+            harness::assert_new_glob_is_ok(expression).partition_or_empty(),
+            (prefix, path),
+        );
+    }
+
+    #[rstest]
+    #[case("/root/file.ext", "/root/file.ext")]
+    #[case("<a:3>/file.ext", "aaa/file.ext")]
+    fn partition_invariant_glob_has_prefix_and_empty_expression(
+        #[case] expression: &str,
+        #[case] prefix: &str,
+    ) {
+        harness::assert_partitioned_has_prefix_and_expression(
+            harness::assert_new_glob_is_ok(expression).partition_or_empty(),
+            (prefix, ""),
+        );
+    }
+
+    #[rstest]
+    #[case("**/file.ext", "", "**/file.ext")]
+    #[case("/root/**/file.ext", "/root", "**/file.ext")]
+    #[case("/root/**", "/root", "**")]
+    fn partition_variant_glob_has_prefix_and_non_empty_expression(
+        #[case] expression: &str,
+        #[case] prefix: &str,
+        #[case] postfix: &str,
+    ) {
+        harness::assert_partitioned_has_prefix_and_expression(
+            harness::assert_new_glob_is_ok(expression).assert_partition_non_empty(),
+            (prefix, postfix),
+        );
+    }
+
+    #[rstest]
+    #[case("/root/**/file.ext", "/root", "**/file.ext")]
+    #[case("/root/**", "/root", "**")]
+    fn repartition_variant_glob_has_empty_prefix_and_idempotent_expression(
+        #[case] expression: &str,
+        #[case] prefix: &str,
+        #[case] postfix: &str,
+    ) {
+        let (_, glob) = harness::assert_partitioned_has_prefix_and_expression(
+            harness::assert_new_glob_is_ok(expression).assert_partition_non_empty(),
+            (prefix, postfix),
+        );
+        harness::assert_partitioned_has_prefix_and_expression(
+            glob.assert_partition_non_empty(),
+            ("", postfix),
+        );
+    }
+
+    #[rstest]
+    #[case("/root", true)]
+    #[case("/**", true)]
+    #[case("</root:1,>", true)]
+    #[case("", false)]
+    // The leading forward slash in tree wildcards is meaningful. When omitted at the beginning of
+    // an expression, the resulting glob is not rooted.
+    #[case("**/", false)]
+    // This is not rooted, because character classes never match separators. This example compiles
+    // an empty character class, which never matches anything (even nothing).
+    #[cfg_attr(any(unix, windows), case("[/]root", false))]
+    fn query_glob_has_root_eq(#[case] expression: &str, #[case] expected: bool) {
+        let glob = harness::assert_new_glob_is_ok(expression);
+        let has_root = glob.has_root();
+        assert!(
+            has_root == expected,
+            "`Glob::has_root` is `{}`, but expected `{}`: in `Glob`: `{}`",
+            has_root,
+            expected,
+            glob,
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[rstest]
+    #[case("../src/**")]
+    #[case("*/a/../b.*")]
+    #[case("{a,..}")]
+    #[case("<a/..>")]
+    #[case("<a/{b,..,c}/d>")]
+    #[case("{a,<b/{c,..}/>}d")]
+    #[case("./*.txt")]
+    // TODO: `has_semantic_literals` does not inspect invariant text and so some less obvious
+    //       components are not detected. See `Token::literals`.
+    //#[case("[.]/a")]
+    //#[case("a/[.][.]")]
+    fn query_glob_with_dot_components_has_semantic_literals(#[case] expression: &str) {
+        let glob = harness::assert_new_glob_is_ok(expression);
+        assert!(
+            glob.has_semantic_literals(),
+            "`Glob::has_semantic_literals` is `false`, but expected `true`: in `Glob`: `{}`",
+            glob,
+        );
+    }
+
+    #[rstest]
+    #[case("**/{a*,b*}/???", [1, 2, 3, 4, 5])]
+    fn query_glob_captures_have_ordered_indices(
+        #[case] expression: &str,
+        #[case] expected: impl AsRef<[usize]>,
+    ) {
+        let glob = harness::assert_new_glob_is_ok(expression);
         let indices: Vec<_> = glob.captures().map(|token| token.index()).collect();
-        assert_eq!(&indices, &[1, 2, 3, 4, 5]);
+        let expected = expected.as_ref();
+        assert!(
+            indices == expected,
+            "`Glob::captures` has indices `{:?}`, but expected `{:?}`: in `Glob`: `{}`",
+            indices,
+            expected,
+            glob,
+        );
     }
 
-    #[test]
-    fn query_glob_capture_spans() {
-        let glob = Glob::new("**/{foo*,bar*}/$").unwrap();
+    #[rstest]
+    #[case("**/{a*,b*}/$", [(0, 3), (3, 7), (11, 1)])]
+    fn query_glob_captures_have_ordered_spans(
+        #[case] expression: &str,
+        #[case] expected: impl AsRef<[Span]>,
+    ) {
+        let glob = harness::assert_new_glob_is_ok(expression);
         let spans: Vec<_> = glob.captures().map(|token| token.span()).collect();
-        assert_eq!(&spans, &[(0, 3), (3, 11), (15, 1)]);
+        let expected = expected.as_ref();
+        assert!(
+            spans == expected,
+            "`Glob::captures` has spans `{:?}`, but expected `{:?}`: in `Glob`: `{}`",
+            spans,
+            expected,
+            glob,
+        );
     }
 
-    #[test]
-    fn query_glob_variance() {
-        assert!(Glob::new("").unwrap().variance().is_invariant());
-        assert!(Glob::new("/a/file.ext").unwrap().variance().is_invariant());
-        assert!(Glob::new("/a/{file.ext}")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        assert!(Glob::new("{a/b/file.ext}")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        assert!(Glob::new("{a,a}").unwrap().variance().is_invariant());
-        #[cfg(windows)]
-        assert!(Glob::new("{a,A}").unwrap().variance().is_invariant());
-        assert!(Glob::new("<a/b:2>").unwrap().variance().is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a]/file.ext")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a-a]/file.ext")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a-aaa-a]/file.ext")
-            .unwrap()
-            .variance()
-            .is_invariant());
-
-        assert!(Glob::new("/a/{b,c}").unwrap().variance().is_variant());
-        assert!(Glob::new("<a/b:1,>").unwrap().variance().is_variant());
-        assert!(Glob::new("/[ab]/file.ext").unwrap().variance().is_variant());
-        assert!(Glob::new("**").unwrap().variance().is_variant());
-        assert!(Glob::new("/a/*.ext").unwrap().variance().is_variant());
-        assert!(Glob::new("/a/b*").unwrap().variance().is_variant());
-        #[cfg(unix)]
-        assert!(Glob::new("/a/(?i)file.ext")
-            .unwrap()
-            .variance()
-            .is_variant());
-        #[cfg(windows)]
-        assert!(Glob::new("/a/(?-i)file.ext")
-            .unwrap()
-            .variance()
-            .is_variant());
+    #[rstest]
+    #[case("", true)]
+    #[case("/a/file.ext", true)]
+    #[case("/a/{file.ext}", true)]
+    #[case("/a/b/file.ext", true)]
+    #[case("{a,a}", true)]
+    #[case("<a/b:2>", true)]
+    #[case("/a/{b,c}", false)]
+    #[case("<a/b:1,>", false)]
+    #[case("/[ab]/file.ext", false)]
+    #[case("**", false)]
+    #[case("/a/*.ext", false)]
+    #[case("/a/b*", false)]
+    #[cfg_attr(unix, case("/[a]/file.ext", true))]
+    #[cfg_attr(unix, case("/[a-a]/file.ext", true))]
+    #[cfg_attr(unix, case("/[a-aaa-a]/file.ext", true))]
+    #[cfg_attr(unix, case("/a/(?i)file.ext", false))]
+    #[cfg_attr(windows, case("{a,A}", true))]
+    #[cfg_attr(windows, case("/a/(?-i)file.ext", false))]
+    fn query_glob_variance_is_invariant_eq(#[case] expression: &str, #[case] expected: bool) {
+        let glob = harness::assert_new_glob_is_ok(expression);
+        let is_invariant = glob.variance().is_invariant();
+        assert!(
+            is_invariant == expected,
+            "`Variance::is_invariant` is `{}`, but expected `{}`: in `Glob`: `{}`",
+            is_invariant,
+            expected,
+            glob,
+        );
     }
 }

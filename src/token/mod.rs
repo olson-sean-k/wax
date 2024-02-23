@@ -475,7 +475,7 @@ impl<'t, A> Token<'t, A> {
     //       than only its concatenation. Consider names or different APIs that make this more
     //       obvious.
     // TODO: This function only finds `LiteralSequence` components rather than **invariant text**
-    //       components, and so may miss some interesting text. Consider `{.}{.}/a`. The text of
+    //       components, and so may miss some interesting text. Consider `[.][.]/a`. The text of
     //       this pattern is invariant, but this function does not find and cannot represent the
     //       `..` component.
     pub fn literals(
@@ -1237,6 +1237,39 @@ impl<'t, A> VarianceFold<Depth> for Concatenation<'t, A> {
     fn fold(&self, terms: Vec<GlobVariance<Depth>>) -> Option<GlobVariance<Depth>> {
         terms.into_iter().reduce(ops::conjunction)
     }
+
+    fn finalize(&self, term: GlobVariance<Depth>) -> GlobVariance<Depth> {
+        // Depth must consider boundary component tokens (i.e., tree wildcards). Boundary component
+        // tokens do not have explict separators, so additional depth terms are needed for any
+        // adjacent non-boundary tokens. For example, consider the pattern `a/**/b`. The `a` and
+        // `b` components have depth terms of zero and the tree wildcard `**` has an unbounded
+        // depth term. Note that the forward slashes in the expression are part of the tree
+        // wildcard; there are no separator tokens. The conjunction of these terms is unbounded (no
+        // lower bound), but the depth of this expression should have a lower bound of two.
+        ops::conjunction(
+            term,
+            Variance::Invariant({
+                let mut sum = Depth::ZERO;
+                let mut term = Depth::ZERO;
+                for token in self.tokens() {
+                    match token.boundary() {
+                        Some(Boundary::Component) => {
+                            sum = ops::conjunction(sum, term);
+                            term = Depth::ZERO;
+                        },
+                        None => {
+                            term = Depth::ONE;
+                        },
+                        _ => {},
+                    }
+                }
+                if sum != Depth::ZERO {
+                    sum = ops::conjunction(sum, term);
+                }
+                sum
+            }),
+        )
+    }
 }
 
 impl<'t, A> VarianceFold<Size> for Concatenation<'t, A> {
@@ -1633,25 +1666,108 @@ fn components<'i, 't, A>(tokens: &'i [Token<'t, A>]) -> impl Iterator<Item = Com
     })
 }
 
+#[cfg(test)]
+pub mod harness {
+    use std::path::Path;
+
+    use crate::token::{TokenTree, Tokenized};
+
+    pub fn assert_tokenized_invariant_path_prefix_eq<A>(
+        tokenized: Tokenized<'_, A>,
+        expected: impl AsRef<Path>,
+    ) -> Tokenized<'_, A> {
+        let (_, text) = tokenized.as_token().invariant_text_prefix();
+        let text = Path::new(&text);
+        let expected = expected.as_ref();
+        assert!(
+            text == expected,
+            "`Token::invariant_text_prefix` as path is `{}`, but expected `{}`: in `Tokenized`: `{}`",
+            text.display(),
+            expected.display(),
+            tokenized.expression(),
+        );
+        tokenized
+    }
+}
+
 // TODO: Test also against token trees constructed directly from tokens rather than the parser.
 #[cfg(test)]
 mod tests {
-    use crate::token::{self, Token, TokenTree};
+    use expect_macro::expect;
+    use rstest::{fixture, rstest};
+    use std::path::Path;
 
-    #[test]
-    fn literal_case_insensitivity() {
-        let tokenized = token::parse("(?-i)../foo/(?i)**/bar/**(?-i)/baz/*(?i)qux").unwrap();
-        let literals: Vec<_> = tokenized
-            .as_token()
-            .concatenation()
-            .iter()
-            .filter_map(Token::as_literal)
-            .collect();
+    use crate::token::{harness, parse, ExpressionMetadata, Token, TokenTree, Tokenized};
 
-        assert!(!literals[0].is_case_insensitive); // `..`
-        assert!(!literals[1].is_case_insensitive); // `foo`
-        assert!(literals[2].is_case_insensitive); // `bar`
-        assert!(!literals[3].is_case_insensitive); // `baz`
-        assert!(literals[4].is_case_insensitive); // `qux`
+    // This fixture constructs a `Tokenized` with the following tokens in its (filtered)
+    // concatenation:
+    //
+    // | Index | `Literal` | `Wildcard` |
+    // |-------|-----------|------------|
+    // |     0 | `..`      | `**`       |
+    // |     1 | `foo`     | `**`       |
+    // |     2 | `bar`     | `*`        |
+    // |     3 | `baz`     |            |
+    // |     4 | `qux`     |            |
+    #[fixture]
+    fn flag_literal_wildcard_concatenation() -> Tokenized<'static, ExpressionMetadata> {
+        parse::harness::assert_parse_expression_is_ok("(?-i)../foo/(?i)**/bar/**(?-i)/baz/*(?i)qux")
+    }
+
+    #[rstest]
+    #[case(0, false)] // `..`
+    #[case(1, false)] // `foo`
+    #[case(2, true)] // `bar`
+    #[case(3, false)] // `baz`
+    #[case(4, true)] // `qux`
+    fn parse_expression_literal_case_insensitivity_eq(
+        flag_literal_wildcard_concatenation: Tokenized<'static, ExpressionMetadata>,
+        #[case] index: usize,
+        #[case] expected: bool,
+    ) {
+        let literal = expect!(
+            flag_literal_wildcard_concatenation
+                .as_token()
+                .concatenation()
+                .iter()
+                .filter_map(Token::as_literal)
+                .nth(index),
+            "`Literal` at index {} is `None`, but expected `Some`",
+            index,
+        );
+        let is_case_insensitive = literal.is_case_insensitive;
+        assert!(
+            is_case_insensitive == expected,
+            "case insensitivity of literal `{}` at index {} is `{}`, but expected `{}`:\
+            expression `{}`",
+            literal.text.as_ref(),
+            index,
+            is_case_insensitive,
+            expected,
+            flag_literal_wildcard_concatenation.expression(),
+        );
+    }
+
+    #[rstest]
+    #[case("/a/b", "/a/b")]
+    #[case("a/b", "a/b")]
+    #[case("a/*", "a/")]
+    #[case("a/*b", "a/")]
+    #[case("a/b*", "a/")]
+    #[case("a/b/*/c", "a/b/")]
+    #[case("**", "")]
+    #[case("a*", "")]
+    #[case("*/b", "")]
+    #[case("a?/b", "")]
+    #[cfg_attr(unix, case("../foo/(?i)bar/(?-i)baz", "../foo/"))]
+    #[cfg_attr(windows, case("../foo/(?i)bar/(?-i)baz", "../foo/bar/"))]
+    fn parse_expression_invariant_path_prefix_eq(
+        #[case] expression: &str,
+        #[case] expected: impl AsRef<Path>,
+    ) {
+        harness::assert_tokenized_invariant_path_prefix_eq(
+            parse::harness::assert_parse_expression_is_ok(expression),
+            expected,
+        );
     }
 }

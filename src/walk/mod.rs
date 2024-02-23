@@ -923,20 +923,17 @@ impl From<EntryResidue> for TreeResidue<()> {
     }
 }
 
-// TODO: Rust's testing framework does not provide a mechanism for maintaining shared state. This
-//       means that tests that write to the file system must do so individually rather than writing
-//       before and after all tests have run. This should probably be avoided.
 #[cfg(test)]
-mod tests {
-    use build_fs_tree::{dir, file, Build, FileSystemTree};
+pub mod harness {
+    use build_fs_tree::{Build, FileSystemTree};
     use std::collections::HashSet;
-    use std::path::PathBuf;
+    use std::ops::Deref;
+    use std::path::{Path, PathBuf};
     use tempfile::{self, TempDir};
 
-    use crate::walk::filter::{HierarchicalIterator, Separation, TreeResidue};
-    use crate::walk::{Entry, FileIterator, LinkBehavior, PathExt, WalkBehavior};
-    use crate::Glob;
+    use crate::walk::{Entry, FileIterator};
 
+    #[macro_export]
     macro_rules! assert_set_eq {
         ($left:expr, $right:expr $(,)?) => {{
             match (&$left, &$right) {
@@ -956,35 +953,113 @@ mod tests {
             }
         }};
     }
+    pub use assert_set_eq;
 
+    #[derive(Debug)]
+    pub struct TempTree {
+        _root: TempDir,
+        path: PathBuf,
+    }
+
+    impl TempTree {
+        pub fn join_all<'a, I>(&'a self, paths: I) -> impl 'a + Iterator<Item = PathBuf>
+        where
+            I: IntoIterator,
+            I::IntoIter: 'a,
+            I::Item: AsRef<Path>,
+        {
+            paths.into_iter().map(|path| self.join(path))
+        }
+    }
+
+    impl AsRef<Path> for TempTree {
+        fn as_ref(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Deref for TempTree {
+        type Target = Path;
+
+        fn deref(&self) -> &Self::Target {
+            &self.path
+        }
+    }
+
+    pub fn temptree<P, C>(path: impl AsRef<Path>, tree: FileSystemTree<P, C>) -> TempTree
+    where
+        P: AsRef<Path> + Ord,
+        C: AsRef<[u8]>,
+    {
+        let root = tempfile::tempdir().expect("failed to create temporary directory");
+        let path = root.path().join(path);
+        tree.build(&path)
+            .expect("failed to write tree in temporary directory");
+        TempTree { _root: root, path }
+    }
+
+    pub fn assert_walk_paths_eq<I>(walk: impl FileIterator, expected: I)
+    where
+        I: IntoIterator,
+        I::Item: Into<PathBuf>,
+    {
+        let paths: HashSet<_> = walk
+            .map(|entry| entry.expect("failed to read file"))
+            .map(Entry::into_path)
+            .collect();
+        assert_set_eq!(paths, expected.into_iter().map(Into::into).collect());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use build_fs_tree::{dir, file};
+    use rstest::{fixture, rstest};
+    use std::collections::HashSet;
+
+    use crate::walk::filter::{HierarchicalIterator, Separation, TreeResidue};
+    use crate::walk::harness::{self, assert_set_eq, TempTree};
+    use crate::walk::{Entry, FileIterator, LinkBehavior, PathExt, WalkBehavior};
+    use crate::Glob;
+
+    // TODO: Rust's testing framework does not provide a mechanism for maintaining shared state nor
+    //       hooks for the start and end of testing. This means that tests that write to the file
+    //       system must do so for each test rather than writing before and after all tests have
+    //       run. The `once` attribute can be applied to fixtures to prevent this, but because
+    //       `rstest` has no way to know when testing has completed, such fixtures leak their
+    //       outputs and the temporary files are not removed. Is there a way to both share the
+    //       fixture and also drop its output?
+    //
+    //       See https://github.com/la10736/rstest/issues/209
     /// Writes a testing directory tree to a temporary location on the file system.
-    fn temptree() -> (TempDir, PathBuf) {
-        let root = tempfile::tempdir().unwrap();
-        let tree: FileSystemTree<&str, &str> = dir! {
-            "doc" => dir! {
-                "guide.md" => file!(""),
-            },
-            "src" => dir! {
-                "glob.rs" => file!(""),
-                "lib.rs" => file!(""),
-            },
-            "tests" => dir! {
-                "harness" => dir! {
-                    "mod.rs" => file!(""),
+    #[fixture]
+    fn temptree() -> TempTree {
+        harness::temptree::<&str, &str>(
+            "project",
+            dir! {
+                "doc" => dir! {
+                    "guide.md" => file!(""),
                 },
-                "walk.rs" => file!(""),
+                "src" => dir! {
+                    "glob.rs" => file!(""),
+                    "lib.rs" => file!(""),
+                },
+                "tests" => dir! {
+                    "harness" => dir! {
+                        "mod.rs" => file!(""),
+                    },
+                    "walk.rs" => file!(""),
+                },
+                "README.md" => file!(""),
             },
-            "README.md" => file!(""),
-        };
-        let path = root.path().join("project");
-        tree.build(&path).unwrap();
-        (root, path)
+        )
     }
 
     /// Writes a testing directory tree that includes a reentrant symbolic link to a temporary
     /// location on the file system.
     #[cfg(any(unix, windows))]
-    fn temptree_with_cyclic_link() -> (TempDir, PathBuf) {
+    #[fixture]
+    fn temptree_with_cyclic_link() -> TempTree {
         use std::io;
         use std::path::Path;
 
@@ -999,205 +1074,139 @@ mod tests {
         }
 
         // Get a temporary tree and create a reentrant symbolic link.
-        let (root, path) = temptree();
-        link(path.as_path(), path.join("tests/cycle")).unwrap();
-        (root, path)
+        let temptree = temptree();
+        link(&temptree, temptree.join("tests/cycle"))
+            .expect("failed to write symbolic link in temporary tree");
+        temptree
     }
 
-    #[test]
-    fn walk_tree() {
-        let (_root, path) = temptree();
-
-        let paths: HashSet<_> = path
-            .walk()
-            .flatten()
-            .map(|entry| entry.root_relative_paths().1.to_path_buf())
-            .collect();
-        assert_set_eq!(
-            paths,
-            [
-                PathBuf::from(""),
-                PathBuf::from("doc"),
-                PathBuf::from("doc/guide.md"),
-                PathBuf::from("src"),
-                PathBuf::from("src/glob.rs"),
-                PathBuf::from("src/lib.rs"),
-                PathBuf::from("tests"),
-                PathBuf::from("tests/harness"),
-                PathBuf::from("tests/harness/mod.rs"),
-                PathBuf::from("tests/walk.rs"),
-                PathBuf::from("README.md"),
-            ]
-            .into_iter()
-            .collect(),
+    #[rstest]
+    fn walk_path_includes_all_paths(temptree: TempTree) {
+        harness::assert_walk_paths_eq(
+            temptree.walk(),
+            temptree.join_all([
+                "",
+                "doc",
+                "doc/guide.md",
+                "src",
+                "src/glob.rs",
+                "src/lib.rs",
+                "tests",
+                "tests/harness",
+                "tests/harness/mod.rs",
+                "tests/walk.rs",
+                "README.md",
+            ]),
         );
     }
 
-    #[test]
-    fn walk_tree_with_not() {
-        let (_root, path) = temptree();
-
-        let paths: HashSet<_> = path
-            .walk()
-            .not("tests/**")
-            .unwrap()
-            .flatten()
-            .map(Entry::into_path)
-            .collect();
-        assert_set_eq!(
-            paths,
-            [
-                #[allow(clippy::redundant_clone)]
-                path.to_path_buf(),
-                path.join("doc"),
-                path.join("doc/guide.md"),
-                path.join("src"),
-                path.join("src/glob.rs"),
-                path.join("src/lib.rs"),
-                path.join("README.md"),
-            ]
-            .into_iter()
-            .collect(),
+    #[rstest]
+    fn walk_path_with_not_excludes_only_matching_paths(temptree: TempTree) {
+        harness::assert_walk_paths_eq(
+            temptree.walk().not("tests/**").unwrap(),
+            temptree.join_all([
+                "",
+                "doc",
+                "doc/guide.md",
+                "src",
+                "src/glob.rs",
+                "src/lib.rs",
+                "README.md",
+            ]),
         );
     }
 
-    #[test]
-    fn walk_tree_with_not_any() {
-        let (_root, path) = temptree();
-
-        let paths: HashSet<_> = path
-            .walk()
-            .not(crate::any(["**/*.rs", "tests/**"]))
-            .unwrap()
-            .flatten()
-            .map(Entry::into_path)
-            .collect();
-        assert_set_eq!(
-            paths,
-            [
-                #[allow(clippy::redundant_clone)]
-                path.to_path_buf(),
-                path.join("doc"),
-                path.join("doc/guide.md"),
-                path.join("src"),
-                path.join("README.md"),
-            ]
-            .into_iter()
-            .collect(),
+    #[rstest]
+    fn walk_path_with_not_any_excludes_only_matching_paths(temptree: TempTree) {
+        harness::assert_walk_paths_eq(
+            temptree
+                .walk()
+                .not(crate::any(["**/*.rs", "tests/**"]))
+                .unwrap(),
+            temptree.join_all(["", "doc", "doc/guide.md", "src", "README.md"]),
         );
     }
 
-    #[test]
-    fn walk_tree_with_empty_not() {
-        let (_root, path) = temptree();
-
-        let paths: HashSet<_> = path
-            .walk()
-            .not("")
-            .unwrap()
-            .flatten()
-            .map(Entry::into_path)
-            .collect();
-        assert_set_eq!(
-            paths,
-            // The root directory (`path.join("")` or `path.to_path_buf()`) must not be present,
-            // because the empty `not` pattern matches the empty relative path at the root.
-            [
-                path.join("doc"),
-                path.join("doc/guide.md"),
-                path.join("src"),
-                path.join("src/glob.rs"),
-                path.join("src/lib.rs"),
-                path.join("tests"),
-                path.join("tests/harness"),
-                path.join("tests/harness/mod.rs"),
-                path.join("tests/walk.rs"),
-                path.join("README.md"),
-            ]
-            .into_iter()
-            .collect(),
+    #[rstest]
+    fn walk_path_with_empty_not_excludes_only_root_path(temptree: TempTree) {
+        harness::assert_walk_paths_eq(
+            temptree.walk().not("").unwrap(),
+            // The root path (i.e., `temptree.join("")`) must not be present, because the empty
+            // `not` pattern matches the empty relative path at the root.
+            temptree.join_all([
+                "doc",
+                "doc/guide.md",
+                "src",
+                "src/glob.rs",
+                "src/lib.rs",
+                "tests",
+                "tests/harness",
+                "tests/harness/mod.rs",
+                "tests/walk.rs",
+                "README.md",
+            ]),
         );
     }
 
-    #[test]
-    fn walk_glob_with_unbounded_tree() {
-        let (_root, path) = temptree();
-
-        let glob = Glob::new("**").unwrap();
-        let paths: HashSet<_> = glob.walk(&path).flatten().map(Entry::into_path).collect();
-        assert_set_eq!(
-            paths,
-            [
-                #[allow(clippy::redundant_clone)]
-                path.to_path_buf(),
-                path.join("doc"),
-                path.join("doc/guide.md"),
-                path.join("src"),
-                path.join("src/glob.rs"),
-                path.join("src/lib.rs"),
-                path.join("tests"),
-                path.join("tests/harness"),
-                path.join("tests/harness/mod.rs"),
-                path.join("tests/walk.rs"),
-                path.join("README.md"),
-            ]
-            .into_iter()
-            .collect(),
+    #[rstest]
+    fn walk_glob_with_tree_includes_all_paths(temptree: TempTree) {
+        harness::assert_walk_paths_eq(
+            Glob::new("**").unwrap().walk(temptree.as_ref()),
+            temptree.join_all([
+                "",
+                "doc",
+                "doc/guide.md",
+                "src",
+                "src/glob.rs",
+                "src/lib.rs",
+                "tests",
+                "tests/harness",
+                "tests/harness/mod.rs",
+                "tests/walk.rs",
+                "README.md",
+            ]),
         );
     }
 
-    #[test]
-    fn walk_glob_with_invariant_terminating_component() {
-        let (_root, path) = temptree();
-
-        let glob = Glob::new("**/*.md").unwrap();
-        let paths: HashSet<_> = glob.walk(&path).flatten().map(Entry::into_path).collect();
-        assert_set_eq!(
-            paths,
-            [path.join("doc/guide.md"), path.join("README.md"),]
-                .into_iter()
-                .collect(),
+    #[rstest]
+    fn walk_glob_with_bounded_terminating_component_includes_only_matching_paths(
+        temptree: TempTree,
+    ) {
+        harness::assert_walk_paths_eq(
+            Glob::new("**/*.md").unwrap().walk(temptree.as_ref()),
+            temptree.join_all(["doc/guide.md", "README.md"]),
         );
     }
 
-    #[test]
-    fn walk_glob_with_invariant_intermediate_component() {
-        let (_root, path) = temptree();
-
-        let glob = Glob::new("**/src/**/*.rs").unwrap();
-        let paths: HashSet<_> = glob.walk(&path).flatten().map(Entry::into_path).collect();
-        assert_set_eq!(
-            paths,
-            [path.join("src/glob.rs"), path.join("src/lib.rs"),]
-                .into_iter()
-                .collect(),
+    #[rstest]
+    fn walk_glob_with_invariant_intermediate_component_includes_only_matching_paths(
+        temptree: TempTree,
+    ) {
+        harness::assert_walk_paths_eq(
+            Glob::new("**/src/**/*.rs").unwrap().walk(temptree.as_ref()),
+            temptree.join_all(["src/glob.rs", "src/lib.rs"]),
         );
     }
 
-    #[test]
-    fn walk_glob_with_only_invariant() {
-        let (_root, path) = temptree();
-
-        let glob = Glob::new("src/lib.rs").unwrap();
-        let paths: HashSet<_> = glob.walk(&path).flatten().map(Entry::into_path).collect();
-        assert_set_eq!(paths, [path.join("src/lib.rs")].into_iter().collect());
+    #[rstest]
+    fn walk_invariant_glob_includes_only_invariant_path(temptree: TempTree) {
+        harness::assert_walk_paths_eq(
+            Glob::new("src/lib.rs").unwrap().walk(temptree.as_ref()),
+            [temptree.join("src/lib.rs")],
+        );
     }
 
-    #[test]
-    fn walk_glob_with_only_invariant_partitioned() {
-        let (_root, path) = temptree();
-
+    #[rstest]
+    fn walk_empty_partitioned_glob_at_non_empty_prefix_includes_only_prefix(temptree: TempTree) {
         let (prefix, glob) = Glob::new("src/lib.rs").unwrap().partition_or_empty();
-        let paths: HashSet<_> = glob
-            .walk(path.join(prefix))
-            .flatten()
-            .map(Entry::into_path)
-            .collect();
-        assert_set_eq!(paths, [path.join("src/lib.rs")].into_iter().collect());
+        harness::assert_walk_paths_eq(
+            glob.walk(temptree.join(prefix)),
+            [temptree.join("src/lib.rs")],
+        );
     }
 
-    #[test]
-    fn walk_glob_with_not() {
+    #[rstest]
+    fn walk_glob_with_exhaustive_not_cancels_walk(temptree: TempTree) {
         #[derive(Debug, Eq, Hash, PartialEq)]
         enum TestSeparation<T> {
             Filtrate(T),
@@ -1206,11 +1215,9 @@ mod tests {
         use TestSeparation::{Filtrate, Residue};
         use TreeResidue::{Node, Tree};
 
-        let (_root, path) = temptree();
-
         let glob = Glob::new("**/*.{md,rs}").unwrap();
         let mut paths = HashSet::new();
-        glob.walk(&path)
+        glob.walk(temptree.as_ref())
             .not("**/harness/**")
             .unwrap()
             // Inspect the feed rather than the `Iterator` output (filtrate). While it is trivial
@@ -1241,114 +1248,90 @@ mod tests {
         assert_set_eq!(
             paths,
             [
-                Residue(Node(path.to_path_buf())),
-                Residue(Node(path.join("doc"))),
-                Filtrate(path.join("doc/guide.md")),
-                Residue(Node(path.join("src"))),
-                Filtrate(path.join("src/glob.rs")),
-                Filtrate(path.join("src/lib.rs")),
-                Residue(Node(path.join("tests"))),
+                Residue(Node(temptree.to_path_buf())),
+                Residue(Node(temptree.join("doc"))),
+                Filtrate(temptree.join("doc/guide.md")),
+                Residue(Node(temptree.join("src"))),
+                Filtrate(temptree.join("src/glob.rs")),
+                Filtrate(temptree.join("src/lib.rs")),
+                Residue(Node(temptree.join("tests"))),
                 // This entry is important. The glob does **not** match this path and will separate
                 // it into node residue (not tree residue). The glob **does** match paths beneath
                 // it. The `not` iterator must subsequently observe the residue and map it from
                 // node to tree and cancel the walk. Nothing beneath this directory must be present
                 // at all, even as residue.
-                Residue(Tree(path.join("tests/harness"))),
-                Filtrate(path.join("tests/walk.rs")),
-                Filtrate(path.join("README.md")),
+                Residue(Tree(temptree.join("tests/harness"))),
+                Filtrate(temptree.join("tests/walk.rs")),
+                Filtrate(temptree.join("README.md")),
             ]
             .into_iter()
             .collect(),
         );
     }
 
-    #[test]
-    fn walk_glob_with_depth() {
-        let (_root, path) = temptree();
-
-        let glob = Glob::new("**").unwrap();
-        let paths: HashSet<_> = glob
-            .walk_with_behavior(
-                &path,
+    #[rstest]
+    fn walk_glob_with_max_depth_behavior_excludes_descendants(temptree: TempTree) {
+        harness::assert_walk_paths_eq(
+            Glob::new("**").unwrap().walk_with_behavior(
+                temptree.as_ref(),
                 WalkBehavior {
                     depth: 1,
                     ..Default::default()
                 },
-            )
-            .flatten()
-            .map(Entry::into_path)
-            .collect();
-        assert_set_eq!(
-            paths,
-            [
-                #[allow(clippy::redundant_clone)]
-                path.to_path_buf(),
-                path.join("doc"),
-                path.join("src"),
-                path.join("tests"),
-                path.join("README.md"),
-            ]
-            .into_iter()
-            .collect(),
+            ),
+            temptree.join_all(["", "doc", "src", "tests", "README.md"]),
         );
     }
 
-    #[test]
     #[cfg(any(unix, windows))]
-    fn walk_glob_with_cyclic_link_file() {
-        let (_root, path) = temptree_with_cyclic_link();
-
-        let glob = Glob::new("**").unwrap();
-        let paths: HashSet<_> = glob
-            .walk_with_behavior(&path, LinkBehavior::ReadFile)
-            .flatten()
-            .map(Entry::into_path)
-            .collect();
-        assert_set_eq!(
-            paths,
-            [
-                #[allow(clippy::redundant_clone)]
-                path.to_path_buf(),
-                path.join("README.md"),
-                path.join("doc"),
-                path.join("doc/guide.md"),
-                path.join("src"),
-                path.join("src/glob.rs"),
-                path.join("src/lib.rs"),
-                path.join("tests"),
-                path.join("tests/cycle"),
-                path.join("tests/harness"),
-                path.join("tests/harness/mod.rs"),
-                path.join("tests/walk.rs"),
-            ]
-            .into_iter()
-            .collect(),
+    #[rstest]
+    fn walk_glob_with_read_link_file_behavior_includes_link_file(
+        #[from(temptree_with_cyclic_link)] temptree: TempTree,
+    ) {
+        harness::assert_walk_paths_eq(
+            Glob::new("**")
+                .unwrap()
+                .walk_with_behavior(temptree.as_ref(), LinkBehavior::ReadFile),
+            temptree.join_all([
+                "",
+                "doc",
+                "doc/guide.md",
+                "src",
+                "src/glob.rs",
+                "src/lib.rs",
+                "tests",
+                "tests/cycle",
+                "tests/harness",
+                "tests/harness/mod.rs",
+                "tests/walk.rs",
+                "README.md",
+            ]),
         );
     }
 
-    #[test]
     #[cfg(any(unix, windows))]
-    fn walk_glob_with_cyclic_link_target() {
-        let (_root, path) = temptree_with_cyclic_link();
-
+    #[rstest]
+    fn walk_glob_with_read_link_target_behavior_excludes_cyclic_link_target(
+        #[from(temptree_with_cyclic_link)] temptree: TempTree,
+    ) {
         // Collect paths into `Vec`s so that duplicates can be detected.
         let expected = vec![
             #[allow(clippy::redundant_clone)]
-            path.to_path_buf(),
-            path.join("README.md"),
-            path.join("doc"),
-            path.join("doc/guide.md"),
-            path.join("src"),
-            path.join("src/glob.rs"),
-            path.join("src/lib.rs"),
-            path.join("tests"),
-            path.join("tests/harness"),
-            path.join("tests/harness/mod.rs"),
-            path.join("tests/walk.rs"),
+            temptree.to_path_buf(),
+            temptree.join("README.md"),
+            temptree.join("doc"),
+            temptree.join("doc/guide.md"),
+            temptree.join("src"),
+            temptree.join("src/glob.rs"),
+            temptree.join("src/lib.rs"),
+            temptree.join("tests"),
+            temptree.join("tests/harness"),
+            temptree.join("tests/harness/mod.rs"),
+            temptree.join("tests/walk.rs"),
         ];
         let glob = Glob::new("**").unwrap();
         let mut paths: Vec<_> = glob
-            .walk_with_behavior(&path, LinkBehavior::ReadTarget)
+            .walk_with_behavior(temptree.as_ref(), LinkBehavior::ReadTarget)
             .flatten()
             // Take an additional item. This prevents an infinite loop if there is a problem with
             // detecting the cycle while also introducing unexpected files so that the error can be
