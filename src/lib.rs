@@ -66,6 +66,7 @@ pub mod prelude {
 use miette::Diagnostic;
 use regex::Regex;
 use std::borrow::{Borrow, Cow};
+use std::cmp::Ordering;
 use std::convert::Infallible;
 use std::ffi::OsStr;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -601,13 +602,6 @@ pub struct Glob<'t> {
 }
 
 impl<'t> Glob<'t> {
-    fn compile<T>(tree: impl Borrow<T>) -> Result<Regex, CompileError>
-    where
-        T: ConcatenationTree<'t>,
-    {
-        encode::compile(tree)
-    }
-
     // TODO: Document pattern syntax in the crate documentation and refer to it here.
     /// Constructs a [`Glob`] from a glob expression.
     ///
@@ -790,6 +784,13 @@ impl<'t> Glob<'t> {
 
     pub fn is_empty(&self) -> bool {
         self.tree.as_ref().as_token().is_empty()
+    }
+
+    fn compile<T>(tree: impl Borrow<T>) -> Result<Regex, CompileError>
+    where
+        T: ConcatenationTree<'t>,
+    {
+        encode::compile(tree)
     }
 }
 
@@ -1061,6 +1062,18 @@ fn parse_and_check(
     let tokenized = token::parse(expression)?;
     let checked = rule::check(tokenized)?;
     Ok(checked)
+}
+
+fn minmax<T>(lhs: T, rhs: T) -> [T; 2]
+where
+    T: Ord,
+{
+    use Ordering::{Equal, Greater, Less};
+
+    match lhs.cmp(&rhs) {
+        Equal | Less => [lhs, rhs],
+        Greater => [rhs, lhs],
+    }
 }
 
 #[cfg(test)]

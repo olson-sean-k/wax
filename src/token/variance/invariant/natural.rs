@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::num::NonZeroUsize;
 
 use crate::token::variance::bound::{
@@ -80,7 +79,7 @@ macro_rules! impl_invariant_natural {
             }
 
             fn bound(lhs: Self, rhs: Self) -> Boundedness<Self::Bound> {
-                let (lower, upper) = self::minmax(lhs, rhs);
+                let [lower, upper] = crate::minmax(lhs, rhs);
                 BoundedVariantRange::try_from_lower_and_upper(lower.0, upper.0)
                     .map_or(Unbounded, Bounded)
             }
@@ -142,17 +141,5 @@ impl_invariant_natural!(Size);
 impl GlobVariance<Depth> {
     pub fn is_exhaustive(&self) -> bool {
         !self.has_upper_bound()
-    }
-}
-
-fn minmax<T>(lhs: T, rhs: T) -> (T, T)
-where
-    T: Ord,
-{
-    use Ordering::{Equal, Greater, Less};
-
-    match lhs.cmp(&rhs) {
-        Equal | Less => (lhs, rhs),
-        Greater => (rhs, lhs),
     }
 }

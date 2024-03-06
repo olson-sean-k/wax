@@ -69,6 +69,7 @@ mod glob;
 
 use std::fs::{FileType, Metadata};
 use std::io;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use walkdir::{self, DirEntry, WalkDir};
@@ -80,7 +81,7 @@ use crate::filter::{
 use crate::walk::glob::FilterAny;
 use crate::{BuildError, Pattern};
 
-pub use crate::walk::glob::{GlobEntry, GlobWalker};
+pub use crate::walk::glob::GlobEntry;
 
 type FileFiltrate<T> = Result<T, WalkError>;
 type FileResidue<R> = TreeResidue<R>;
@@ -166,6 +167,11 @@ impl WalkError {
     }
 
     /// Gets the depth at which the error occurred from the root directory of the traversal.
+    ///
+    /// **This depth may differ from the depth reported by [`Entry::depth`]** when matching a pattern
+    /// against a directory tree.
+    ///
+    /// [`Entry::depth`]: crate::walk::Entry::depth
     pub fn depth(&self) -> usize {
         self.depth
     }
@@ -262,8 +268,8 @@ pub trait PathExt {
     /// Gets an iterator over files in the directory tree at the path.
     ///
     /// This function is the same as [`PathExt::walk`], but it additionally accepts a
-    /// [`WalkBehavior`] that configures how the traversal interacts with symbolic links, the
-    /// maximum depth from the root, etc.
+    /// [`WalkBehavior`] that configures how the traversal interacts with symbolic links, bounds on
+    /// depth, etc.
     ///
     /// # Examples
     ///
@@ -292,10 +298,15 @@ impl PathExt for Path {
 /// Configuration for interpreting symbolic links.
 ///
 /// Determines how symbolic links are interpreted when walking directory trees using functions like
-/// [`Glob::walk_with_behavior`]. **By default, symbolic links are read as regular files and their
-/// targets are ignored.**
+/// [`Glob::walk_with_behavior`].
+///
+/// # Defaults
+///
+/// The default link behavior is [`ReadFile`] (links are read as regular files and their targets
+/// are ignored).
 ///
 /// [`Glob::walk_with_behavior`]: crate::Glob::walk_with_behavior
+/// [`ReadFile`]: crate::walk::LinkBehavior::ReadFile
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LinkBehavior {
     /// Read the symbolic link file itself.
@@ -311,18 +322,259 @@ pub enum LinkBehavior {
     /// of the link file and its metadata describes the target. If the target is a directory, then
     /// traversal follows the link and descend into the target.
     ///
-    /// If a link is reentrant and forms a cycle, then an error will be emitted instead of an entry
-    /// and traversal does not follow the link.
+    /// If a link is re-entrant and forms a cycle, then an error will be emitted instead of an
+    /// entry and traversal does not follow the link.
     ReadTarget,
+}
+
+/// Configuration for a minimum depth of matched files in a walk.
+///
+/// Unlike a maximum depth, a minimum depth cannot be zero, because such a minimum has no effect.
+/// To configure a minimum depth or else an unbounded depth, use
+/// [`DepthMin::from_min_or_unbounded`].
+///
+/// [`DepthMin::from_min_or_unbounded`]: crate::walk::DepthMin::from_min_or_unbounded
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DepthMin(pub NonZeroUsize);
+
+impl DepthMin {
+    /// Constructs a [`DepthBehavior`] with a minimum depth or, if zero, unbounded.
+    ///
+    /// # Examples
+    ///
+    /// The following example places a minimum bound on the depth of a walk.
+    ///
+    /// ```rust,no_run
+    /// use wax::walk::DepthMin;
+    /// use wax::Glob;
+    ///
+    /// for entry in Glob::new("**")
+    ///     .unwrap()
+    ///     .walk_with_behavior(".", DepthMin::from_min_or_unbounded(1))
+    /// {
+    ///     let entry = entry.unwrap();
+    ///     // ...
+    /// }
+    /// ```
+    ///
+    /// [`DepthBehavior`]: crate::walk::DepthBehavior
+    pub fn from_min_or_unbounded(min: usize) -> DepthBehavior {
+        use DepthBehavior::{Min, Unbounded};
+
+        DepthMin::try_from(min).map(Min).unwrap_or(Unbounded)
+    }
+
+    fn min_at_pivot(self, pivot: usize) -> usize {
+        self.0.get().saturating_sub(pivot)
+    }
+}
+
+impl From<NonZeroUsize> for DepthMin {
+    fn from(min: NonZeroUsize) -> Self {
+        DepthMin(min)
+    }
+}
+
+impl From<DepthMin> for NonZeroUsize {
+    fn from(min: DepthMin) -> Self {
+        min.0
+    }
+}
+
+impl TryFrom<usize> for DepthMin {
+    type Error = ();
+
+    fn try_from(min: usize) -> Result<Self, Self::Error> {
+        NonZeroUsize::new(min).map(DepthMin).ok_or(())
+    }
+}
+
+/// Configuration for a maximum depth of a walk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DepthMax(pub usize);
+
+impl DepthMax {
+    fn max_at_pivot(self, pivot: usize) -> usize {
+        self.0.saturating_sub(pivot)
+    }
+}
+
+impl From<usize> for DepthMax {
+    fn from(max: usize) -> Self {
+        DepthMax(max)
+    }
+}
+
+impl From<DepthMax> for usize {
+    fn from(max: DepthMax) -> Self {
+        max.0
+    }
+}
+
+/// Configuration for minimum and maximum depths of a walk and matched files.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DepthMinMax {
+    pub min: NonZeroUsize,
+    pub extent: usize,
+}
+
+impl DepthMinMax {
+    /// Constructs a [`DepthBehavior`] with a maximum depth and, if nonzero, a minimum depth.
+    ///
+    /// The depths need not be ordered.
+    ///
+    /// # Examples
+    ///
+    /// The following example places both a minimum and maximum bound on the depth of a walk.
+    ///
+    /// ```rust,no_run
+    /// use wax::walk::DepthMinMax;
+    /// use wax::Glob;
+    ///
+    /// for entry in Glob::new("**")
+    ///     .unwrap()
+    ///     .walk_with_behavior(".", DepthMinMax::from_depths_or_max(1, 2))
+    /// {
+    ///     let entry = entry.unwrap();
+    ///     // ...
+    /// }
+    /// ```
+    ///
+    /// [`DepthBehavior`]: crate::walk::DepthBehavior
+    pub fn from_depths_or_max(p: usize, q: usize) -> DepthBehavior {
+        use DepthBehavior::{Max, MinMax};
+
+        let [min, max] = crate::minmax(p, q);
+        let extent = max - min;
+        NonZeroUsize::new(min)
+            .map(|min| DepthMinMax { min, extent })
+            .map_or_else(|| Max(DepthMax(max)), MinMax)
+    }
+
+    fn min_max_at_pivot(self, pivot: usize) -> (usize, usize) {
+        (
+            self.min.get().saturating_sub(pivot),
+            self.max().get().saturating_sub(pivot),
+        )
+    }
+
+    pub fn max(&self) -> NonZeroUsize {
+        self.min.saturating_add(self.extent)
+    }
+}
+
+/// Configuration for filtering walks and files by depth.
+///
+/// Determines the minimum and maximum depths of a walk and files yielded by that walk relative to
+/// the [root path segment][`Entry::root_relative_paths`]. A minimum depth only filters files, but
+/// a maximum depth also limits the depth of the walk (directories beneath the maximum are not read
+/// from the file system).
+///
+/// See [`WalkBehavior`].
+///
+/// # Defaults
+///
+/// The default depth behavior is [`Unbounded`].
+///
+/// [`Entry::root_relative_paths`]: crate::walk::Entry::root_relative_paths
+/// [`Unbounded`]: crate::walk::DepthBehavior::Unbounded
+/// [`WalkBehavior`]: crate::walk::WalkBehavior
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DepthBehavior {
+    #[default]
+    Unbounded,
+    Min(DepthMin),
+    Max(DepthMax),
+    MinMax(DepthMinMax),
+}
+
+impl DepthBehavior {
+    // TODO: Provide a similar function for `Glob`s called something like
+    //       `bounded_with_depth_variance`, which additionally accepts a depth variance and
+    //       considers this variance when constructing the `DepthBehavior`.
+    /// Constructs a bounded `DepthBehavior` from a minimum and/or maximum depth.
+    ///
+    /// This function provides an ergonomic way to place bounds on the depth of a walk. At least
+    /// one closed depth is required. A given depth is closed if `Some` and is open if `None`. Note
+    /// that a closed depth need not be explicitly wrapped in `Some`, because the depth parameters
+    /// are `impl Into<Option<usize>>`.
+    ///
+    /// Returns `None` if both the minimum and maximum depths are both open (unbounded) or if both
+    /// depths are closed but are misordered (the minimum is greater than the maximum). Never
+    /// returns [`Unbounded`].
+    ///
+    /// # Examples
+    ///
+    /// The following example places a maximum bound on the depth of a walk by using an open
+    /// minimum depth (`None`).
+    ///
+    /// ```rust,no_run
+    /// use wax::walk::DepthBehavior;
+    /// use wax::Glob;
+    ///
+    /// for entry in Glob::new("**")
+    ///     .unwrap()
+    ///     .walk_with_behavior(".", DepthBehavior::bounded(None, 2).unwrap())
+    /// {
+    ///     let entry = entry.unwrap();
+    ///     // ...
+    /// }
+    /// ```
+    ///
+    /// [`Unbounded`]: crate::walk::DepthBehavior::Unbounded
+    pub fn bounded(min: impl Into<Option<usize>>, max: impl Into<Option<usize>>) -> Option<Self> {
+        use DepthBehavior::{Max, Min, MinMax};
+
+        match (min.into(), max.into()) {
+            (Some(min), None) => NonZeroUsize::new(min).map(DepthMin).map(Min),
+            (None, Some(max)) => Some(Max(DepthMax(max))),
+            (Some(min), Some(max)) if min <= max => NonZeroUsize::new(min)
+                .map(|min| DepthMinMax {
+                    min,
+                    extent: max - min.get(),
+                })
+                .map(MinMax),
+            _ => None,
+        }
+    }
+}
+
+impl From<DepthMax> for DepthBehavior {
+    fn from(max: DepthMax) -> Self {
+        DepthBehavior::Max(max)
+    }
+}
+
+impl From<DepthMin> for DepthBehavior {
+    fn from(min: DepthMin) -> Self {
+        DepthBehavior::Min(min)
+    }
+}
+
+impl From<DepthMinMax> for DepthBehavior {
+    fn from(minmax: DepthMinMax) -> Self {
+        DepthBehavior::MinMax(minmax)
+    }
 }
 
 /// Configuration for walking directory trees.
 ///
 /// Determines the behavior of the traversal within a directory tree when using functions like
 /// [`Glob::walk_with_behavior`]. `WalkBehavior` can be constructed via conversions from types
-/// representing its fields. APIs generally accept `impl Into<WalkBehavior>`, so these conversion
-/// can be used implicitly. When constructed using such a conversion, `WalkBehavior` will use
-/// defaults for any remaining fields.
+/// representing its fields and sub-fields. APIs generally accept `impl Into<WalkBehavior>`, so
+/// these conversion can be used implicitly. When constructed using such a conversion,
+/// `WalkBehavior` will use defaults for any remaining fields.
+///
+/// # Defaults
+///
+/// By default, walk behavior has [unbounded depth][`DepthBehavior::Unbounded`] and reads links as
+/// [regular files][`LinkBehavior::ReadFile`] (ignoring their targets). Fields have the following
+/// values:
+///
+/// | Field     | Description                       | Value                        |
+/// |-----------|-----------------------------------|------------------------------|
+/// | [`depth`] | Bounds on depth.                  | [`DepthBehavior::Unbounded`] |
+/// | [`link`]  | Interpretation of symbolic links. | [`LinkBehavior::ReadFile`]   |
 ///
 /// # Examples
 ///
@@ -342,63 +594,59 @@ pub enum LinkBehavior {
 /// }
 /// ```
 ///
+/// [`depth`]: crate::walk::WalkBehavior::depth
 /// [`Glob::walk_with_behavior`]: crate::Glob::walk_with_behavior
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// [`link`]: crate::walk::WalkBehavior::link
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WalkBehavior {
-    // TODO: Consider using a dedicated type for this field. Using primitive types does not
-    //       interact well with conversions used in `walk` APIs. For example, if another `usize`
-    //       field is introduced, then the conversions become ambiguous and confusing.
-    /// Maximum depth.
+    /// Bounds on the depth of the walk and matched files.
     ///
-    /// Determines the maximum depth to which a directory tree will be traversed relative to the
-    /// root. A depth of zero corresponds to the root and so using such a depth will yield at most
-    /// one file entry that refers to the root.
+    /// Determines the minimum and maximum depths of a walk and matched files relative to the [root
+    /// path segment][`Entry::root_relative_paths`]. The default value is
+    /// [`DepthBehavior::Unbounded`].
     ///
-    /// For [`PathExt::walk`], this depth is relative to the [`Path`] receiver. For [`Glob::walk`],
-    /// this depth is relative to the `directory` path parameter.
-    ///
-    /// The default value is [`usize::MAX`].
-    ///
-    /// [`Glob::walk`]: crate::Glob::walk
-    /// [`Path`]: std::path::Path
-    /// [`PathExt::walk`]: crate::walk::PathExt::walk
-    /// [`usize::MAX`]: usize::MAX
-    pub depth: usize,
+    /// [`DepthBehavior::Unbounded`]: crate::walk::DepthBehavior::Unbounded
+    /// [`Entry::root_relative_paths`]: crate::walk::Entry::root_relative_paths
+    pub depth: DepthBehavior,
     /// Interpretation of symbolic links.
     ///
-    /// Determines how symbolic links are interpreted when walking a directory tree. See
-    /// [`LinkBehavior`].
+    /// Determines how symbolic links are interpreted when walking a directory tree. The default
+    /// value is [`LinkBehavior::ReadFile`].
     ///
-    /// The default value is [`LinkBehavior::ReadFile`].
-    ///
-    /// [`LinkBehavior`]: crate::walk::LinkBehavior
     /// [`LinkBehavior::ReadFile`]: crate::walk::LinkBehavior::ReadFile
     pub link: LinkBehavior,
-}
-
-/// Constructs a `WalkBehavior` using the following defaults:
-///
-/// | Field     | Description                       | Value                      |
-/// |-----------|-----------------------------------|----------------------------|
-/// | [`depth`] | Maximum depth.                    | [`usize::MAX`]             |
-/// | [`link`]  | Interpretation of symbolic links. | [`LinkBehavior::ReadFile`] |
-///
-/// [`depth`]: crate::walk::WalkBehavior::depth
-/// [`link`]: crate::walk::WalkBehavior::link
-/// [`LinkBehavior::ReadFile`]: crate::walk::LinkBehavior::ReadFile
-/// [`usize::MAX`]: usize::MAX
-impl Default for WalkBehavior {
-    fn default() -> Self {
-        WalkBehavior {
-            depth: usize::MAX,
-            link: LinkBehavior::default(),
-        }
-    }
 }
 
 impl From<()> for WalkBehavior {
     fn from(_: ()) -> Self {
         Default::default()
+    }
+}
+
+impl From<DepthBehavior> for WalkBehavior {
+    fn from(depth: DepthBehavior) -> Self {
+        WalkBehavior {
+            depth,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<DepthMax> for WalkBehavior {
+    fn from(max: DepthMax) -> Self {
+        DepthBehavior::from(max).into()
+    }
+}
+
+impl From<DepthMin> for WalkBehavior {
+    fn from(min: DepthMin) -> Self {
+        DepthBehavior::from(min).into()
+    }
+}
+
+impl From<DepthMinMax> for WalkBehavior {
+    fn from(minmax: DepthMinMax) -> Self {
+        DepthBehavior::from(minmax).into()
     }
 }
 
@@ -411,20 +659,11 @@ impl From<LinkBehavior> for WalkBehavior {
     }
 }
 
-impl From<usize> for WalkBehavior {
-    fn from(depth: usize) -> Self {
-        WalkBehavior {
-            depth,
-            ..Default::default()
-        }
-    }
-}
-
 /// Describes a file yielded from a [`FileIterator`].
 ///
 /// [`FileIterator`]: crate::walk::FileIterator
 pub trait Entry {
-    /// Converts the entry into its file path.
+    /// Converts the entry into the path of the file.
     fn into_path(self) -> PathBuf
     where
         Self: Sized;
@@ -432,48 +671,43 @@ pub trait Entry {
     /// Gets the path of the file.
     fn path(&self) -> &Path;
 
-    /// Gets the root and relative paths.
+    /// Splits the path of the file into its root and relative segments, in that order.
     ///
-    /// The root path is the path to the walked directory from which the file entry has been read.
-    /// The relative path is the remainder of the file path of the entry (the path relative to the
-    /// root directory). Both the root and relative paths may be empty.
+    /// The root segment is the path from which the walk started. When walking a [`Path`] via
+    /// functions in [`PathExt`], the root is always the same as the path itself. When walking a
+    /// pattern like [`Glob`], the root segment differs depending on whether or not the pattern
+    /// [has a root][`Glob::has_root`]. If a pattern has a root, then the root segment is the
+    /// invariant prefix in the pattern, otherwise the root segment is the path given to functions
+    /// like [`Glob::walk`].
     ///
-    /// The root and relative paths can differ significantly depending on the way a directory is
-    /// walked, in particular when using a [`Glob`]. The following table describes some example
-    /// paths when using [`Glob::walk`].
-    ///
-    /// | Glob Expression           | Directory    | Entry Path                         | Root         | Relative                         |
-    /// |---------------------------|--------------|------------------------------------|--------------|----------------------------------|
-    /// | `**/*.txt`                | `/home/user` | `/home/user/notes.txt`             | `/home/user` | `notes.txt`                      |
-    /// | `projects/**/src/**/*.rs` | `.`          | `./projects/fibonacci/src/main.rs` | `.`          | `projects/fibonacci/src/main.rs` |
-    /// | `/var/log/**/*.log`       | `.`          | `/var/log/pacman.log`              |              | `/var/log/pacman.log`            |
-    ///
-    /// See also [`GlobWalker::root_prefix_paths`].
+    /// The relative segment is the remainder (descendant) of the path of the file (relative to the
+    /// root segment).
     ///
     /// [`Glob`]: crate::Glob
+    /// [`Glob::has_root`]: crate::Glob::has_root
     /// [`Glob::walk`]: crate::Glob::walk
-    /// [`GlobWalker::root_prefix_paths`]: crate::walk::GlobWalker::root_prefix_paths
+    /// [`Path`]: std::path::Path
+    /// [`PathExt`]: crate::walk::PathExt
     fn root_relative_paths(&self) -> (&Path, &Path);
 
     /// Gets the [`Metadata`] of the file.
     ///
-    /// On some platforms, this requires an additional read from the file system.
+    /// This may require an additional read from the file system on some platforms.
     ///
     /// [`Metadata`]: std::fs::Metadata
     fn metadata(&self) -> Result<Metadata, WalkError>;
 
     /// Gets the type of the file (regular vs. directory).
     ///
-    /// Prefer this function over [`metadata`] if only the file type is needed, as this information
-    /// is cached.
+    /// This information may be cached and so this function should be preferred over [`metadata`]
+    /// if only the file type is needed.
     ///
     /// [`metadata`]: crate::walk::Entry::metadata
     fn file_type(&self) -> FileType;
 
-    /// Gets the depth of the file path from the root.
+    /// Gets the depth of the path of the file from the root segment.
     ///
-    /// The root path is the path to the walked directory from which the file entry has been read.
-    /// Use [`root_relative_paths`] to get the root path.
+    /// See [`root_relative_paths`].
     ///
     /// [`root_relative_paths`]: crate::walk::Entry::root_relative_paths
     fn depth(&self) -> usize;
@@ -485,7 +719,6 @@ pub trait Entry {
 #[derive(Clone, Debug)]
 pub struct TreeEntry {
     entry: DirEntry,
-    prefix: usize,
 }
 
 impl Entry for TreeEntry {
@@ -498,11 +731,7 @@ impl Entry for TreeEntry {
     }
 
     fn root_relative_paths(&self) -> (&Path, &Path) {
-        self.path().split_at_depth(
-            self.depth()
-                .checked_add(self.prefix)
-                .expect("overflow determining root-relative paths"),
-        )
+        self.path().split_at_depth(self.depth())
     }
 
     fn metadata(&self) -> Result<Metadata, WalkError> {
@@ -541,34 +770,38 @@ impl Entry for TreeEntry {
 /// [`PathExt::walk`]: crate::walk::PathExt::walk
 #[derive(Debug)]
 pub struct WalkTree {
-    prefix: usize,
     is_dir: bool,
     input: walkdir::IntoIter,
 }
 
 impl WalkTree {
     fn with_behavior(root: impl Into<PathBuf>, behavior: impl Into<WalkBehavior>) -> Self {
-        WalkTree::with_prefix_and_behavior(root, 0, behavior)
+        WalkTree::with_pivot_and_behavior(root, 0, behavior)
     }
 
-    fn with_prefix_and_behavior(
+    fn with_pivot_and_behavior(
         root: impl Into<PathBuf>,
-        prefix: usize,
+        pivot: usize,
         behavior: impl Into<WalkBehavior>,
     ) -> Self {
         let root = root.into();
         let WalkBehavior { link, depth } = behavior.into();
-        let builder = WalkDir::new(root.as_path());
+        let builder = WalkDir::new(root.as_path()).follow_links(match link {
+            LinkBehavior::ReadFile => false,
+            LinkBehavior::ReadTarget => true,
+        });
+        let builder = match depth {
+            DepthBehavior::Max(max) => builder.max_depth(max.max_at_pivot(pivot)),
+            DepthBehavior::Min(min) => builder.min_depth(min.min_at_pivot(pivot)),
+            DepthBehavior::MinMax(minmax) => {
+                let (min, max) = minmax.min_max_at_pivot(pivot);
+                builder.min_depth(min).max_depth(max)
+            },
+            DepthBehavior::Unbounded => builder,
+        };
         WalkTree {
-            prefix,
             is_dir: false,
-            input: builder
-                .follow_links(match link {
-                    LinkBehavior::ReadFile => false,
-                    LinkBehavior::ReadTarget => true,
-                })
-                .max_depth(depth)
-                .into_iter(),
+            input: builder.into_iter(),
         }
     }
 }
@@ -590,13 +823,7 @@ impl Iterator for WalkTree {
     fn next(&mut self) -> Option<Self::Item> {
         let (is_dir, next) = match self.input.next() {
             Some(result) => match result {
-                Ok(entry) => (
-                    entry.file_type().is_dir(),
-                    Some(Ok(TreeEntry {
-                        entry,
-                        prefix: self.prefix,
-                    })),
-                ),
+                Ok(entry) => (entry.file_type().is_dir(), Some(Ok(TreeEntry { entry }))),
                 Err(error) => (false, Some(Err(error.into()))),
             },
             _ => (false, None),
@@ -1011,6 +1238,7 @@ pub mod harness {
     }
 }
 
+// TODO: Construct `Glob`s in tests using `crate::harness::assert_new_glob_is_ok`.
 #[cfg(test)]
 mod tests {
     use build_fs_tree::{dir, file};
@@ -1019,7 +1247,7 @@ mod tests {
 
     use crate::walk::filter::{HierarchicalIterator, Separation, TreeResidue};
     use crate::walk::harness::{self, assert_set_eq, TempTree};
-    use crate::walk::{Entry, FileIterator, LinkBehavior, PathExt, WalkBehavior};
+    use crate::walk::{DepthBehavior, Entry, FileIterator, LinkBehavior, PathExt};
     use crate::Glob;
 
     // TODO: Rust's testing framework does not provide a mechanism for maintaining shared state nor
@@ -1055,7 +1283,7 @@ mod tests {
         )
     }
 
-    /// Writes a testing directory tree that includes a reentrant symbolic link to a temporary
+    /// Writes a testing directory tree that includes a re-entrant symbolic link to a temporary
     /// location on the file system.
     #[cfg(any(unix, windows))]
     #[fixture]
@@ -1073,7 +1301,7 @@ mod tests {
             std::os::windows::fs::symlink_dir(target, link)
         }
 
-        // Get a temporary tree and create a reentrant symbolic link.
+        // Get a temporary tree and create a re-entrant symbolic link.
         let temptree = temptree();
         link(&temptree, temptree.join("tests/cycle"))
             .expect("failed to write symbolic link in temporary tree");
@@ -1144,6 +1372,22 @@ mod tests {
                 "tests/harness/mod.rs",
                 "tests/walk.rs",
                 "README.md",
+            ]),
+        );
+    }
+
+    #[rstest]
+    fn walk_path_with_min_max_depth_behavior_excludes_ancestors_and_descendants(
+        temptree: TempTree,
+    ) {
+        harness::assert_walk_paths_eq(
+            temptree.walk_with_behavior(DepthBehavior::bounded(2, 2).unwrap()),
+            temptree.join_all([
+                "doc/guide.md",
+                "src/glob.rs",
+                "src/lib.rs",
+                "tests/harness",
+                "tests/walk.rs",
             ]),
         );
     }
@@ -1272,14 +1516,49 @@ mod tests {
     #[rstest]
     fn walk_glob_with_max_depth_behavior_excludes_descendants(temptree: TempTree) {
         harness::assert_walk_paths_eq(
-            Glob::new("**").unwrap().walk_with_behavior(
-                temptree.as_ref(),
-                WalkBehavior {
-                    depth: 1,
-                    ..Default::default()
-                },
-            ),
+            Glob::new("**")
+                .unwrap()
+                .walk_with_behavior(temptree.as_ref(), DepthBehavior::bounded(None, 1).unwrap()),
             temptree.join_all(["", "doc", "src", "tests", "README.md"]),
+        );
+    }
+
+    #[rstest]
+    fn walk_glob_with_zero_max_depth_behavior_includes_only_root(temptree: TempTree) {
+        harness::assert_walk_paths_eq(
+            Glob::new("**")
+                .unwrap()
+                .walk_with_behavior(temptree.as_ref(), DepthBehavior::bounded(None, 0).unwrap()),
+            [temptree.as_ref()],
+        );
+    }
+
+    #[rstest]
+    fn walk_glob_with_min_depth_behavior_excludes_ancestors(temptree: TempTree) {
+        harness::assert_walk_paths_eq(
+            Glob::new("**")
+                .unwrap()
+                .walk_with_behavior(temptree.as_ref(), DepthBehavior::bounded(2, None).unwrap()),
+            temptree.join_all([
+                "doc/guide.md",
+                "src/glob.rs",
+                "src/lib.rs",
+                "tests/harness",
+                "tests/harness/mod.rs",
+                "tests/walk.rs",
+            ]),
+        );
+    }
+
+    #[rstest]
+    fn walk_prefixed_glob_with_min_max_depth_behavior_excludes_ancestors_and_descendants(
+        temptree: TempTree,
+    ) {
+        harness::assert_walk_paths_eq(
+            Glob::new("tests/**")
+                .unwrap()
+                .walk_with_behavior(temptree.as_ref(), DepthBehavior::bounded(2, 2).unwrap()),
+            temptree.join_all(["tests/harness", "tests/walk.rs"]),
         );
     }
 

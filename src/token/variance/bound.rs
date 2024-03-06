@@ -211,9 +211,6 @@ impl From<VariantRange> for NaturalRange {
     }
 }
 
-// NOTE: Given the naturals X and Y where X < Y, this defines an unconventional meaning for the
-//       range [Y,X] and repetitions like `<_:10,1>`: the bounds are reordered, so `<_:10,1>` and
-//       `<_:1,10>` are the same.
 impl<T> From<(usize, T)> for NaturalRange
 where
     T: Into<Option<usize>>,
