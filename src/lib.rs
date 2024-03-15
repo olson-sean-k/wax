@@ -2087,6 +2087,7 @@ mod tests {
     }
 
     #[rstest]
+    #[case::empty("", "", "")]
     #[case::prefixed_and_non_empty("a/b/x?z/*.ext", "a/b", "xyz/file.ext")]
     #[case::only_variant_wildcard("x?z/*.ext", "", "xyz/file.ext")]
     #[case::only_invariant_literal("a/b", "a/b", "")]
@@ -2133,6 +2134,23 @@ mod tests {
         harness::assert_partitioned_has_prefix_and_expression(
             harness::assert_new_glob_is_ok(expression).assert_partition_non_empty(),
             (prefix, postfix),
+        );
+    }
+
+    #[rstest]
+    #[case::empty("", "", "")]
+    fn repartition_invariant_glob_has_empty_prefix_and_idempotent_expression(
+        #[case] expression: &str,
+        #[case] prefix: &str,
+        #[case] postfix: &str,
+    ) {
+        let (_, glob) = harness::assert_partitioned_has_prefix_and_expression(
+            harness::assert_new_glob_is_ok(expression).partition_or_empty(),
+            (prefix, postfix),
+        );
+        harness::assert_partitioned_has_prefix_and_expression(
+            glob.partition_or_empty(),
+            ("", postfix),
         );
     }
 
