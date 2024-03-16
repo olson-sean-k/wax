@@ -1247,8 +1247,28 @@ mod tests {
     use crate::walk::filter::{HierarchicalIterator, Separation, TreeResidue};
     use crate::walk::harness::{self, assert_set_eq, TempTree};
     use crate::walk::{
-        DepthMax, DepthMin, DepthMinMax, Entry, FileIterator, LinkBehavior, PathExt,
+        DepthBehavior, DepthMax, DepthMin, DepthMinMax, Entry, FileIterator, LinkBehavior, PathExt,
     };
+    use crate::Pattern;
+
+    const ALL: [&str; 11] = [
+        "",
+        "doc",
+        "doc/guide.md",
+        "src",
+        "src/glob.rs",
+        "src/lib.rs",
+        "tests",
+        "tests/harness",
+        "tests/harness/mod.rs",
+        "tests/walk.rs",
+        "README.md",
+    ];
+
+    fn except<'t>(paths: impl IntoIterator<Item = &'t str>) -> impl Iterator<Item = &'t str> {
+        let paths: HashSet<_> = paths.into_iter().collect();
+        ALL.into_iter().filter(move |path| !paths.contains(path))
+    }
 
     // TODO: Rust's testing framework does not provide a mechanism for maintaining shared state nor
     //       hooks for the start and end of testing. This means that tests that write to the file
@@ -1310,133 +1330,83 @@ mod tests {
 
     #[rstest]
     fn walk_path_includes_all_paths(temptree: TempTree) {
-        harness::assert_walk_paths_eq(
-            temptree.walk(),
-            temptree.join_all([
-                "",
-                "doc",
-                "doc/guide.md",
-                "src",
-                "src/glob.rs",
-                "src/lib.rs",
-                "tests",
-                "tests/harness",
-                "tests/harness/mod.rs",
-                "tests/walk.rs",
-                "README.md",
-            ]),
-        );
+        harness::assert_walk_paths_eq(temptree.walk(), temptree.join_all(ALL));
     }
 
     #[rstest]
-    fn walk_path_with_not_excludes_only_matching_paths(temptree: TempTree) {
-        harness::assert_walk_paths_eq(
-            temptree.walk().not("tests/**").unwrap(),
-            temptree.join_all([
-                "",
-                "doc",
-                "doc/guide.md",
-                "src",
-                "src/glob.rs",
-                "src/lib.rs",
-                "README.md",
-            ]),
-        );
-    }
-
-    #[rstest]
-    fn walk_path_with_not_any_excludes_only_matching_paths(temptree: TempTree) {
-        harness::assert_walk_paths_eq(
-            temptree
-                .walk()
-                .not(crate::any(["**/*.rs", "tests/**"]))
-                .unwrap(),
-            temptree.join_all(["", "doc", "doc/guide.md", "src", "README.md"]),
-        );
-    }
-
-    #[rstest]
-    fn walk_path_with_empty_not_excludes_only_root_path(temptree: TempTree) {
-        harness::assert_walk_paths_eq(
-            temptree.walk().not("").unwrap(),
-            // The root path (i.e., `temptree.join("")`) must not be present, because the empty
-            // `not` pattern matches the empty relative path at the root.
-            temptree.join_all([
-                "doc",
-                "doc/guide.md",
-                "src",
-                "src/glob.rs",
-                "src/lib.rs",
-                "tests",
-                "tests/harness",
-                "tests/harness/mod.rs",
-                "tests/walk.rs",
-                "README.md",
-            ]),
-        );
-    }
-
-    #[rstest]
-    fn walk_path_with_min_max_depth_behavior_excludes_ancestors_and_descendants(
+    #[case::subtree(
+        "tests/**",
+        [
+            "",
+            "doc",
+            "doc/guide.md",
+            "src",
+            "src/glob.rs",
+            "src/lib.rs",
+            "README.md",
+        ],
+    )]
+    #[case::extension_from_root("*.md", except(["README.md"]))]
+    #[case::extension_from_any_tree("**/*.md", except(["doc/guide.md", "README.md"]))]
+    #[case::any(
+        crate::any(["**/*.rs", "tests/**"]),
+        ["", "doc", "doc/guide.md", "src", "README.md"],
+    )]
+    // The root path ("") must **not** be present, because the empty `not` pattern matches the
+    // empty relative path at the root.
+    #[case::empty("", except([""]))]
+    fn walk_path_with_not_excludes_only_matching_paths<'t>(
         temptree: TempTree,
+        #[case] pattern: impl Pattern<'t>,
+        #[case] expected: impl IntoIterator<Item = &'t str>,
     ) {
         harness::assert_walk_paths_eq(
-            temptree.walk_with_behavior(DepthMinMax::from_depths_or_max(2, 2)),
-            temptree.join_all([
-                "doc/guide.md",
-                "src/glob.rs",
-                "src/lib.rs",
-                "tests/harness",
-                "tests/walk.rs",
-            ]),
+            temptree.walk().not(pattern).unwrap(),
+            temptree.join_all(expected),
         );
     }
 
     #[rstest]
-    fn walk_glob_with_tree_includes_all_paths(temptree: TempTree) {
-        harness::assert_walk_paths_eq(
-            crate::harness::assert_new_glob_is_ok("**").walk(temptree.as_ref()),
-            temptree.join_all([
-                "",
-                "doc",
-                "doc/guide.md",
-                "src",
-                "src/glob.rs",
-                "src/lib.rs",
-                "tests",
-                "tests/harness",
-                "tests/harness/mod.rs",
-                "tests/walk.rs",
-                "README.md",
-            ]),
-        );
-    }
-
-    #[rstest]
-    fn walk_glob_with_bounded_terminating_component_includes_only_matching_paths(
+    #[case::max(DepthMax(1), ["", "doc", "src", "tests", "README.md"])]
+    #[case::min(
+        DepthMin::from_min_or_unbounded(2),
+        [
+            "doc/guide.md",
+            "src/glob.rs",
+            "src/lib.rs",
+            "tests/harness",
+            "tests/harness/mod.rs",
+            "tests/walk.rs",
+        ],
+    )]
+    #[case::minmax(
+        DepthMinMax::from_depths_or_max(2, 2),
+        ["doc/guide.md", "src/glob.rs", "src/lib.rs", "tests/harness", "tests/walk.rs"],
+    )]
+    fn walk_path_with_depth_behavior_includes_only_paths_at_depth<'t>(
         temptree: TempTree,
+        #[case] depth: impl Into<DepthBehavior>,
+        #[case] expected: impl IntoIterator<Item = &'t str>,
     ) {
         harness::assert_walk_paths_eq(
-            crate::harness::assert_new_glob_is_ok("**/*.md").walk(temptree.as_ref()),
-            temptree.join_all(["doc/guide.md", "README.md"]),
+            temptree.walk_with_behavior(depth.into()),
+            temptree.join_all(expected),
         );
     }
 
     #[rstest]
-    fn walk_glob_with_invariant_intermediate_component_includes_only_matching_paths(
+    #[case::tree("**", ALL)]
+    #[case::bounded_terminating_component("**/*.md", ["doc/guide.md", "README.md"])]
+    #[case::invariant_intermediate_component("**/src/**/*.rs", ["src/glob.rs", "src/lib.rs"])]
+    #[case::invariant("src/lib.rs", ["src/lib.rs"])]
+    fn walk_glob_includes_only_matching_paths<'t>(
         temptree: TempTree,
+        #[case] expression: &str,
+        #[case] expected: impl IntoIterator<Item = &'t str>,
     ) {
         harness::assert_walk_paths_eq(
-            crate::harness::assert_new_glob_is_ok("**/src/**/*.rs").walk(temptree.as_ref()),
-            temptree.join_all(["src/glob.rs", "src/lib.rs"]),
-        );
-    }
-
-    #[rstest]
-    fn walk_invariant_glob_includes_only_invariant_path(temptree: TempTree) {
-        harness::assert_walk_paths_eq(
-            crate::harness::assert_new_glob_is_ok("src/lib.rs").walk(temptree.as_ref()),
-            [temptree.join("src/lib.rs")],
+            crate::harness::assert_new_glob_is_ok(expression).walk(temptree.as_ref()),
+            temptree.join_all(expected),
         );
     }
 
@@ -1515,47 +1485,35 @@ mod tests {
     }
 
     #[rstest]
-    fn walk_glob_with_max_depth_behavior_excludes_descendants(temptree: TempTree) {
-        harness::assert_walk_paths_eq(
-            crate::harness::assert_new_glob_is_ok("**")
-                .walk_with_behavior(temptree.as_ref(), DepthMax(1)),
-            temptree.join_all(["", "doc", "src", "tests", "README.md"]),
-        );
-    }
-
-    #[rstest]
-    fn walk_glob_with_zero_max_depth_behavior_includes_only_root(temptree: TempTree) {
-        harness::assert_walk_paths_eq(
-            crate::harness::assert_new_glob_is_ok("**")
-                .walk_with_behavior(temptree.as_ref(), DepthMax(0)),
-            [temptree.as_ref()],
-        );
-    }
-
-    #[rstest]
-    fn walk_glob_with_min_depth_behavior_excludes_ancestors(temptree: TempTree) {
-        harness::assert_walk_paths_eq(
-            crate::harness::assert_new_glob_is_ok("**")
-                .walk_with_behavior(temptree.as_ref(), DepthMin::from_min_or_unbounded(2)),
-            temptree.join_all([
-                "doc/guide.md",
-                "src/glob.rs",
-                "src/lib.rs",
-                "tests/harness",
-                "tests/harness/mod.rs",
-                "tests/walk.rs",
-            ]),
-        );
-    }
-
-    #[rstest]
-    fn walk_prefixed_glob_with_min_max_depth_behavior_excludes_ancestors_and_descendants(
+    #[case::non_zero_max(DepthMax(1), "**", ["", "doc", "src", "tests", "README.md"])]
+    #[case::zero_max(DepthMax(0), "**", [""])]
+    #[case::min(
+        DepthMin::from_min_or_unbounded(2),
+        "**",
+        [
+            "doc/guide.md",
+            "src/glob.rs",
+            "src/lib.rs",
+            "tests/harness",
+            "tests/harness/mod.rs",
+            "tests/walk.rs",
+        ],
+    )]
+    #[case::prefixed_minmax(
+        DepthMinMax::from_depths_or_max(2, 2),
+        "tests/**",
+        ["tests/harness", "tests/walk.rs"],
+    )]
+    fn walk_glob_with_depth_behavior_includes_only_paths_at_depth<'t>(
         temptree: TempTree,
+        #[case] depth: impl Into<DepthBehavior>,
+        #[case] expression: &str,
+        #[case] expected: impl IntoIterator<Item = &'t str>,
     ) {
         harness::assert_walk_paths_eq(
-            crate::harness::assert_new_glob_is_ok("tests/**")
-                .walk_with_behavior(temptree.as_ref(), DepthMinMax::from_depths_or_max(2, 2)),
-            temptree.join_all(["tests/harness", "tests/walk.rs"]),
+            crate::harness::assert_new_glob_is_ok(expression)
+                .walk_with_behavior(temptree.as_ref(), depth.into()),
+            temptree.join_all(expected),
         );
     }
 
