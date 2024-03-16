@@ -34,6 +34,7 @@ mod capture;
 mod diagnostics;
 mod encode;
 mod filter;
+pub mod query;
 mod rule;
 mod token;
 pub mod walk;
@@ -57,9 +58,10 @@ pub mod walk;
 /// }
 /// ```
 pub mod prelude {
+    pub use crate::query::LocatedError as _;
     #[cfg(feature = "walk")]
     pub use crate::walk::{Entry as _, FileIterator as _, PathExt as _};
-    pub use crate::{LocatedError as _, Program as _};
+    pub use crate::Program as _;
 }
 
 #[cfg(feature = "miette")]
@@ -74,16 +76,17 @@ use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
 use thiserror::Error;
 
+use crate::diagnostics::LocatedError;
 use crate::encode::CompileError;
+use crate::query::{CapturingToken, DepthVariance, TextVariance, When};
 use crate::rule::{Checked, RuleError};
 use crate::token::{
-    ConcatenationTree, ExpressionMetadata, ParseError, Text, Token, TokenTree, Tokenized,
+    ConcatenationTree, ExpressionMetadata, ParseError, Token, TokenTree, Tokenized,
 };
 #[cfg(feature = "walk")]
 use crate::walk::WalkError;
 
 pub use crate::capture::MatchedText;
-pub use crate::diagnostics::{LocatedError, Span};
 
 #[cfg(windows)]
 const PATHS_ARE_CASE_INSENSITIVE: bool = true;
@@ -112,134 +115,36 @@ impl StrExt for str {
     }
 }
 
-/// Token that captures matched text in a glob expression.
-///
-/// # Examples
-///
-/// `CapturingToken`s can be used to isolate sub-expressions.
-///
-/// ```rust
-/// use wax::Glob;
-///
-/// let expression = "**/*.txt";
-/// let glob = Glob::new(expression).unwrap();
-/// for token in glob.captures() {
-///     let (start, n) = token.span();
-///     println!("capturing sub-expression: {}", &expression[start..][..n]);
-/// }
-/// ```
-#[derive(Clone, Copy, Debug)]
-pub struct CapturingToken {
-    index: usize,
-    span: Span,
-}
-
-impl CapturingToken {
-    /// Gets the index of the capture.
-    ///
-    /// Captures are one-indexed and the index zero always represents the implicit capture of the
-    /// complete match, so the index of `CapturingToken`s is always one or greater. See
-    /// [`MatchedText`].
-    ///
-    /// [`MatchedText`]: crate::MatchedText
-    pub fn index(&self) -> usize {
-        self.index
-    }
-
-    /// Gets the span of the token's sub-expression.
-    pub fn span(&self) -> Span {
-        self.span
-    }
-}
-
-// This type is similar to `token::Variance<InvariantText<'_>>`, but is simplified for the public
-// API. Invariant text is always expressed as a path and no variant bounds are provided.
-/// Variance of a [`Program`].
-///
-/// The variance of a pattern describes the kinds of paths it can match with respect to the
-/// platform file system APIs. [`Program`]s are either variant or invariant.
-///
-/// An invariant [`Program`] can be represented and completely described by an equivalent path
-/// using the platform's file system APIs. For example, the glob expression `path/to/file.txt`
-/// resolves identically to the paths `path/to/file.txt` and `path\to\file.txt` on Unix and
-/// Windows, respectively.
-///
-/// A variant [`Program`] resolves differently than any particular path used with the platform's
-/// file system APIs. Such an expression cannot be represented by a single path. This is typically
-/// because the expression matches multiple texts using a regular pattern, such as in the glob
-/// expression `**/*.rs`.
-///
-/// [`Program`]: crate::Program
-/// [`Variance`]: crate::Variance
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum Variance {
-    /// A [`Program`] is invariant and equivalent to a path.
-    ///
-    /// Some non-literal expressions may be invariant, such as in the expression
-    /// `path/[t][o]/{file,file}.txt`, which is invariant on Unix (but not on Windows, because the
-    /// character class expressions do not match with case folding).
-    ///
-    /// [`Program`]: crate::Program
-    Invariant(
-        /// An equivalent path that completely describes the invariant [`Program`] with respect to
-        /// platform file system APIs.
-        ///
-        /// [`Program`]: crate::Program
-        PathBuf,
-    ),
-    /// A [`Program`] is variant and cannot be completely described by a path.
-    ///
-    /// Variant expressions may be formed from literals or other **seemingly** invariant
-    /// expressions. For example, the variance of literals considers the case sensitivity of the
-    /// platform's file system APIs, so the expression `(?i)path/to/file.txt` is variant on Unix
-    /// but not on Windows. Similarly, the expression `path/[t][o]/file.txt` is variant on Windows
-    /// but not on Unix.
-    ///
-    /// [`Program`]: crate::Program
-    Variant,
-}
-
-impl Variance {
-    /// Gets the equivalent native path if invariant.
-    ///
-    /// Returns `None` if variant.
-    pub fn path(&self) -> Option<&Path> {
-        match self {
-            Variance::Invariant(ref path) => Some(path),
-            Variance::Variant => None,
-        }
-    }
-
-    /// Returns `true` if invariant.
-    pub fn is_invariant(&self) -> bool {
-        matches!(self, Variance::Invariant(_))
-    }
-
-    /// Returns `true` if variant.
-    pub fn is_variant(&self) -> bool {
-        matches!(self, Variance::Variant)
-    }
-}
-
-impl From<token::Variance<Text<'_>>> for Variance {
-    fn from(variance: token::Variance<Text<'_>>) -> Self {
-        match variance {
-            token::Variance::Invariant(text) => {
-                Variance::Invariant(PathBuf::from(text.to_string().into_owned()))
-            },
-            token::Variance::Variant(_) => Variance::Variant,
-        }
-    }
-}
-
 /// A representation of a glob expression.
 ///
 /// This trait is implemented by types that can be converted into a [`Program`], such as `str`
-/// slices and, of course, [`Program`] types like [`Glob`].
+/// slices and compiled [`Program`] types like [`Glob`]. APIs that accept patterns typically do so
+/// via this trait.
 ///
-/// [`Result`] types also implement this trait when the okay type is a [`Program`] and the error
-/// type is [`BuildError`]. This means that APIs that accept a `Pattern` can also accept the result
-/// of constructing a [`Program`] without the need to explicitly inspect the inner result first.
+/// # Examples
+///
+/// [`Result`] types also implement this trait when the success type is a [`Program`] and the error
+/// type is [`BuildError`]. This means that APIs that accept a `Pattern` can also accept the
+/// intermediate result of constructing a [`Program`] without the need to explicitly inspect the
+/// inner result first (error handling can be deferred).
+///
+/// ```rust
+/// use wax::{Glob, Program};
+///
+/// # fn fallible() -> Result<(), wax::BuildError> {
+/// // The inner results of `any` are not checked via `?` and can be passed directly to the
+/// // outermost `any` call. This is true of all APIs that accept `Pattern`.
+/// #[rustfmt::skip]
+/// let any = wax::any([
+///     wax::any([Glob::new("**/*.txt")]),
+///     wax::any([
+///         "**/*.pdf",
+///         "**/*.tex",
+///     ]),
+/// ])?; // Defer error handling until the here.
+/// # Ok(())
+/// # }
+/// ```
 ///
 /// [`BuildError`]: crate::BuildError
 /// [`Glob`]: crate::Glob
@@ -267,40 +172,69 @@ impl<'t> Pattern<'t> for &'t str {
 
 /// A compiled [`Pattern`] that can be inspected and matched against paths.
 ///
-/// Matching is a logical operation and does **not** interact with a file system. To handle path
-/// operations, use [`Path`] and/or [`PathBuf`] and their associated functions. See
-/// [`Glob::partition`] and `Glob::walk` for more about globs and path operations.
-///
 /// [`Glob::partition`]: crate::Glob::partition
 /// [`Path`]: std::path::Path
 /// [`PathBuf`]: std::path::PathBuf
 /// [`Pattern`]: crate::Pattern
 pub trait Program<'t>: Pattern<'t, Error = Infallible> {
-    /// Returns `true` if a path matches the pattern.
+    /// Returns `true` if the [candidate path][`CandidatePath`] matches the pattern.
     ///
-    /// The given path must be convertible into a [`CandidatePath`].
+    /// This is a logical operation and does **not** interact with the file system.
     ///
     /// [`CandidatePath`]: crate::CandidatePath
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool;
 
-    /// Gets [matched text][`MatchedText`] in a [`CandidatePath`].
+    /// Gets the [matched text][`MatchedText`] in a [`CandidatePath`], if any.
     ///
-    /// Returns `None` if the [`CandidatePath`] does not match the pattern.
+    /// Returns `None` if the [`CandidatePath`] does not match the pattern. This is a logical
+    /// operation and does **not** interact with the file system.
     ///
     /// [`CandidatePath`]: crate::CandidatePath
     /// [`MatchedText`]: crate::MatchedText
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>>;
 
-    /// Gets the variance of the pattern.
+    /// Gets the depth variance of the pattern.
+    fn depth(&self) -> DepthVariance;
+
+    /// Gets the text variance of the pattern.
     ///
-    /// The variance of a pattern describes the kinds of paths it can match with respect to the
-    /// platform file system APIs.
-    fn variance(&self) -> Variance;
+    /// # Examples
+    ///
+    /// Text variance can be used to determine if a pattern can be trivially represented by an
+    /// equivalent path using platform file system APIs.
+    ///
+    /// ```rust
+    /// use std::path::Path;
+    /// use wax::{Glob, Program};
+    ///
+    /// let glob = Glob::new("/home/user").unwrap();
+    /// let text = glob.text();
+    /// let path = text.as_path();
+    ///
+    /// assert_eq!(path, Some(Path::new("/home/user")));
+    /// ```
+    fn text(&self) -> TextVariance<'t>;
+
+    /// Describes when the pattern matches candidate paths with a root.
+    ///
+    /// A glob expression that begins with a separator `/` has a root, but less trivial patterns
+    /// like `/**` and `</root:1,>` can also root an expression. Some `Program` types may have
+    /// indeterminate roots and may match both candidate paths with and without a root. In this
+    /// case, this functions returns [`Sometimes`] (indeterminate).
+    ///
+    /// [`Sometimes`]: crate::query::When::Sometimes
+    fn has_root(&self) -> When;
 
     /// Returns `true` if the pattern is exhaustive.
     ///
-    /// A glob expression is exhaustive if its terminating component matches any and all sub-trees,
-    /// such as in the expressions `/home/**` and `local/<<?>/>*`.
+    /// A glob expression is exhaustive if, given a matched candidate path, it necessarily matches
+    /// any and all sub-trees of that path. For example, glob expressions that end with a tree
+    /// wildcard like `.local/**` are exhaustive, but so are less trivial expressions like `<<?>/>`
+    /// and `<doc/<*/:3,>>`. This can be an important property when determining what directory
+    /// trees to read or which files and directories to select with a pattern.
+    ///
+    /// Note that this applies to the **pattern** and **not** to a particular match. It is possible
+    /// for a particular match against a **non**exhaustive pattern to be exhaustive.
     fn is_exhaustive(&self) -> bool;
 }
 
@@ -420,8 +354,8 @@ impl BuildError {
     /// [`Glob`]: crate::Glob
     /// [`Glob::partition`]: crate::Glob::partition
     /// [`Iterator`]: std::iter::Iterator
-    /// [`LocatedError`]: crate::LocatedError
-    /// [`Span`]: crate::Span
+    /// [`LocatedError`]: crate::query::LocatedError
+    /// [`Span`]: crate::query::Span
     pub fn locations(&self) -> impl Iterator<Item = &dyn LocatedError> {
         let locations: Vec<_> = match self.kind {
             BuildErrorKind::Parse(ref error) => error
@@ -749,18 +683,7 @@ impl<'t> Glob<'t> {
             .iter()
             .filter(|token| token.is_capturing())
             .enumerate()
-            .map(|(index, token)| CapturingToken {
-                index: index + 1,
-                span: *token.annotation(),
-            })
-    }
-
-    /// Returns `true` if the glob has a root.
-    ///
-    /// As with Unix paths, a glob expression has a root if it begins with a separator `/`.
-    /// Patterns other than separators may also root an expression, such as `/**` or `</root:1,>`.
-    pub fn has_root(&self) -> bool {
-        self.tree.as_ref().as_token().has_root().is_always()
+            .map(|(index, token)| CapturingToken::new(index + 1, *token.annotation()))
     }
 
     /// Returns `true` if the glob has literals that have non-nominal semantics on the target
@@ -823,8 +746,16 @@ impl<'t> Program<'t> for Glob<'t> {
         self.program.captures(path.as_ref()).map(From::from)
     }
 
-    fn variance(&self) -> Variance {
-        self.tree.as_ref().as_token().variance::<Text<'t>>().into()
+    fn depth(&self) -> DepthVariance {
+        self.tree.as_ref().as_token().variance().into()
+    }
+
+    fn text(&self) -> TextVariance<'t> {
+        self.tree.as_ref().as_token().variance().into()
+    }
+
+    fn has_root(&self) -> When {
+        self.tree.as_ref().as_token().has_root()
     }
 
     fn is_exhaustive(&self) -> bool {
@@ -874,8 +805,16 @@ impl<'t> Program<'t> for Any<'t> {
         self.program.captures(path.as_ref()).map(From::from)
     }
 
-    fn variance(&self) -> Variance {
-        self.tree.as_ref().as_token().variance::<Text<'t>>().into()
+    fn depth(&self) -> DepthVariance {
+        self.tree.as_ref().as_token().variance().into()
+    }
+
+    fn text(&self) -> TextVariance<'t> {
+        self.tree.as_ref().as_token().variance().into()
+    }
+
+    fn has_root(&self) -> When {
+        self.tree.as_ref().as_token().has_root()
     }
 
     fn is_exhaustive(&self) -> bool {
@@ -2185,7 +2124,7 @@ mod tests {
     #[cfg_attr(any(unix, windows), case("[/]root", false))]
     fn query_glob_has_root_eq(#[case] expression: &str, #[case] expected: bool) {
         let glob = harness::assert_new_glob_is_ok(expression);
-        let has_root = glob.has_root();
+        let has_root = glob.has_root().is_always();
         assert!(
             has_root == expected,
             "`Glob::has_root` is `{}`, but expected `{}`: in `Glob`: `{}`",
@@ -2272,9 +2211,9 @@ mod tests {
     #[cfg_attr(unix, case("/a/(?i)file.ext", false))]
     #[cfg_attr(windows, case("{a,A}", true))]
     #[cfg_attr(windows, case("/a/(?-i)file.ext", false))]
-    fn query_glob_variance_is_invariant_eq(#[case] expression: &str, #[case] expected: bool) {
+    fn query_glob_text_is_invariant_eq(#[case] expression: &str, #[case] expected: bool) {
         let glob = harness::assert_new_glob_is_ok(expression);
-        let is_invariant = glob.variance().is_invariant();
+        let is_invariant = glob.text().is_invariant();
         assert!(
             is_invariant == expected,
             "`Variance::is_invariant` is `{}`, but expected `{}`: in `Glob`: `{}`",

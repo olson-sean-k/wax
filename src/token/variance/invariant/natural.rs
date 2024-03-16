@@ -3,9 +3,9 @@ use std::num::NonZeroUsize;
 use crate::token::variance::bound::{
     Bounded, BoundedVariantRange, Boundedness, Unbounded, VariantRange,
 };
-use crate::token::variance::invariant::{GlobVariance, Identity, Invariant};
+use crate::token::variance::invariant::{Identity, Invariant};
 use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
-use crate::token::variance::Variance;
+use crate::token::variance::{TokenVariance, Variance};
 
 macro_rules! impl_invariant_natural {
     ($name:ident $(,)?) => {
@@ -107,12 +107,12 @@ macro_rules! impl_invariant_natural {
         }
 
         impl Product<VariantRange> for $name {
-            type Output = GlobVariance<Self>;
+            type Output = TokenVariance<Self>;
 
             fn product(self, rhs: VariantRange) -> Self::Output {
                 NonZeroUsize::new(self.0)
                     .map_or_else(
-                        GlobVariance::<Self>::zero,
+                        TokenVariance::<Self>::zero,
                         |lhs| Variance::Variant(rhs.map_bounded(|rhs| ops::product(rhs, lhs))),
                     )
             }
@@ -138,7 +138,7 @@ macro_rules! impl_invariant_natural {
 impl_invariant_natural!(Depth, once => 1);
 impl_invariant_natural!(Size);
 
-impl GlobVariance<Depth> {
+impl TokenVariance<Depth> {
     pub fn is_exhaustive(&self) -> bool {
         !self.has_upper_bound()
     }

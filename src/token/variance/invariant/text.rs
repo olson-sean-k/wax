@@ -1,14 +1,12 @@
-use itertools::Itertools;
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 
 use crate::encode;
 use crate::token::variance::bound::{Boundedness, VariantRange};
-use crate::token::variance::invariant::{GlobVariance, Identity, Invariant, UnitBound};
+use crate::token::variance::invariant::{Identity, Invariant, UnitBound};
 use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
-use crate::token::variance::Variance;
-use crate::token::Separator;
+use crate::token::variance::{TokenVariance, Variance};
 use crate::PATHS_ARE_CASE_INSENSITIVE;
 
 use Fragment::{Nominal, Structural};
@@ -73,11 +71,16 @@ impl<'t> Text<'t> {
         }
     }
 
-    pub fn from_components<I>(components: I) -> Option<Self>
+    #[cfg(test)]
+    pub(crate) fn from_components<I>(components: I) -> Option<Self>
     where
         I: IntoIterator,
         I::Item: Into<Cow<'t, str>>,
     {
+        use itertools::Itertools;
+
+        use crate::token::Separator;
+
         Itertools::intersperse(
             components
                 .into_iter()
@@ -103,7 +106,7 @@ impl<'t> Text<'t> {
             .unwrap_or(Cow::Borrowed(""))
     }
 
-    pub fn repeated(self, n: NonZeroUsize) -> Self {
+    fn repeated(self, n: NonZeroUsize) -> Self {
         let Text { fragments } = self;
         let n = (usize::from(n) - 1)
             .checked_mul(fragments.len())
@@ -151,7 +154,7 @@ impl<'t> Conjunction<Fragment<'t>> for Text<'t> {
 
 impl<'t> Default for Text<'t> {
     fn default() -> Self {
-        Self::new()
+        Text::new()
     }
 }
 
@@ -190,7 +193,7 @@ impl<'t> Product<usize> for Text<'t> {
 }
 
 impl<'t> Product<VariantRange> for Text<'t> {
-    type Output = GlobVariance<Self>;
+    type Output = TokenVariance<Self>;
 
     fn product(self, rhs: VariantRange) -> Self::Output {
         Variance::Variant(rhs.map_bounded(|_| UnitBound))

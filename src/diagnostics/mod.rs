@@ -73,8 +73,8 @@ impl Spanned for Span {
 ///
 /// [`BuildError::locations`]: crate::BuildError::locations
 /// [`Display`]: std::fmt::Display
-/// [`LocatedError::span`]: crate::LocatedError::span
-/// [`Span`]: crate::Span
+/// [`LocatedError::span`]: crate::query::LocatedError::span
+/// [`Span`]: crate::query::Span
 pub trait LocatedError: Display {
     /// Gets the span within the glob expression with which the error is associated.
     fn span(&self) -> Span;

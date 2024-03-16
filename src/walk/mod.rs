@@ -315,7 +315,7 @@ pub trait Entry {
     /// The root segment is the path from which the walk started. When walking a [`Path`] via
     /// functions in [`PathExt`], the root is always the same as the path itself. When walking a
     /// pattern like [`Glob`], the root segment differs depending on whether or not the pattern
-    /// [has a root][`Glob::has_root`]. If a pattern has a root, then the root segment is the
+    /// [has a root][`Program::has_root`]. If a pattern has a root, then the root segment is the
     /// invariant prefix in the pattern, otherwise the root segment is the path given to functions
     /// like [`Glob::walk`].
     ///
@@ -323,10 +323,10 @@ pub trait Entry {
     /// root segment).
     ///
     /// [`Glob`]: crate::Glob
-    /// [`Glob::has_root`]: crate::Glob::has_root
     /// [`Glob::walk`]: crate::Glob::walk
     /// [`Path`]: std::path::Path
     /// [`PathExt`]: crate::walk::PathExt
+    /// [`Program::has_root`]: crate::Program::has_root
     fn root_relative_paths(&self) -> (&Path, &Path);
 
     /// Gets the [`Metadata`] of the file.

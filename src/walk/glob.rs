@@ -26,9 +26,9 @@ impl<'t> Glob<'t> {
     /// directory trees.
     ///
     /// As with [`Path::join`] and [`PathBuf::push`], the base directory can be escaped or
-    /// overridden by [a `Glob` that has a root][`has_root`]. In many cases, the current working
-    /// directory `.` is an appropriate base directory and will be intuitively ignored if the
-    /// `Glob` is rooted, such as in `/mnt/media/**/*.mp4`.
+    /// overridden by [a `Glob` that has a root][`Program::has_root`]. In many cases, the current
+    /// working directory `.` is an appropriate base directory and will be intuitively ignored if
+    /// the `Glob` is rooted, such as in `/mnt/media/**/*.mp4`.
     ///
     /// The [root path segment][`Entry::root_relative_paths`] is either the given directory or, if
     /// the `Glob` has a root, the [invariant prefix][`Glob::partition`] of the `Glob`. Either way,
@@ -82,13 +82,13 @@ impl<'t> Glob<'t> {
     /// [`Entry::root_relative_paths`]: crate::walk::Entry::root_relative_paths
     /// [`Glob::walk_with_behavior`]: crate::Glob::walk_with_behavior
     /// [`GlobEntry`]: crate::walk::GlobEntry
-    /// [`has_root`]: crate::Glob::has_root
     /// [`FileIterator`]: crate::walk::FileIterator
     /// [`Iterator::filter`]: std::iter::Iterator::filter
     /// [`not`]: crate::walk::FileIterator::not
     /// [`Path::join`]: std::path::Path::join
     /// [`PathBuf::push`]: std::path::PathBuf::push
     /// [`Program`]: crate::Program
+    /// [`Program::has_root`]: crate::Program::has_root
     /// [`Program::is_exhaustive`]: crate::Program::is_exhaustive
     /// [`WalkBehavior`]: crate::walk::WalkBehavior
     pub fn walk(&self, path: impl Into<PathBuf>) -> impl 'static + FileIterator<Entry = GlobEntry> {

@@ -5,12 +5,9 @@ use std::num::NonZeroUsize;
 
 use crate::token::variance::bound::{BoundedVariantRange, Boundedness, OpenedUpperBound};
 use crate::token::variance::ops::{Conjunction, Disjunction, Product};
-use crate::token::variance::Variance;
 
 pub use crate::token::variance::invariant::natural::{Depth, Size};
 pub use crate::token::variance::invariant::text::{IntoNominalText, IntoStructuralText, Text};
-
-pub type GlobVariance<T> = Variance<T, Boundedness<<T as Invariant>::Bound>>;
 
 pub trait Identity {
     fn zero() -> Self;

@@ -136,7 +136,6 @@ impl NaturalRange {
         match (lower, upper) {
             (0, None) => Variance::Variant(Unbounded),
             (lower, upper) => BoundedVariantRange::try_from_lower_and_upper(lower, upper)
-                .ok()
                 .map(Bounded)
                 .map_or_else(|| Variance::Invariant(lower), Variance::Variant),
         }
@@ -170,14 +169,14 @@ impl NaturalRange {
         Self::from_closed_and_open(lower.into_usize(), upper.into_usize())
     }
 
-    pub fn lower(&self) -> Lower<NaturalBound> {
+    pub fn lower(&self) -> NaturalLower {
         match self {
             Variance::Invariant(ref n) => NaturalBound::from(*n).into_lower(),
             Variance::Variant(ref range) => range.lower().map(Variance::Variant),
         }
     }
 
-    pub fn upper(&self) -> Upper<NaturalBound> {
+    pub fn upper(&self) -> NaturalUpper {
         match self {
             Variance::Invariant(ref n) => NaturalBound::from(*n).into_upper(),
             Variance::Variant(ref range) => range.upper().map(Variance::Variant),
@@ -305,13 +304,13 @@ impl From<usize> for NonZeroBound {
 }
 
 impl VariantRange {
-    pub fn lower(&self) -> Lower<NonZeroBound> {
+    pub fn lower(&self) -> NonZeroLower {
         self.as_ref()
             .bounded()
             .map_or_else(|| Unbounded.into_lower(), BoundedVariantRange::lower)
     }
 
-    pub fn upper(&self) -> Upper<NonZeroBound> {
+    pub fn upper(&self) -> NonZeroUpper {
         self.as_ref()
             .bounded()
             .map_or_else(|| Unbounded.into_upper(), BoundedVariantRange::upper)
@@ -499,24 +498,21 @@ pub enum BoundedVariantRange {
 }
 
 impl BoundedVariantRange {
-    pub fn try_from_lower_and_upper(
-        lower: usize,
-        upper: impl Into<Option<usize>>,
-    ) -> Result<Self, ()> {
+    pub fn try_from_lower_and_upper(lower: usize, upper: impl Into<Option<usize>>) -> Option<Self> {
         use BoundedVariantRange::{Both, Lower, Upper};
 
         // SAFETY: The invariant that the value used to construct a `NonZeroUsize` is not zero is
         //         explicitly checked here.
         unsafe {
             match (lower, upper.into().unwrap_or(0)) {
-                (0, 0) => Err(()),
-                (lower, 0) => Ok(Lower(NonZeroUsize::new_unchecked(lower))),
-                (0, upper) => Ok(Upper(NonZeroUsize::new_unchecked(upper))),
-                (lower, upper) if lower < upper => Ok(Both {
+                (0, 0) => None,
+                (lower, 0) => Some(Lower(NonZeroUsize::new_unchecked(lower))),
+                (0, upper) => Some(Upper(NonZeroUsize::new_unchecked(upper))),
+                (lower, upper) if lower < upper => Some(Both {
                     lower: NonZeroUsize::new_unchecked(lower),
                     extent: NonZeroUsize::new_unchecked(upper - lower),
                 }),
-                _ => Err(()),
+                _ => None,
             }
         }
     }
@@ -568,7 +564,7 @@ impl BoundedVariantRange {
         }
     }
 
-    pub fn lower(&self) -> Lower<NonZeroBound> {
+    pub fn lower(&self) -> NonZeroLower {
         use BoundedVariantRange::{Both, Lower, Upper};
 
         match self {
@@ -578,7 +574,7 @@ impl BoundedVariantRange {
         .into_lower()
     }
 
-    pub fn upper(&self) -> Upper<NonZeroBound> {
+    pub fn upper(&self) -> NonZeroUpper {
         use BoundedVariantRange::{Both, Lower, Upper};
 
         match self {

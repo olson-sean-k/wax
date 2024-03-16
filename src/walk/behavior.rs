@@ -1,5 +1,7 @@
 use std::num::NonZeroUsize;
 
+use crate::token::{Depth, TokenVariance};
+
 /// Configuration for a minimum depth of matched files in a walk.
 ///
 /// Unlike a maximum depth, a minimum depth cannot be zero, because such a minimum has no effect.
@@ -162,9 +164,6 @@ pub enum DepthBehavior {
 }
 
 impl DepthBehavior {
-    // TODO: Provide a similar function for `Glob`s called something like
-    //       `bounded_with_depth_variance`, which additionally accepts a depth variance and
-    //       considers this variance when constructing the `DepthBehavior`.
     /// Constructs a bounded `DepthBehavior` from a minimum and/or maximum depth.
     ///
     /// This function provides an ergonomic way to place bounds on the depth of a walk. At least
@@ -209,6 +208,20 @@ impl DepthBehavior {
                 .map(MinMax),
             _ => None,
         }
+    }
+
+    pub fn bounded_at_depth_variance(
+        min: impl Into<Option<usize>>,
+        max: impl Into<Option<usize>>,
+        depth: TokenVariance<Depth>,
+    ) -> Option<Self> {
+        let lower = depth.map_invariant(usize::from).lower().into_usize();
+        let translation = move |depth: Option<usize>| -> Result<Option<usize>, ()> {
+            depth
+                .map(|depth| depth.checked_add(lower).ok_or(()))
+                .transpose()
+        };
+        DepthBehavior::bounded(translation(min.into()).ok()?, translation(max.into()).ok()?)
     }
 }
 

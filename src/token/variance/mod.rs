@@ -7,31 +7,30 @@ use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
 use crate::token::variance::bound::{
-    Bounded, Boundedness, NaturalRange, OpenedUpperBound, Unbounded, VariantRange,
+    Bounded, BoundedVariantRange, Boundedness, NaturalRange, OpenedUpperBound, Unbounded,
+    VariantRange,
 };
-use crate::token::variance::invariant::{
-    Breadth, Depth, GlobVariance, Identity, Invariant, Text, UnitBound,
-};
+use crate::token::variance::invariant::{Breadth, Depth, Identity, Invariant, Text, UnitBound};
 use crate::token::variance::ops::{Conjunction, Disjunction, Product};
 use crate::token::walk::{ChildToken, Fold, Forward, ParentToken, Sequencer};
 use crate::token::{Boundary, BranchKind, LeafKind};
 
-use self::bound::BoundedVariantRange;
+pub type TokenVariance<T> = Variance<T, Boundedness<<T as Invariant>::Bound>>;
 
 pub trait VarianceTerm<T>
 where
     T: Invariant,
 {
-    fn term(&self) -> GlobVariance<T>;
+    fn term(&self) -> TokenVariance<T>;
 }
 
 pub trait VarianceFold<T>
 where
     T: Invariant,
 {
-    fn fold(&self, terms: Vec<GlobVariance<T>>) -> Option<GlobVariance<T>>;
+    fn fold(&self, terms: Vec<TokenVariance<T>>) -> Option<TokenVariance<T>>;
 
-    fn finalize(&self, term: GlobVariance<T>) -> GlobVariance<T> {
+    fn finalize(&self, term: TokenVariance<T>) -> TokenVariance<T> {
         term
     }
 }
@@ -107,6 +106,24 @@ impl<T, B> Variance<T, B> {
     }
 }
 
+impl<T> Variance<T, T> {
+    pub fn into_inner(self) -> T {
+        match self {
+            Variance::Invariant(inner) | Variance::Variant(inner) => inner,
+        }
+    }
+
+    pub fn map<U, F>(self, f: F) -> Variance<U, U>
+    where
+        F: FnOnce(T) -> U,
+    {
+        match self {
+            Variance::Invariant(invariant) => Variance::Invariant(f(invariant)),
+            Variance::Variant(variant) => Variance::Variant(f(variant)),
+        }
+    }
+}
+
 impl<T, B> Variance<T, Boundedness<B>> {
     pub const fn unbounded() -> Self {
         Variance::Variant(Unbounded)
@@ -131,7 +148,7 @@ impl<T> Variance<T, VariantRange> {
     }
 }
 
-impl<T> Conjunction for GlobVariance<T>
+impl<T> Conjunction for TokenVariance<T>
 where
     T: Conjunction<Output = T> + Invariant,
     T::Bound: Conjunction<Output = T::Bound> + Conjunction<T, Output = T::Bound> + OpenedUpperBound,
@@ -169,7 +186,7 @@ where
     }
 }
 
-impl<T> Disjunction for GlobVariance<T>
+impl<T> Disjunction for TokenVariance<T>
 where
     Self: PartialEq,
     T: Invariant,
@@ -216,10 +233,10 @@ where
     }
 }
 
-impl<T> Product<NaturalRange> for GlobVariance<T>
+impl<T> Product<NaturalRange> for TokenVariance<T>
 where
     Boundedness<T::Bound>: Product<NonZeroUsize, Output = Boundedness<T::Bound>>,
-    T: Invariant + Product<VariantRange, Output = GlobVariance<T>> + Product<usize, Output = T>,
+    T: Invariant + Product<VariantRange, Output = TokenVariance<T>> + Product<usize, Output = T>,
     T::Bound: Product<BoundedVariantRange, Output = Boundedness<T::Bound>>,
 {
     type Output = Self;
@@ -260,7 +277,7 @@ where
     T: Invariant,
 {
     type Sequencer = Forward;
-    type Term = GlobVariance<T>;
+    type Term = TokenVariance<T>;
 
     fn sequencer() -> Self::Sequencer {
         Forward
@@ -293,8 +310,8 @@ impl Sequencer for TreeExhaustiveness {
                     true
                 }
                 else {
-                    let breadth: GlobVariance<Breadth> = leaf.term();
-                    let text: GlobVariance<Text> = leaf.term();
+                    let breadth: TokenVariance<Breadth> = leaf.term();
+                    let text: TokenVariance<Text> = leaf.term();
                     breadth.is_unbounded() && text.is_unbounded()
                 }
             })
@@ -304,7 +321,7 @@ impl Sequencer for TreeExhaustiveness {
 
 impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
     type Sequencer = Self;
-    type Term = GlobVariance<Depth>;
+    type Term = TokenVariance<Depth>;
 
     fn sequencer() -> Self::Sequencer {
         Self
@@ -342,7 +359,7 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
                 })
                 .into_inner();
             if !all && any {
-                return Some(GlobVariance::<Depth>::Variant(Bounded(
+                return Some(TokenVariance::<Depth>::Variant(Bounded(
                     BoundedVariantRange::Upper(unsafe { NonZeroUsize::new_unchecked(1) }),
                 )));
             }
@@ -397,26 +414,26 @@ pub mod harness {
     use std::fmt::Debug;
 
     use crate::token::variance::bound::{BoundedVariantRange, NaturalRange};
-    use crate::token::variance::invariant::{GlobVariance, Invariant, UnitBound};
+    use crate::token::variance::invariant::{Invariant, UnitBound};
     use crate::token::variance::ops::Conjunction;
-    use crate::token::variance::{TreeVariance, Variance};
+    use crate::token::variance::{TokenVariance, TreeVariance, Variance};
     use crate::token::{Fold, TokenTree, Tokenized};
 
-    pub fn invariant<T, U>(invariant: U) -> GlobVariance<T>
+    pub fn invariant<T, U>(invariant: U) -> TokenVariance<T>
     where
         T: From<U> + Invariant,
     {
         Variance::Invariant(invariant.into())
     }
 
-    pub fn bounded<T>() -> GlobVariance<T>
+    pub fn bounded<T>() -> TokenVariance<T>
     where
         T: Invariant<Bound = UnitBound>,
     {
         Variance::Variant(UnitBound.into())
     }
 
-    pub fn range<T>(lower: usize, upper: Option<usize>) -> GlobVariance<T>
+    pub fn range<T>(lower: usize, upper: Option<usize>) -> TokenVariance<T>
     where
         T: From<usize> + Invariant<Bound = BoundedVariantRange>,
     {
@@ -425,10 +442,10 @@ pub mod harness {
 
     pub fn assert_tokenized_variance_eq<'t, A, T>(
         tokenized: Tokenized<'t, A>,
-        expected: GlobVariance<T>,
+        expected: TokenVariance<T>,
     ) -> Tokenized<'t, A>
     where
-        TreeVariance<T>: Fold<'t, A, Term = GlobVariance<T>>,
+        TreeVariance<T>: Fold<'t, A, Term = TokenVariance<T>>,
         T: Conjunction<Output = T> + Debug + Eq + Invariant,
         T::Bound: Debug + Eq,
     {
@@ -464,8 +481,8 @@ mod tests {
     use rstest::rstest;
 
     use crate::token::parse;
-    use crate::token::variance::invariant::{Depth, GlobVariance, Size, Text};
-    use crate::token::variance::{harness, Variance};
+    use crate::token::variance::invariant::{Depth, Size, Text};
+    use crate::token::variance::{harness, TokenVariance, Variance};
 
     #[rstest]
     #[case("a", harness::invariant(1))]
@@ -474,13 +491,14 @@ mod tests {
     #[case("a/**/b", harness::range(2, None))]
     #[case("a/**/b/**/c", harness::range(3, None))]
     #[case("<a*/:1,>*", harness::range(1, None))]
+    #[case("{a/b/,c/**/}*.ext", harness::range(1, None))]
     #[case("**", Variance::unbounded())]
     #[case("<*/>*", Variance::unbounded())]
     #[case("<<?>/>*", Variance::unbounded())]
     #[case("<a*/>*", Variance::unbounded())]
     fn parse_expression_depth_variance_eq(
         #[case] expression: &str,
-        #[case] expected: GlobVariance<Depth>,
+        #[case] expected: TokenVariance<Depth>,
     ) {
         harness::assert_tokenized_variance_eq(
             parse::harness::assert_parse_expression_is_ok(expression),
@@ -499,7 +517,7 @@ mod tests {
     #[case("<a*/>*", Variance::unbounded())]
     fn parse_expression_size_variance_eq(
         #[case] expression: &str,
-        #[case] expected: GlobVariance<Size>,
+        #[case] expected: TokenVariance<Size>,
     ) {
         harness::assert_tokenized_variance_eq(
             parse::harness::assert_parse_expression_is_ok(expression),
@@ -518,7 +536,7 @@ mod tests {
     #[case("<a*/>*", Variance::unbounded())]
     fn parse_expression_text_variance_eq(
         #[case] expression: &str,
-        #[case] expected: GlobVariance<Text>,
+        #[case] expected: TokenVariance<Text>,
     ) {
         harness::assert_tokenized_variance_eq(
             parse::harness::assert_parse_expression_is_ok(expression),
