@@ -1238,7 +1238,6 @@ pub mod harness {
     }
 }
 
-// TODO: Construct `Glob`s in tests using `crate::harness::assert_new_glob_is_ok`.
 #[cfg(test)]
 mod tests {
     use build_fs_tree::{dir, file};
@@ -1247,8 +1246,9 @@ mod tests {
 
     use crate::walk::filter::{HierarchicalIterator, Separation, TreeResidue};
     use crate::walk::harness::{self, assert_set_eq, TempTree};
-    use crate::walk::{DepthBehavior, Entry, FileIterator, LinkBehavior, PathExt};
-    use crate::Glob;
+    use crate::walk::{
+        DepthMax, DepthMin, DepthMinMax, Entry, FileIterator, LinkBehavior, PathExt,
+    };
 
     // TODO: Rust's testing framework does not provide a mechanism for maintaining shared state nor
     //       hooks for the start and end of testing. This means that tests that write to the file
@@ -1381,7 +1381,7 @@ mod tests {
         temptree: TempTree,
     ) {
         harness::assert_walk_paths_eq(
-            temptree.walk_with_behavior(DepthBehavior::bounded(2, 2).unwrap()),
+            temptree.walk_with_behavior(DepthMinMax::from_depths_or_max(2, 2)),
             temptree.join_all([
                 "doc/guide.md",
                 "src/glob.rs",
@@ -1395,7 +1395,7 @@ mod tests {
     #[rstest]
     fn walk_glob_with_tree_includes_all_paths(temptree: TempTree) {
         harness::assert_walk_paths_eq(
-            Glob::new("**").unwrap().walk(temptree.as_ref()),
+            crate::harness::assert_new_glob_is_ok("**").walk(temptree.as_ref()),
             temptree.join_all([
                 "",
                 "doc",
@@ -1417,7 +1417,7 @@ mod tests {
         temptree: TempTree,
     ) {
         harness::assert_walk_paths_eq(
-            Glob::new("**/*.md").unwrap().walk(temptree.as_ref()),
+            crate::harness::assert_new_glob_is_ok("**/*.md").walk(temptree.as_ref()),
             temptree.join_all(["doc/guide.md", "README.md"]),
         );
     }
@@ -1427,7 +1427,7 @@ mod tests {
         temptree: TempTree,
     ) {
         harness::assert_walk_paths_eq(
-            Glob::new("**/src/**/*.rs").unwrap().walk(temptree.as_ref()),
+            crate::harness::assert_new_glob_is_ok("**/src/**/*.rs").walk(temptree.as_ref()),
             temptree.join_all(["src/glob.rs", "src/lib.rs"]),
         );
     }
@@ -1435,14 +1435,15 @@ mod tests {
     #[rstest]
     fn walk_invariant_glob_includes_only_invariant_path(temptree: TempTree) {
         harness::assert_walk_paths_eq(
-            Glob::new("src/lib.rs").unwrap().walk(temptree.as_ref()),
+            crate::harness::assert_new_glob_is_ok("src/lib.rs").walk(temptree.as_ref()),
             [temptree.join("src/lib.rs")],
         );
     }
 
     #[rstest]
     fn walk_empty_partitioned_glob_at_non_empty_prefix_includes_only_prefix(temptree: TempTree) {
-        let (prefix, glob) = Glob::new("src/lib.rs").unwrap().partition_or_empty();
+        let (prefix, glob) =
+            crate::harness::assert_new_glob_is_ok("src/lib.rs").partition_or_empty();
         harness::assert_walk_paths_eq(
             glob.walk(temptree.join(prefix)),
             [temptree.join("src/lib.rs")],
@@ -1459,7 +1460,7 @@ mod tests {
         use TestSeparation::{Filtrate, Residue};
         use TreeResidue::{Node, Tree};
 
-        let glob = Glob::new("**/*.{md,rs}").unwrap();
+        let glob = crate::harness::assert_new_glob_is_ok("**/*.{md,rs}");
         let mut paths = HashSet::new();
         glob.walk(temptree.as_ref())
             .not("**/harness/**")
@@ -1516,9 +1517,8 @@ mod tests {
     #[rstest]
     fn walk_glob_with_max_depth_behavior_excludes_descendants(temptree: TempTree) {
         harness::assert_walk_paths_eq(
-            Glob::new("**")
-                .unwrap()
-                .walk_with_behavior(temptree.as_ref(), DepthBehavior::bounded(None, 1).unwrap()),
+            crate::harness::assert_new_glob_is_ok("**")
+                .walk_with_behavior(temptree.as_ref(), DepthMax(1)),
             temptree.join_all(["", "doc", "src", "tests", "README.md"]),
         );
     }
@@ -1526,9 +1526,8 @@ mod tests {
     #[rstest]
     fn walk_glob_with_zero_max_depth_behavior_includes_only_root(temptree: TempTree) {
         harness::assert_walk_paths_eq(
-            Glob::new("**")
-                .unwrap()
-                .walk_with_behavior(temptree.as_ref(), DepthBehavior::bounded(None, 0).unwrap()),
+            crate::harness::assert_new_glob_is_ok("**")
+                .walk_with_behavior(temptree.as_ref(), DepthMax(0)),
             [temptree.as_ref()],
         );
     }
@@ -1536,9 +1535,8 @@ mod tests {
     #[rstest]
     fn walk_glob_with_min_depth_behavior_excludes_ancestors(temptree: TempTree) {
         harness::assert_walk_paths_eq(
-            Glob::new("**")
-                .unwrap()
-                .walk_with_behavior(temptree.as_ref(), DepthBehavior::bounded(2, None).unwrap()),
+            crate::harness::assert_new_glob_is_ok("**")
+                .walk_with_behavior(temptree.as_ref(), DepthMin::from_min_or_unbounded(2)),
             temptree.join_all([
                 "doc/guide.md",
                 "src/glob.rs",
@@ -1555,9 +1553,8 @@ mod tests {
         temptree: TempTree,
     ) {
         harness::assert_walk_paths_eq(
-            Glob::new("tests/**")
-                .unwrap()
-                .walk_with_behavior(temptree.as_ref(), DepthBehavior::bounded(2, 2).unwrap()),
+            crate::harness::assert_new_glob_is_ok("tests/**")
+                .walk_with_behavior(temptree.as_ref(), DepthMinMax::from_depths_or_max(2, 2)),
             temptree.join_all(["tests/harness", "tests/walk.rs"]),
         );
     }
@@ -1568,8 +1565,7 @@ mod tests {
         #[from(temptree_with_cyclic_link)] temptree: TempTree,
     ) {
         harness::assert_walk_paths_eq(
-            Glob::new("**")
-                .unwrap()
+            crate::harness::assert_new_glob_is_ok("**")
                 .walk_with_behavior(temptree.as_ref(), LinkBehavior::ReadFile),
             temptree.join_all([
                 "",
@@ -1608,7 +1604,7 @@ mod tests {
             temptree.join("tests/harness/mod.rs"),
             temptree.join("tests/walk.rs"),
         ];
-        let glob = Glob::new("**").unwrap();
+        let glob = crate::harness::assert_new_glob_is_ok("**");
         let mut paths: Vec<_> = glob
             .walk_with_behavior(temptree.as_ref(), LinkBehavior::ReadTarget)
             .flatten()
