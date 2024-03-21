@@ -134,8 +134,7 @@ impl<T, B> Variance<T, B> {
 ///
 /// Depth describes the number of levels into a directory tree from some root that a path
 /// represents and a [`Program`] may match. When variant, the bounds of depth are described by
-/// [`VariantRange`]. For example, the glob expression `{server/log/,client/**/}*.log` has variant
-/// depth of one or more (no upper bound).
+/// [`VariantRange`].
 ///
 /// [`Program`]: crate::Program
 /// [`VariantRange`]: crate::query::VariantRange

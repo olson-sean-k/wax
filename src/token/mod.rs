@@ -14,8 +14,10 @@ use std::str;
 
 use crate::diagnostics::{Span, Spanned};
 use crate::query::When;
-use crate::token::variance::invariant::{IntoNominalText, IntoStructuralText};
-use crate::token::variance::ops::{self, Conjunction};
+use crate::token::variance::invariant::{
+    BoundaryTerm, IntoNominalText, IntoStructuralText, One, Zero,
+};
+use crate::token::variance::ops;
 use crate::token::variance::{TreeExhaustiveness, TreeVariance, VarianceFold, VarianceTerm};
 use crate::token::walk::{BranchFold, Fold, FoldMap, Starting, TokenEntry};
 use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
@@ -24,7 +26,9 @@ pub use crate::token::parse::{parse, ParseError, ROOT_SEPARATOR_EXPRESSION};
 pub use crate::token::variance::bound::{
     BoundedVariantRange, Boundedness, NaturalRange, VariantRange,
 };
-pub use crate::token::variance::invariant::{Breadth, Depth, Invariant, Size, Text};
+pub use crate::token::variance::invariant::{
+    Breadth, Depth, Finalize, Invariant, InvariantTerm, Size, Text,
+};
 pub use crate::token::variance::{TokenVariance, Variance};
 
 // TODO: Tree representations of expressions are intrusive and only differ in their annotations.
@@ -157,7 +161,7 @@ impl<T> AsRef<T> for Composition<T, T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Boundary {
     Component,
     Separator,
@@ -447,12 +451,13 @@ impl<'t, A> Token<'t, A> {
 
     pub fn variance<T>(&self) -> TokenVariance<T>
     where
-        TreeVariance<T>: Fold<'t, A, Term = TokenVariance<T>>,
-        T: Conjunction<Output = T> + Invariant,
+        TreeVariance<T>: Fold<'t, A, Term = T::Term>,
+        T: Invariant,
     {
-        self.fold(TreeVariance::default())
-            .unwrap_or_else(Variance::zero)
-            .map_invariant(|invariant| ops::conjunction(T::once(), invariant))
+        T::Term::finalize(
+            self.fold(TreeVariance::default())
+                .unwrap_or_else(Zero::zero),
+        )
     }
 
     pub fn invariant_text_prefix(&self) -> (usize, String) {
@@ -580,6 +585,7 @@ impl<'t, A> Token<'t, A> {
     //       discard directory trees in the `FileIterator::not` combinator.
     pub fn is_exhaustive(&self) -> bool {
         self.fold(TreeExhaustiveness)
+            .map(Finalize::finalize)
             .as_ref()
             .map_or(false, Variance::is_exhaustive)
     }
@@ -830,7 +836,7 @@ where
     Repetition<'t, A>: VarianceFold<T>,
     T: Invariant,
 {
-    fn fold(&self, terms: Vec<TokenVariance<T>>) -> Option<TokenVariance<T>> {
+    fn fold(&self, terms: Vec<T::Term>) -> Option<T::Term> {
         use BranchKind::{Alternation, Concatenation, Repetition};
 
         match self {
@@ -840,7 +846,7 @@ where
         }
     }
 
-    fn finalize(&self, term: TokenVariance<T>) -> TokenVariance<T> {
+    fn finalize(&self, term: T::Term) -> T::Term {
         use BranchKind::{Alternation, Concatenation, Repetition};
 
         match self {
@@ -942,7 +948,7 @@ where
     Wildcard: VarianceTerm<T>,
     T: Invariant,
 {
-    fn term(&self) -> TokenVariance<T> {
+    fn term(&self) -> T::Term {
         use LeafKind::{Class, Literal, Separator, Wildcard};
 
         match self {
@@ -983,19 +989,19 @@ impl<'t, A> From<Vec<Token<'t, A>>> for Alternation<'t, A> {
 }
 
 impl<'t, A> VarianceFold<Depth> for Alternation<'t, A> {
-    fn fold(&self, terms: Vec<TokenVariance<Depth>>) -> Option<TokenVariance<Depth>> {
+    fn fold(&self, terms: Vec<InvariantTerm<Depth>>) -> Option<InvariantTerm<Depth>> {
         terms.into_iter().reduce(ops::disjunction)
     }
 }
 
 impl<'t, A> VarianceFold<Size> for Alternation<'t, A> {
-    fn fold(&self, terms: Vec<TokenVariance<Size>>) -> Option<TokenVariance<Size>> {
+    fn fold(&self, terms: Vec<InvariantTerm<Size>>) -> Option<InvariantTerm<Size>> {
         terms.into_iter().reduce(ops::disjunction)
     }
 }
 
 impl<'t, A> VarianceFold<Text<'t>> for Alternation<'t, A> {
-    fn fold(&self, terms: Vec<TokenVariance<Text<'t>>>) -> Option<TokenVariance<Text<'t>>> {
+    fn fold(&self, terms: Vec<InvariantTerm<Text<'t>>>) -> Option<InvariantTerm<Text<'t>>> {
         terms.into_iter().reduce(ops::disjunction)
     }
 }
@@ -1028,7 +1034,7 @@ impl From<(char, char)> for Archetype {
 }
 
 impl VarianceTerm<Size> for Archetype {
-    fn term(&self) -> TokenVariance<Size> {
+    fn term(&self) -> InvariantTerm<Size> {
         // TODO: Examine the archetype instead of blindly assuming a constant size. This becomes
         //       especially important if character classes gain support for named classes, as these
         //       may contain graphemes that cannot be encoded as a single code point. See related
@@ -1040,7 +1046,7 @@ impl VarianceTerm<Size> for Archetype {
 }
 
 impl<'t> VarianceTerm<Text<'t>> for Archetype {
-    fn term(&self) -> TokenVariance<Text<'t>> {
+    fn term(&self) -> InvariantTerm<Text<'t>> {
         match self {
             Archetype::Character(x) => {
                 if PATHS_ARE_CASE_INSENSITIVE {
@@ -1082,36 +1088,38 @@ impl Class {
     where
         Archetype: VarianceTerm<T>,
         T: Invariant,
-        F: FnMut(TokenVariance<T>, TokenVariance<T>) -> TokenVariance<T>,
+        F: FnMut(T::Term, T::Term) -> T::Term,
     {
-        self.archetypes()
-            .iter()
-            .map(Archetype::term)
-            .reduce(f)
-            .unwrap_or_else(Variance::zero)
+        T::Term::finalize(
+            self.archetypes()
+                .iter()
+                .map(Archetype::term)
+                .reduce(f)
+                .unwrap_or_else(Zero::zero),
+        )
     }
 }
 
 impl VarianceTerm<Breadth> for Class {
-    fn term(&self) -> TokenVariance<Breadth> {
+    fn term(&self) -> InvariantTerm<Breadth> {
         Variance::zero()
     }
 }
 
 impl VarianceTerm<Depth> for Class {
-    fn term(&self) -> TokenVariance<Depth> {
-        Variance::zero()
+    fn term(&self) -> InvariantTerm<Depth> {
+        Zero::zero()
     }
 }
 
 impl VarianceTerm<Size> for Class {
-    fn term(&self) -> TokenVariance<Size> {
+    fn term(&self) -> InvariantTerm<Size> {
         self.fold(ops::disjunction)
     }
 }
 
 impl<'t> VarianceTerm<Text<'t>> for Class {
-    fn term(&self) -> TokenVariance<Text<'t>> {
+    fn term(&self) -> InvariantTerm<Text<'t>> {
         if self.is_negated {
             // It is not feasible to encode a character class that matches all UTF-8 text and
             // therefore nothing when negated, and so a character class must be variant if it is
@@ -1154,52 +1162,19 @@ impl<'t, A> From<Vec<Token<'t, A>>> for Concatenation<'t, A> {
 }
 
 impl<'t, A> VarianceFold<Depth> for Concatenation<'t, A> {
-    fn fold(&self, terms: Vec<TokenVariance<Depth>>) -> Option<TokenVariance<Depth>> {
+    fn fold(&self, terms: Vec<InvariantTerm<Depth>>) -> Option<InvariantTerm<Depth>> {
         terms.into_iter().reduce(ops::conjunction)
-    }
-
-    fn finalize(&self, term: TokenVariance<Depth>) -> TokenVariance<Depth> {
-        // Depth must consider boundary component tokens (i.e., tree wildcards). Boundary component
-        // tokens do not have explict separators, so additional depth terms are needed for any
-        // adjacent non-boundary tokens. For example, consider the pattern `a/**/b`. The `a` and
-        // `b` components have depth terms of zero and the tree wildcard `**` has an unbounded
-        // depth term. Note that the forward slashes in the expression are part of the tree
-        // wildcard; there are no separator tokens. The conjunction of these terms is unbounded (no
-        // lower bound), but the depth of this expression should have a lower bound of two.
-        ops::conjunction(
-            term,
-            Variance::Invariant({
-                let mut sum = Depth::ZERO;
-                let mut term = Depth::ZERO;
-                for token in self.tokens() {
-                    match token.boundary() {
-                        Some(Boundary::Component) => {
-                            sum = ops::conjunction(sum, term);
-                            term = Depth::ZERO;
-                        },
-                        None => {
-                            term = Depth::ONE;
-                        },
-                        _ => {},
-                    }
-                }
-                if sum != Depth::ZERO {
-                    sum = ops::conjunction(sum, term);
-                }
-                sum
-            }),
-        )
     }
 }
 
 impl<'t, A> VarianceFold<Size> for Concatenation<'t, A> {
-    fn fold(&self, terms: Vec<TokenVariance<Size>>) -> Option<TokenVariance<Size>> {
+    fn fold(&self, terms: Vec<InvariantTerm<Size>>) -> Option<InvariantTerm<Size>> {
         terms.into_iter().reduce(ops::conjunction)
     }
 }
 
 impl<'t, A> VarianceFold<Text<'t>> for Concatenation<'t, A> {
-    fn fold(&self, terms: Vec<TokenVariance<Text<'t>>>) -> Option<TokenVariance<Text<'t>>> {
+    fn fold(&self, terms: Vec<InvariantTerm<Text<'t>>>) -> Option<InvariantTerm<Text<'t>>> {
         terms.into_iter().reduce(ops::conjunction)
     }
 }
@@ -1260,19 +1235,19 @@ impl<'t> Literal<'t> {
 }
 
 impl<'t> VarianceTerm<Breadth> for Literal<'t> {
-    fn term(&self) -> TokenVariance<Breadth> {
+    fn term(&self) -> InvariantTerm<Breadth> {
         Variance::zero()
     }
 }
 
 impl<'t> VarianceTerm<Depth> for Literal<'t> {
-    fn term(&self) -> TokenVariance<Depth> {
-        Variance::zero()
+    fn term(&self) -> InvariantTerm<Depth> {
+        Zero::zero()
     }
 }
 
 impl<'t> VarianceTerm<Size> for Literal<'t> {
-    fn term(&self) -> TokenVariance<Size> {
+    fn term(&self) -> InvariantTerm<Size> {
         // TODO: This assumes that the size of graphemes in a casing set are the same. Is that
         //       correct?
         Variance::Invariant(self.text.as_bytes().len().into())
@@ -1280,7 +1255,7 @@ impl<'t> VarianceTerm<Size> for Literal<'t> {
 }
 
 impl<'t> VarianceTerm<Text<'t>> for Literal<'t> {
-    fn term(&self) -> TokenVariance<Text<'t>> {
+    fn term(&self) -> InvariantTerm<Text<'t>> {
         self.variance()
             .map_invariant(|invariant| invariant.clone().into_nominal_text())
     }
@@ -1338,31 +1313,31 @@ impl<'t, A> BranchComposition<'t> for Repetition<'t, A> {
 }
 
 impl<'t, A> VarianceFold<Depth> for Repetition<'t, A> {
-    fn fold(&self, terms: Vec<TokenVariance<Depth>>) -> Option<TokenVariance<Depth>> {
+    fn fold(&self, terms: Vec<InvariantTerm<Depth>>) -> Option<InvariantTerm<Depth>> {
         terms.into_iter().reduce(ops::conjunction)
     }
 
-    fn finalize(&self, term: TokenVariance<Depth>) -> TokenVariance<Depth> {
+    fn finalize(&self, term: InvariantTerm<Depth>) -> InvariantTerm<Depth> {
         ops::product(term, self.variance())
     }
 }
 
 impl<'t, A> VarianceFold<Size> for Repetition<'t, A> {
-    fn fold(&self, terms: Vec<TokenVariance<Size>>) -> Option<TokenVariance<Size>> {
+    fn fold(&self, terms: Vec<InvariantTerm<Size>>) -> Option<InvariantTerm<Size>> {
         terms.into_iter().reduce(ops::conjunction)
     }
 
-    fn finalize(&self, term: TokenVariance<Size>) -> TokenVariance<Size> {
+    fn finalize(&self, term: InvariantTerm<Size>) -> InvariantTerm<Size> {
         ops::product(term, self.variance())
     }
 }
 
 impl<'t, A> VarianceFold<Text<'t>> for Repetition<'t, A> {
-    fn fold(&self, terms: Vec<TokenVariance<Text<'t>>>) -> Option<TokenVariance<Text<'t>>> {
+    fn fold(&self, terms: Vec<InvariantTerm<Text<'t>>>) -> Option<InvariantTerm<Text<'t>>> {
         terms.into_iter().reduce(ops::conjunction)
     }
 
-    fn finalize(&self, term: TokenVariance<Text<'t>>) -> TokenVariance<Text<'t>> {
+    fn finalize(&self, term: InvariantTerm<Text<'t>>) -> InvariantTerm<Text<'t>> {
         ops::product(term, self.variance())
     }
 }
@@ -1375,19 +1350,19 @@ impl Separator {
 }
 
 impl VarianceTerm<Breadth> for Separator {
-    fn term(&self) -> TokenVariance<Breadth> {
+    fn term(&self) -> InvariantTerm<Breadth> {
         Variance::zero()
     }
 }
 
 impl VarianceTerm<Depth> for Separator {
-    fn term(&self) -> TokenVariance<Depth> {
-        Variance::Invariant(1.into())
+    fn term(&self) -> InvariantTerm<Depth> {
+        One::one()
     }
 }
 
 impl VarianceTerm<Size> for Separator {
-    fn term(&self) -> TokenVariance<Size> {
+    fn term(&self) -> InvariantTerm<Size> {
         // TODO: This is incorrect. The compiled regular expression may ignore a terminating
         //       separator, in which case the size is a bounded range.
         Variance::Invariant(Separator::INVARIANT_TEXT.as_bytes().len().into())
@@ -1395,7 +1370,7 @@ impl VarianceTerm<Size> for Separator {
 }
 
 impl<'t> VarianceTerm<Text<'t>> for Separator {
-    fn term(&self) -> TokenVariance<Text<'t>> {
+    fn term(&self) -> InvariantTerm<Text<'t>> {
         Variance::Invariant(Separator::INVARIANT_TEXT.into_structural_text())
     }
 }
@@ -1439,7 +1414,7 @@ where
 }
 
 impl VarianceTerm<Breadth> for Wildcard {
-    fn term(&self) -> TokenVariance<Breadth> {
+    fn term(&self) -> InvariantTerm<Breadth> {
         match self {
             Wildcard::One => Variance::zero(),
             _ => Variance::unbounded(),
@@ -1448,16 +1423,16 @@ impl VarianceTerm<Breadth> for Wildcard {
 }
 
 impl VarianceTerm<Depth> for Wildcard {
-    fn term(&self) -> TokenVariance<Depth> {
+    fn term(&self) -> InvariantTerm<Depth> {
         match self {
-            Wildcard::Tree { .. } => Variance::unbounded(),
-            _ => Variance::zero(),
+            Wildcard::Tree { .. } => BoundaryTerm::unbounded(),
+            _ => Zero::zero(),
         }
     }
 }
 
 impl VarianceTerm<Size> for Wildcard {
-    fn term(&self) -> TokenVariance<Size> {
+    fn term(&self) -> InvariantTerm<Size> {
         match self {
             // TODO: This is a bit pessimistic and, more importantly, incorrect! Clarity is needed
             //       on what exactly an exactly-one wildcard matches in text. If it is a grapheme,

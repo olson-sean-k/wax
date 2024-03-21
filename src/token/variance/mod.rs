@@ -10,52 +10,41 @@ use crate::token::variance::bound::{
     Bounded, BoundedVariantRange, Boundedness, NaturalRange, OpenedUpperBound, Unbounded,
     VariantRange,
 };
-use crate::token::variance::invariant::{Breadth, Depth, Identity, Invariant, Text, UnitBound};
+use crate::token::variance::invariant::{
+    BoundaryTerm, Breadth, Depth, Finalize, Invariant, InvariantBound, InvariantTerm, One,
+    SeparatedTerm, Termination, Text, UnitBound, Zero,
+};
 use crate::token::variance::ops::{Conjunction, Disjunction, Product};
 use crate::token::walk::{ChildToken, Fold, Forward, ParentToken, Sequencer};
 use crate::token::{Boundary, BranchKind, LeafKind};
 
-pub type TokenVariance<T> = Variance<T, Boundedness<<T as Invariant>::Bound>>;
+pub type TokenVariance<T> = Variance<T, Boundedness<InvariantBound<T>>>;
 
 pub trait VarianceTerm<T>
 where
     T: Invariant,
 {
-    fn term(&self) -> TokenVariance<T>;
+    fn term(&self) -> T::Term;
 }
 
 pub trait VarianceFold<T>
 where
     T: Invariant,
 {
-    fn fold(&self, terms: Vec<TokenVariance<T>>) -> Option<TokenVariance<T>>;
+    fn fold(&self, terms: Vec<T::Term>) -> Option<T::Term>;
 
-    fn finalize(&self, term: TokenVariance<T>) -> TokenVariance<T> {
+    fn finalize(&self, term: T::Term) -> T::Term {
         term
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Variance<T, B = Boundedness<UnitBound>> {
     Invariant(T),
     Variant(B),
 }
 
 impl<T, B> Variance<T, B> {
-    pub fn zero() -> Self
-    where
-        T: Identity,
-    {
-        Variance::Invariant(T::zero())
-    }
-
-    pub fn once() -> Self
-    where
-        T: Invariant,
-    {
-        Variance::Invariant(T::once())
-    }
-
     pub fn map_invariant<U, F>(self, f: F) -> Variance<U, B>
     where
         F: FnOnce(T) -> U,
@@ -202,7 +191,7 @@ where
         match (lhs, rhs) {
             // The terms are equal. Disjunction is one of the terms (any term may be used).
             (lhs, rhs) if lhs == rhs => lhs,
-            // The terms are invariant (and inequal). Disjunction is variant over the bound of the
+            // The terms are invariant (and unequal). Disjunction is variant over the bound of the
             // invariants.
             (Invariant(lhs), Invariant(rhs)) => Variant(T::bound(lhs, rhs)),
             // A term is unbounded. Disjunction is unbounded.
@@ -219,17 +208,23 @@ where
     }
 }
 
-impl<T, B> PartialEq for Variance<T, B>
+impl<T> Finalize for TokenVariance<T>
 where
-    T: PartialEq<T>,
-    B: PartialEq<B>,
+    T: Invariant,
 {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Variance::Invariant(ref left), Variance::Invariant(ref right)) => left == right,
-            (Variance::Variant(ref left), Variance::Variant(ref right)) => left == right,
-            _ => false,
-        }
+    type Output = Self;
+
+    fn finalize(self) -> Self::Output {
+        self
+    }
+}
+
+impl<T, B> One for Variance<T, B>
+where
+    T: One,
+{
+    fn one() -> Self {
+        Variance::Invariant(T::one())
     }
 }
 
@@ -262,6 +257,15 @@ where
     }
 }
 
+impl<T, B> Zero for Variance<T, B>
+where
+    T: Zero,
+{
+    fn zero() -> Self {
+        Variance::Invariant(T::zero())
+    }
+}
+
 pub struct TreeVariance<T>(PhantomData<fn() -> T>);
 
 impl<T> Default for TreeVariance<T> {
@@ -277,7 +281,7 @@ where
     T: Invariant,
 {
     type Sequencer = Forward;
-    type Term = TokenVariance<T>;
+    type Term = T::Term;
 
     fn sequencer() -> Self::Sequencer {
         Forward
@@ -310,8 +314,8 @@ impl Sequencer for TreeExhaustiveness {
                     true
                 }
                 else {
-                    let breadth: TokenVariance<Breadth> = leaf.term();
-                    let text: TokenVariance<Text> = leaf.term();
+                    let breadth = self::term::<Breadth>(leaf);
+                    let text = self::term::<Text>(leaf);
                     breadth.is_unbounded() && text.is_unbounded()
                 }
             })
@@ -321,7 +325,7 @@ impl Sequencer for TreeExhaustiveness {
 
 impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
     type Sequencer = Self;
-    type Term = TokenVariance<Depth>;
+    type Term = InvariantTerm<Depth>;
 
     fn sequencer() -> Self::Sequencer {
         Self
@@ -359,14 +363,17 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
                 })
                 .into_inner();
             if !all && any {
-                return Some(TokenVariance::<Depth>::Variant(Bounded(
-                    BoundedVariantRange::Upper(unsafe { NonZeroUsize::new_unchecked(1) }),
+                return Some(BoundaryTerm::Conjunctive(SeparatedTerm(
+                    Termination::Open,
+                    TokenVariance::<Depth>::Variant(Bounded(BoundedVariantRange::Upper(unsafe {
+                        NonZeroUsize::new_unchecked(1)
+                    }))),
                 )));
             }
         }
 
         let n = terms.len();
-        let sum = VarianceFold::fold(branch, terms);
+        let sum = self::fold::<Depth>(branch, terms);
         if branch.tokens().into_inner().len() == n {
             // No terms were discarded. Yield the sum.
             sum
@@ -374,11 +381,11 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
         else {
             // Terms were discarded, meaning some non-depth quantity was bounded. Yield any sum
             // only if the depth is exhaustive, otherwise zero.
-            if sum.as_ref().map_or(false, Variance::is_exhaustive) {
+            if sum.as_ref().map_or(false, BoundaryTerm::is_exhaustive) {
                 sum
             }
             else {
-                Some(Variance::zero())
+                Some(Zero::zero())
             }
         }
     }
@@ -387,7 +394,7 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
         use Variance::{Invariant, Variant};
 
         match branch {
-            branch @ BranchKind::Repetition(_) => match term {
+            branch @ BranchKind::Repetition(_) => match term.as_variance() {
                 // When folding terms into a repetition, only finalize variant terms and the
                 // multiplicative identity and annihilator (one and zero). This is necessary,
                 // because natural bounds do not express the subset nor relationship of matched
@@ -395,18 +402,39 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
                 // depth, but only matches paths with a depth that is a multiple of two and so is
                 // nonexhaustive. However, the similar pattern `<*/>` is exhaustive and matches any
                 // sub-tree of a match.
-                Invariant(Depth::ZERO) | Invariant(Depth::ONE) | Variant(_) => {
-                    VarianceFold::finalize(branch, term)
+                Invariant(&Depth::ZERO) | Invariant(&Depth::ONE) | Variant(_) => {
+                    self::finalize::<Depth>(branch, term)
                 },
                 _ => term,
             },
-            branch => VarianceFold::finalize(branch, term),
+            branch => self::finalize::<Depth>(branch, term),
         }
     }
 
     fn term(&mut self, leaf: &LeafKind<'t>) -> Self::Term {
-        VarianceTerm::term(leaf)
+        self::term::<Depth>(leaf)
     }
+}
+
+pub fn fold<T>(token: &impl VarianceFold<T>, terms: Vec<T::Term>) -> Option<T::Term>
+where
+    T: Invariant,
+{
+    token.fold(terms)
+}
+
+pub fn finalize<T>(token: &impl VarianceFold<T>, term: T::Term) -> T::Term
+where
+    T: Invariant,
+{
+    token.finalize(term)
+}
+
+pub fn term<T>(token: &impl VarianceTerm<T>) -> T::Term
+where
+    T: Invariant,
+{
+    token.term()
 }
 
 #[cfg(test)]
@@ -415,7 +443,6 @@ pub mod harness {
 
     use crate::token::variance::bound::{BoundedVariantRange, NaturalRange};
     use crate::token::variance::invariant::{Invariant, UnitBound};
-    use crate::token::variance::ops::Conjunction;
     use crate::token::variance::{TokenVariance, TreeVariance, Variance};
     use crate::token::{Fold, TokenTree, Tokenized};
 
@@ -433,7 +460,7 @@ pub mod harness {
         Variance::Variant(UnitBound.into())
     }
 
-    pub fn range<T>(lower: usize, upper: Option<usize>) -> TokenVariance<T>
+    pub fn range<T>(lower: usize, upper: impl Into<Option<usize>>) -> TokenVariance<T>
     where
         T: From<usize> + Invariant<Bound = BoundedVariantRange>,
     {
@@ -445,8 +472,8 @@ pub mod harness {
         expected: TokenVariance<T>,
     ) -> Tokenized<'t, A>
     where
-        TreeVariance<T>: Fold<'t, A, Term = TokenVariance<T>>,
-        T: Conjunction<Output = T> + Debug + Eq + Invariant,
+        TreeVariance<T>: Fold<'t, A, Term = T::Term>,
+        T: Debug + Eq + Invariant,
         T::Bound: Debug + Eq,
     {
         let variance = tokenized.as_token().variance::<T>();
@@ -486,16 +513,49 @@ mod tests {
 
     #[rstest]
     #[case("a", harness::invariant(1))]
+    #[case("a/", harness::invariant(1))]
     #[case("a/b", harness::invariant(2))]
+    #[case("(?i)a(?-i)b", harness::invariant(1))]
+    #[case("{a/b}", harness::invariant(2))]
+    #[case("{a,a/b}", harness::range(1, 2))]
+    #[case("x{a,a/b}", harness::range(1, 2))]
+    #[case("x/{a,a/b}", harness::range(2, 3))]
+    #[case("{a,a/b}x", harness::range(1, 2))]
+    #[case("{a,a/b}/x", harness::range(2, 3))]
+    #[case("{a,{a/b,a/b/c}}", harness::range(1, 3))]
+    #[case("{a/,{a/b/,a/b/c/}}x", harness::range(2, 4))]
+    #[case("<a/:3>", harness::invariant(3))]
+    #[case("<a/:0,3>", harness::range(0, 3))]
+    #[case("x<a/:3>", harness::invariant(3))]
+    #[case("<a/:3>x", harness::invariant(4))]
+    // TODO: Open components must not be empty. This means that `*` must match something if it
+    //       comprises a component, for example. However, this is not yet tested and is not
+    //       consistently emitted by the encoder: globs likely match incorrectly for such patterns!
+    //
+    //       Note that patterns that include terminations in components may be empty. For example,
+    //       `<*/>` explicitly includes the boundary `/`, and so may match empty content. This is
+    //       also true of coalescing patterns (the tree wildcard `**`).
+    #[case("*", harness::invariant(1))]
+    #[case("a/*", harness::invariant(2))]
+    #[case("a/*/b", harness::invariant(3))]
+    #[case("*/a", harness::invariant(2))]
+    #[case("{a,*}", harness::invariant(1))]
+    #[case("<a*/:1,>*", harness::range(2, None))]
+    #[case("<*/>", Variance::unbounded())]
+    #[case("<*/>*", harness::range(1, None))]
+    #[case("<<?>/>*", harness::range(1, None))]
+    #[case("<a*/>*", harness::range(1, None))]
+    #[case("**", Variance::unbounded())]
     #[case("a/**", harness::range(1, None))]
     #[case("a/**/b", harness::range(2, None))]
     #[case("a/**/b/**/c", harness::range(3, None))]
-    #[case("<a*/:1,>*", harness::range(1, None))]
-    #[case("{a/b/,c/**/}*.ext", harness::range(1, None))]
-    #[case("**", Variance::unbounded())]
-    #[case("<*/>*", Variance::unbounded())]
-    #[case("<<?>/>*", Variance::unbounded())]
-    #[case("<a*/>*", Variance::unbounded())]
+    #[case("*/**", harness::range(1, None))]
+    #[case("**/*", harness::range(1, None))]
+    #[case("**/*/**", harness::range(1, None))]
+    #[case("{a/b/,c/**/}*.ext", harness::range(2, None))]
+    #[case("a/<*/>", harness::range(1, None))]
+    #[case("a/<*/>b", harness::range(2, None))]
+    #[case("<*/>a</*>", harness::range(1, None))]
     fn parse_expression_depth_variance_eq(
         #[case] expression: &str,
         #[case] expected: TokenVariance<Depth>,

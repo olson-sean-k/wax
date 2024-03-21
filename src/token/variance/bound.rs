@@ -2,7 +2,7 @@ use std::cmp::{self, Ordering};
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
-use crate::token::variance::invariant::{Identity, UnitBound};
+use crate::token::variance::invariant::{self, UnitBound, Zero as _};
 use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
 use crate::token::variance::Variance;
 
@@ -232,7 +232,7 @@ impl From<Zero> for usize {
     }
 }
 
-impl Identity for Zero {
+impl invariant::Zero for Zero {
     fn zero() -> Self {
         Zero
     }

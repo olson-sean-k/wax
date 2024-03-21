@@ -1,24 +1,37 @@
 mod natural;
+mod term;
 mod text;
 
 use std::num::NonZeroUsize;
 
 use crate::token::variance::bound::{BoundedVariantRange, Boundedness, OpenedUpperBound};
 use crate::token::variance::ops::{Conjunction, Disjunction, Product};
+use crate::token::variance::TokenVariance;
 
 pub use crate::token::variance::invariant::natural::{Depth, Size};
+pub use crate::token::variance::invariant::term::{BoundaryTerm, SeparatedTerm, Termination};
 pub use crate::token::variance::invariant::text::{IntoNominalText, IntoStructuralText, Text};
 
-pub trait Identity {
+pub type InvariantTerm<T> = <T as Invariant>::Term;
+pub type InvariantBound<T> = <T as Invariant>::Bound;
+
+pub trait Zero {
     fn zero() -> Self;
 }
 
-pub trait Invariant: Sized + Identity {
-    type Bound;
+pub trait One {
+    fn one() -> Self;
+}
 
-    fn once() -> Self {
-        Self::zero()
-    }
+pub trait Finalize: Sized {
+    type Output;
+
+    fn finalize(self) -> Self::Output;
+}
+
+pub trait Invariant: Sized + Zero {
+    type Term: Finalize<Output = TokenVariance<Self>> + Zero;
+    type Bound;
 
     fn bound(lhs: Self, rhs: Self) -> Boundedness<Self::Bound>;
 
@@ -50,13 +63,14 @@ impl Breadth {
     }
 }
 
-impl Identity for Breadth {
+impl Zero for Breadth {
     fn zero() -> Self {
         Breadth
     }
 }
 
 impl Invariant for Breadth {
+    type Term = TokenVariance<Self>;
     type Bound = ();
 
     fn bound(_: Self, _: Self) -> Boundedness<Self::Bound> {
@@ -68,7 +82,7 @@ impl Invariant for Breadth {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct UnitBound;
 
 impl<T> Conjunction<T> for UnitBound {

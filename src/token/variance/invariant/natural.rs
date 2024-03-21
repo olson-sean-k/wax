@@ -3,16 +3,14 @@ use std::num::NonZeroUsize;
 use crate::token::variance::bound::{
     Bounded, BoundedVariantRange, Boundedness, Unbounded, VariantRange,
 };
-use crate::token::variance::invariant::{Identity, Invariant};
+use crate::token::variance::invariant::term::{BoundaryTerm, SeparatedTerm, Termination};
+use crate::token::variance::invariant::{Finalize, Invariant, One, Zero};
 use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
 use crate::token::variance::{TokenVariance, Variance};
 
-macro_rules! impl_invariant_natural {
-    ($name:ident $(,)?) => {
-        impl_invariant_natural!($name, once => 0);
-    };
-    ($name:ident, once => $once:expr $(,)?) => {
-        #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+macro_rules! impl_natural_invariant_term {
+    ($name:ident, $term:ident $(,)?) => {
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         #[repr(transparent)]
         pub struct $name(usize);
 
@@ -65,18 +63,9 @@ macro_rules! impl_invariant_natural {
             }
         }
 
-        impl Identity for $name {
-            fn zero() -> Self {
-                $name(0)
-            }
-        }
-
         impl Invariant for $name {
+            type Term = $term<$name>;
             type Bound = BoundedVariantRange;
-
-            fn once() -> Self {
-                $name($once)
-            }
 
             fn bound(lhs: Self, rhs: Self) -> Boundedness<Self::Bound> {
                 let [lower, upper] = crate::minmax(lhs, rhs);
@@ -89,6 +78,12 @@ macro_rules! impl_invariant_natural {
                     .map(BoundedVariantRange::Lower)
                     .map(From::from)
                     .unwrap_or(Unbounded)
+            }
+        }
+
+        impl One for $name {
+            fn one() -> Self {
+                $name(1)
             }
         }
 
@@ -110,11 +105,15 @@ macro_rules! impl_invariant_natural {
             type Output = TokenVariance<Self>;
 
             fn product(self, rhs: VariantRange) -> Self::Output {
-                NonZeroUsize::new(self.0)
-                    .map_or_else(
-                        TokenVariance::<Self>::zero,
-                        |lhs| Variance::Variant(rhs.map_bounded(|rhs| ops::product(rhs, lhs))),
-                    )
+                NonZeroUsize::new(self.0).map_or_else(TokenVariance::<Self>::zero, |lhs| {
+                    Variance::Variant(rhs.map_bounded(|rhs| ops::product(rhs, lhs)))
+                })
+            }
+        }
+
+        impl Zero for $name {
+            fn zero() -> Self {
+                $name(0)
             }
         }
 
@@ -135,11 +134,32 @@ macro_rules! impl_invariant_natural {
         }
     };
 }
-impl_invariant_natural!(Depth, once => 1);
-impl_invariant_natural!(Size);
+impl_natural_invariant_term!(Depth, BoundaryTerm);
+impl_natural_invariant_term!(Size, TokenVariance);
 
 impl TokenVariance<Depth> {
     pub fn is_exhaustive(&self) -> bool {
         !self.has_upper_bound()
+    }
+}
+
+impl Finalize for SeparatedTerm<TokenVariance<Depth>> {
+    type Output = TokenVariance<Depth>;
+
+    fn finalize(self) -> Self::Output {
+        use Termination::{Closed, Open};
+
+        let SeparatedTerm(termination, term) = self;
+        match termination {
+            Open => ops::conjunction(term, One::one()),
+            Closed => term.map_invariant(|term| term.map(|term| term.saturating_sub(1))),
+            _ => term,
+        }
+    }
+}
+
+impl BoundaryTerm<Depth> {
+    pub fn is_exhaustive(&self) -> bool {
+        self.clone().finalize().is_exhaustive()
     }
 }
