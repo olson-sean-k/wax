@@ -1,14 +1,14 @@
-mod natural;
 mod term;
 mod text;
 
 use std::num::NonZeroUsize;
 
-use crate::token::variance::bound::{BoundedVariantRange, Boundedness, OpenedUpperBound};
-use crate::token::variance::ops::{Conjunction, Disjunction, Product};
-use crate::token::variance::TokenVariance;
+use crate::token::variance::natural::{
+    define_natural_invariant, BoundedVariantRange, OpenedUpperBound,
+};
+use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
+use crate::token::variance::{Boundedness, TokenVariance};
 
-pub use crate::token::variance::invariant::natural::{Depth, Size};
 pub use crate::token::variance::invariant::term::{BoundaryTerm, SeparatedTerm, Termination};
 pub use crate::token::variance::invariant::text::{IntoNominalText, IntoStructuralText, Text};
 
@@ -36,50 +36,6 @@ pub trait Invariant: Sized + Zero {
     fn bound(lhs: Self, rhs: Self) -> Boundedness<Self::Bound>;
 
     fn into_lower_bound(self) -> Boundedness<Self::Bound>;
-}
-
-// Breadth is the maximum size (UTF-8 bytes) of component text in a glob expression. For example,
-// the breadth of `{a/,a/b/}<c/d:2>` is two (bytes).
-//
-// Composition is not implemented for breadth and it is only queried from leaf tokens. No values
-// are associated with its invariant nor bounds. Breadth is probably the least interesting and yet
-// most difficult quantity to compute. Determining correct breadth values likely involves:
-//
-// - Complex terms that support both running sums and running maximums across boundaries.
-// - Searches from the start and end of sub-trees in repetitions, where terminals may interact.
-//   Consider `<a/b:2>` vs. `<a/b/:2>`, which have breadths of two and one, respectively.
-// - Potentially large sets for bounds. Ranges lose too much information, in particular information
-//   about boundaries when composing terms.
-//
-// There are likely other difficult composition problems. As such, breadth is only implemented as
-// much as needed. Any requirements on more complete breadth computations ought to be considered
-// carefully.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Breadth;
-
-impl Breadth {
-    pub const fn new() -> Self {
-        Breadth
-    }
-}
-
-impl Zero for Breadth {
-    fn zero() -> Self {
-        Breadth
-    }
-}
-
-impl Invariant for Breadth {
-    type Term = TokenVariance<Self>;
-    type Bound = ();
-
-    fn bound(_: Self, _: Self) -> Boundedness<Self::Bound> {
-        ().into()
-    }
-
-    fn into_lower_bound(self) -> Boundedness<Self::Bound> {
-        ().into()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -134,3 +90,84 @@ impl Product<NonZeroUsize> for Boundedness<UnitBound> {
         self
     }
 }
+
+// Breadth is the maximum size (UTF-8 bytes) of component text in a glob expression. For example,
+// the breadth of `{a/,a/b/}<c/d:2>` is two (bytes).
+//
+// Composition is not implemented for breadth and it is only queried from leaf tokens. No values
+// are associated with its invariant nor bounds. Breadth is probably the least interesting and yet
+// most difficult quantity to compute. Determining correct breadth values likely involves:
+//
+// - Complex terms that support both running sums and running maximums across boundaries.
+// - Searches from the start and end of sub-trees in repetitions, where terminals may interact.
+//   Consider `<a/b:2>` vs. `<a/b/:2>`, which have breadths of two and one, respectively.
+// - Potentially large sets for bounds. Ranges lose too much information, in particular information
+//   about boundaries when composing terms.
+//
+// There are likely other difficult composition problems. As such, breadth is only implemented as
+// much as needed. Any requirements on more complete breadth computations ought to be considered
+// carefully.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Breadth;
+
+impl Breadth {
+    pub const fn new() -> Self {
+        Breadth
+    }
+}
+
+impl Zero for Breadth {
+    fn zero() -> Self {
+        Breadth
+    }
+}
+
+impl Invariant for Breadth {
+    type Term = TokenVariance<Self>;
+    type Bound = ();
+
+    fn bound(_: Self, _: Self) -> Boundedness<Self::Bound> {
+        ().into()
+    }
+
+    fn into_lower_bound(self) -> Boundedness<Self::Bound> {
+        ().into()
+    }
+}
+
+define_natural_invariant!(
+    /// Depth of a glob expression.
+    Depth => BoundaryTerm,
+);
+
+impl TokenVariance<Depth> {
+    pub fn is_exhaustive(&self) -> bool {
+        !self.has_upper_bound()
+    }
+}
+
+impl BoundaryTerm<Depth> {
+    pub fn is_exhaustive(&self) -> bool {
+        self.clone().finalize().is_exhaustive()
+    }
+}
+
+impl Finalize for SeparatedTerm<TokenVariance<Depth>> {
+    type Output = TokenVariance<Depth>;
+
+    fn finalize(self) -> Self::Output {
+        use Termination::{Closed, Open};
+
+        let SeparatedTerm(termination, term) = self;
+        match termination {
+            Open => ops::conjunction(term, One::one()),
+            Closed => term.map_invariant(|term| term.map(|term| term.saturating_sub(1))),
+            _ => term,
+        }
+    }
+}
+
+define_natural_invariant!(
+    /// Size of a glob expression.
+    Size,
+);

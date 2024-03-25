@@ -3,10 +3,158 @@ use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
 use crate::token::variance::invariant::{self, UnitBound, Zero as _};
-use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
-use crate::token::variance::Variance;
+use crate::token::variance::ops::{self, BinaryOperand, Conjunction, Disjunction, Product};
+use crate::token::variance::{Bounded, Boundedness, Unbounded, Variance};
 
-pub use Boundedness::{Bounded, Unbounded};
+macro_rules! impl_natural_invariant {
+    ($name:ident => $term:ident $(,)?) => {
+        const _: () = {
+            use std::num::NonZeroUsize;
+
+            use $crate::token::variance::invariant::{Invariant, One, Zero};
+            use $crate::token::variance::natural::{BoundedVariantRange, VariantRange};
+            use $crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
+            use $crate::token::variance::{
+                Bounded, Boundedness, TokenVariance, Unbounded, Variance,
+            };
+
+            impl $name {
+                pub const ZERO: Self = $name(0);
+                pub const ONE: Self = $name(1);
+
+                pub const fn new(n: usize) -> Self {
+                    $name(n)
+                }
+
+                pub fn map<F>(self, f: F) -> Self
+                where
+                    F: FnOnce(usize) -> usize,
+                {
+                    $name(f(self.0))
+                }
+
+                pub fn zip_map<F>(self, rhs: Self, f: F) -> Self
+                where
+                    F: FnOnce(usize, usize) -> usize,
+                {
+                    $name(f(self.0, rhs.0))
+                }
+            }
+
+            impl AsRef<usize> for $name {
+                fn as_ref(&self) -> &usize {
+                    &self.0
+                }
+            }
+
+            impl Conjunction for $name {
+                type Output = Self;
+
+                fn conjunction(self, rhs: Self) -> Self::Output {
+                    self.zip_map(rhs, ops::conjunction)
+                }
+            }
+
+            impl From<usize> for $name {
+                fn from(n: usize) -> $name {
+                    $name(n)
+                }
+            }
+
+            impl From<$name> for usize {
+                fn from(size: $name) -> usize {
+                    size.0
+                }
+            }
+
+            impl Invariant for $name {
+                type Term = $term<$name>;
+                type Bound = BoundedVariantRange;
+
+                fn bound(lhs: Self, rhs: Self) -> Boundedness<Self::Bound> {
+                    let [lower, upper] = crate::minmax(lhs, rhs);
+                    BoundedVariantRange::try_from_lower_and_upper(lower.0, upper.0)
+                        .map_or(Unbounded, Bounded)
+                }
+
+                fn into_lower_bound(self) -> Boundedness<Self::Bound> {
+                    NonZeroUsize::new(self.0)
+                        .map(BoundedVariantRange::Lower)
+                        .map(From::from)
+                        .unwrap_or(Unbounded)
+                }
+            }
+
+            impl One for $name {
+                fn one() -> Self {
+                    $name(1)
+                }
+            }
+
+            impl PartialEq<usize> for $name {
+                fn eq(&self, rhs: &usize) -> bool {
+                    self.0 == *rhs
+                }
+            }
+
+            impl Product<usize> for $name {
+                type Output = Self;
+
+                fn product(self, rhs: usize) -> Self::Output {
+                    self.map(|lhs| ops::product(lhs, rhs))
+                }
+            }
+
+            impl Product<VariantRange> for $name {
+                type Output = TokenVariance<Self>;
+
+                fn product(self, rhs: VariantRange) -> Self::Output {
+                    NonZeroUsize::new(self.0).map_or_else(TokenVariance::<Self>::zero, |lhs| {
+                        Variance::Variant(rhs.map_bounded(|rhs| ops::product(rhs, lhs)))
+                    })
+                }
+            }
+
+            impl Zero for $name {
+                fn zero() -> Self {
+                    $name(0)
+                }
+            }
+
+            impl Conjunction<$name> for BoundedVariantRange {
+                type Output = Self;
+
+                fn conjunction(self, rhs: $name) -> Self::Output {
+                    self.translation(rhs.0)
+                }
+            }
+
+            impl Disjunction<$name> for BoundedVariantRange {
+                type Output = VariantRange;
+
+                fn disjunction(self, rhs: $name) -> Self::Output {
+                    self.union(rhs.0)
+                }
+            }
+        };
+    };
+}
+pub(crate) use impl_natural_invariant;
+
+macro_rules! define_natural_invariant {
+    ($(#[$attr:meta])* $name:ident $(,)?) => {
+        define_natural_invariant!($(#[$attr])* $name => TokenVariance);
+    };
+    ($(#[$attr:meta])* $name:ident => $term:ident $(,)?) => {
+        $(#[$attr])*
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[repr(transparent)]
+        pub struct $name(usize);
+
+        $crate::token::variance::natural::impl_natural_invariant!($name => $term);
+    };
+}
+pub(crate) use define_natural_invariant;
 
 pub trait Cobound: Sized {
     type Bound;
@@ -46,12 +194,6 @@ impl Cobound for NonZeroBound {
 
 pub trait OpenedUpperBound: Sized {
     fn opened_upper_bound(self) -> Boundedness<Self>;
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct BinaryOperand<T> {
-    pub lhs: T,
-    pub rhs: T,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -236,12 +378,6 @@ impl invariant::Zero for Zero {
     fn zero() -> Self {
         Zero
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum Boundedness<T> {
-    Bounded(T),
-    Unbounded,
 }
 
 pub type NonZeroBound = Boundedness<NonZeroUsize>;

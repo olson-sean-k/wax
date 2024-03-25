@@ -2,10 +2,9 @@ use itertools::Itertools;
 use std::collections::HashSet;
 use std::hash::Hash;
 
-use crate::token::variance::bound::Boundedness;
 use crate::token::variance::invariant::{Finalize, Invariant, One, Zero};
 use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
-use crate::token::variance::{TokenVariance, Variance};
+use crate::token::variance::{Boundedness, TokenVariance, Variance};
 use crate::token::Composition;
 
 pub type BoundaryTerm<T> = TreeTerm<SeparatedTerm<TokenVariance<T>>>;

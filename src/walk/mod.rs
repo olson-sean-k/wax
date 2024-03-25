@@ -799,7 +799,6 @@ pub mod harness {
 
     use crate::walk::{Entry, FileIterator};
 
-    #[macro_export]
     macro_rules! assert_set_eq {
         ($left:expr, $right:expr $(,)?) => {{
             match (&$left, &$right) {
@@ -819,7 +818,7 @@ pub mod harness {
             }
         }};
     }
-    pub use assert_set_eq;
+    pub(crate) use assert_set_eq;
 
     #[derive(Debug)]
     pub struct TempTree {

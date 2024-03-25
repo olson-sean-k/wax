@@ -1,5 +1,11 @@
 use std::num::NonZeroUsize;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct BinaryOperand<T> {
+    pub lhs: T,
+    pub rhs: T,
+}
+
 pub trait Conjunction<T = Self> {
     type Output;
 

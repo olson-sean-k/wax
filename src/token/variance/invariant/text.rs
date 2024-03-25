@@ -3,10 +3,10 @@ use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 
 use crate::encode;
-use crate::token::variance::bound::{Boundedness, VariantRange};
 use crate::token::variance::invariant::{Invariant, UnitBound, Zero};
+use crate::token::variance::natural::VariantRange;
 use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
-use crate::token::variance::{TokenVariance, Variance};
+use crate::token::variance::{Boundedness, TokenVariance, Variance};
 use crate::PATHS_ARE_CASE_INSENSITIVE;
 
 use Fragment::{Nominal, Structural};

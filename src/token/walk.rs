@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use crate::filter::{
     CancelWalk, HierarchicalIterator, Isomeric, SeparatingFilterInput, Separation, TreeResidue,
 };
-use crate::token::variance::bound::NaturalRange;
+use crate::token::variance::natural::NaturalRange;
 use crate::token::{
     Alternation, BranchKind, Composition, Concatenation, LeafKind, Repetition, Token,
     TokenTopology, TokenTree,

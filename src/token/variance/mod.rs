@@ -1,24 +1,31 @@
-pub mod bound;
 pub mod invariant;
+pub mod natural;
 pub mod ops;
 
 use itertools::Itertools;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
-use crate::token::variance::bound::{
-    Bounded, BoundedVariantRange, Boundedness, NaturalRange, OpenedUpperBound, Unbounded,
-    VariantRange,
-};
 use crate::token::variance::invariant::{
     BoundaryTerm, Breadth, Depth, Finalize, Invariant, InvariantBound, InvariantTerm, One,
     SeparatedTerm, Termination, Text, UnitBound, Zero,
+};
+use crate::token::variance::natural::{
+    BoundedVariantRange, NaturalRange, OpenedUpperBound, VariantRange,
 };
 use crate::token::variance::ops::{Conjunction, Disjunction, Product};
 use crate::token::walk::{ChildToken, Fold, Forward, ParentToken, Sequencer};
 use crate::token::{Boundary, BranchKind, LeafKind};
 
+pub use Boundedness::{Bounded, Unbounded};
+
 pub type TokenVariance<T> = Variance<T, Boundedness<InvariantBound<T>>>;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Boundedness<T> {
+    Bounded(T),
+    Unbounded,
+}
 
 pub trait VarianceTerm<T>
 where
@@ -441,8 +448,8 @@ where
 pub mod harness {
     use std::fmt::Debug;
 
-    use crate::token::variance::bound::{BoundedVariantRange, NaturalRange};
     use crate::token::variance::invariant::{Invariant, UnitBound};
+    use crate::token::variance::natural::{BoundedVariantRange, NaturalRange};
     use crate::token::variance::{TokenVariance, TreeVariance, Variance};
     use crate::token::{Fold, TokenTree, Tokenized};
 

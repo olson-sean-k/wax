@@ -15,7 +15,7 @@ use std::str;
 use crate::diagnostics::{Span, Spanned};
 use crate::query::When;
 use crate::token::variance::invariant::{
-    BoundaryTerm, IntoNominalText, IntoStructuralText, One, Zero,
+    BoundaryTerm, Finalize, IntoNominalText, IntoStructuralText, InvariantTerm, One, Zero,
 };
 use crate::token::variance::ops;
 use crate::token::variance::{TreeExhaustiveness, TreeVariance, VarianceFold, VarianceTerm};
@@ -23,13 +23,9 @@ use crate::token::walk::{BranchFold, Fold, FoldMap, Starting, TokenEntry};
 use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
 
 pub use crate::token::parse::{parse, ParseError, ROOT_SEPARATOR_EXPRESSION};
-pub use crate::token::variance::bound::{
-    BoundedVariantRange, Boundedness, NaturalRange, VariantRange,
-};
-pub use crate::token::variance::invariant::{
-    Breadth, Depth, Finalize, Invariant, InvariantTerm, Size, Text,
-};
-pub use crate::token::variance::{TokenVariance, Variance};
+pub use crate::token::variance::invariant::{Breadth, Depth, Invariant, Size, Text};
+pub use crate::token::variance::natural::{BoundedVariantRange, NaturalRange, VariantRange};
+pub use crate::token::variance::{Boundedness, TokenVariance, Variance};
 
 // TODO: Tree representations of expressions are intrusive and only differ in their annotations.
 //       This supports some distinctions between tree types, but greatly limits the ability to
