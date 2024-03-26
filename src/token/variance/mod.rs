@@ -2,13 +2,13 @@ pub mod invariant;
 pub mod natural;
 pub mod ops;
 
-use itertools::Itertools;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
+use crate::query::When;
 use crate::token::variance::invariant::{
-    BoundaryTerm, Breadth, Depth, Finalize, Invariant, InvariantBound, InvariantTerm, One,
-    SeparatedTerm, Termination, Text, UnitBound, Zero,
+    BoundaryTerm, Breadth, Depth, Finalize, Invariant, InvariantBound, InvariantTerm, One, Text,
+    UnitBound, Zero,
 };
 use crate::token::variance::natural::{
     BoundedVariantRange, NaturalRange, OpenedUpperBound, VariantRange,
@@ -339,46 +339,6 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
     }
 
     fn fold(&mut self, branch: &BranchKind<'t, A>, terms: Vec<Self::Term>) -> Option<Self::Term> {
-        // TODO: Detect generalizations in alternation branches. This may be possible in an
-        //       optimization step that fold maps token trees and discards unnecessary branches.
-        // When folding terms into an alternation, if some but not all branches are exhaustive,
-        // then do not sum the terms and instead return the bounded depth [0,1]. This is necessary
-        // to prevent false positives when the sum of exhaustiveness terms for branches is
-        // exhaustive but a **non-overlapping** branch is non-exhaustive. Consider `{a/**,**/b}`.
-        // This pattern is nonexhaustive, because matches in `**/b` are not exhaustive and are not
-        // necessarily sub-trees of an exhaustive branch (in this example, the only such branch
-        // being `a/**`). Despite this, the terms exhaustiveness terms for the alternation are
-        // unbounded and zero. These terms sum to unbounded, which is a false positive.
-        //
-        // Note that this heuristic is also applied when all non-exhaustive branches overlap with
-        // an exhaustive branch (that is, all non-exhaustive branches are generalized by exhaustive
-        // branches), which causes false negatives. Consider `{/**,/**/a}`. The branch `/**`
-        // generalizes the remaining branches, so this pattern is exhaustive, but this heuristic
-        // rejects this. However, this false negative is far more acceptable than a false positive,
-        // which causes errant behavior.
-        if let BranchKind::Alternation(_) = branch {
-            let (all, any) = terms
-                .iter()
-                .fold_while((true, false), |sum, term| {
-                    use itertools::FoldWhile::{Continue, Done};
-
-                    let term = term.is_exhaustive();
-                    match (sum.0 && term, sum.1 || term) {
-                        sum @ (false, true) => Done(sum),
-                        sum => Continue(sum),
-                    }
-                })
-                .into_inner();
-            if !all && any {
-                return Some(BoundaryTerm::Conjunctive(SeparatedTerm(
-                    Termination::Open,
-                    TokenVariance::<Depth>::Variant(Bounded(BoundedVariantRange::Upper(unsafe {
-                        NonZeroUsize::new_unchecked(1)
-                    }))),
-                )));
-            }
-        }
-
         let n = terms.len();
         let sum = self::fold::<Depth>(branch, terms);
         if branch.tokens().into_inner().len() == n {
@@ -386,9 +346,14 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
             sum
         }
         else {
-            // Terms were discarded, meaning some non-depth quantity was bounded. Yield any sum
-            // only if the depth is exhaustive, otherwise zero.
-            if sum.as_ref().map_or(false, BoundaryTerm::is_exhaustive) {
+            // Terms were discarded, meaning that some non-depth quantity was bounded. Yield the
+            // sum only if it may be exhaustive, otherwise zero.
+            if sum
+                .as_ref()
+                .map(BoundaryTerm::is_exhaustive)
+                .as_ref()
+                .map_or(false, When::is_maybe_true)
+            {
                 sum
             }
             else {
@@ -448,6 +413,7 @@ where
 pub mod harness {
     use std::fmt::Debug;
 
+    use crate::query::When;
     use crate::token::variance::invariant::{Invariant, UnitBound};
     use crate::token::variance::natural::{BoundedVariantRange, NaturalRange};
     use crate::token::variance::{TokenVariance, TreeVariance, Variance};
@@ -496,12 +462,12 @@ pub mod harness {
 
     pub fn assert_tokenized_exhaustiveness_eq<A>(
         tokenized: Tokenized<'_, A>,
-        expected: bool,
+        expected: When,
     ) -> Tokenized<'_, A> {
         let is_exhaustive = tokenized.as_token().is_exhaustive();
         assert!(
             is_exhaustive == expected,
-            "`Token::is_exhaustive` is `{}`, but expected `{}`: in `Tokenized`: `{}`",
+            "`Token::is_exhaustive` is `{:?}`, but expected `{:?}`: in `Tokenized`: `{}`",
             is_exhaustive,
             expected,
             tokenized.expression(),
@@ -514,9 +480,12 @@ pub mod harness {
 mod tests {
     use rstest::rstest;
 
+    use crate::query::When;
     use crate::token::parse;
     use crate::token::variance::invariant::{Depth, Size, Text};
     use crate::token::variance::{harness, TokenVariance, Variance};
+
+    use When::{Always, Never, Sometimes};
 
     #[rstest]
     #[case("a", harness::invariant(1))]
@@ -536,8 +505,9 @@ mod tests {
     #[case("x<a/:3>", harness::invariant(3))]
     #[case("<a/:3>x", harness::invariant(4))]
     // TODO: Open components must not be empty. This means that `*` must match something if it
-    //       comprises a component, for example. However, this is not yet tested and is not
-    //       consistently emitted by the encoder: globs likely match incorrectly for such patterns!
+    //       comprises a component, for example. This is perhaps more obvious in patterns like
+    //       `a/*/b`. However, this is not yet tested and is not consistently emitted by the
+    //       encoder: globs likely match incorrectly for such patterns!
     //
     //       Note that patterns that include terminations in components may be empty. For example,
     //       `<*/>` explicitly includes the boundary `/`, and so may match empty content. This is
@@ -611,76 +581,68 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[case("**")]
-    #[case("a/**")]
-    #[case("<a/**>")]
-    #[case("<a/**:1,2>")]
-    #[case("<a/<*/:3,>>")]
-    #[case("<*/:1,>")]
-    #[case("<*/>")]
-    #[case("<a/<*/>>")]
-    #[case("a/<*/>")]
-    #[case("a/<*/>*")]
-    #[case("a/<<?>/>*")]
-    #[case("{a/**,b/**}")]
-    #[case("{{a/**,b/**},c/**}")]
-    #[case("<{{a/**,b/**},c/**}:2,4>")]
-    #[case("{a/**,b/**,[xyz]<*/>}")]
-    #[case("<<?>/>")]
-    #[case("<<?>/>*")]
-    #[case("<*{/}>")]
-    #[case("<*{/,/}>")]
-    #[case("<*{/,/**}>")]
-    #[case("<{<<{{a/b}}{{/**}}>>}>")]
-    // TODO: This expression is exhaustive. The `/**` alternative generalizes the `/**/a`
-    //       alternative. However, exhaustiveness applies a heuristic that rejects this (but
-    //       importantly rejects nonexhaustive patterns like `{a/**,**/b}`). Remove generalized
-    //       branches in an optimization step or remove their terms when determining
-    //       exhaustiveness.
-    //#[case("{/**,/**/a}")]
-    fn parse_expression_is_exhaustive(#[case] expression: &str) {
-        harness::assert_tokenized_exhaustiveness_eq(
-            parse::harness::assert_parse_expression_is_ok(expression),
-            true,
-        );
-    }
-
     // TODO: Document the expressions in this test more thoroughly.
-    // NOTE: This test is especially important, because false positives in `Token::is_exhaustive`
-    //       can cause matching bugs in patterns used as negations in `FileIterator::not`.
-    // This function name uses the term "not exhaustive" instead of "nonexhaustive" for emphasis
-    // and clarity.
+    // TODO: Alternations with exhaustive branches that generalize all other branches are always
+    //       exhaustive, but this is not detected and `is_exhaustive` incorrectly claims such
+    //       alternations are _sometimes_ exhaustive. Consider `{/**,/**/a}`. The `/**/a` branch is
+    //       nonexhaustive, but the `/**` branch is exhaustive and also generalizes `/**/a`. The
+    //       alternation is always exhaustive, because any match must (also) match the general
+    //       branch, and that branch is exhaustive.
+    // NOTE: False positives in `Token::is_exhaustive` can cause matching bugs in patterns used as
+    //       negations in `FileIterator::not`. False negatives do not introduce logic errors, but
+    //       may prevent performance optimizations (e.g., may cause unnecessary file system reads).
     #[rstest]
-    #[case("")]
-    #[case("**/a")]
-    #[case("a/**/b")]
-    #[case("a/*")]
-    #[case("<a/*>")]
-    #[case("<*/a>")]
-    #[case("<a/*>/*")]
-    // This pattern only matches components in groups of two.
-    #[case("<*/*/>")]
-    // This pattern only matches at most four components.
-    #[case("<*/:0,4>")]
-    #[case("a/<?>")]
-    #[case("a</**/b>")]
-    #[case("<?>")]
-    #[case("<?/>")]
-    // This pattern may match a nonexhaustive branch that does **not** overlap with any exhaustive
-    // branch.
+    #[case("**", Always)]
+    #[case("a/**", Always)]
+    #[case("<a/**>", Always)]
+    #[case("<a/**:1,2>", Always)]
+    #[case("<a/<*/:3,>>", Always)]
+    #[case("<*/:1,>", Always)]
+    #[case("<*/>", Always)]
+    #[case("<a/<*/>>", Always)]
+    #[case("a/<*/>", Always)]
+    #[case("a/<*/>*", Always)]
+    #[case("a/<<?>/>*", Always)]
+    #[case("{a/**,b/**}", Always)]
+    #[case("{{a/**,b/**},c/**}", Always)]
+    #[case("<{{a/**,b/**},c/**}:2,4>", Always)]
+    #[case("{a/**,b/**,[xyz]<*/>}", Always)]
+    #[case("<<?>/>", Always)]
+    #[case("<<?>/>*", Always)]
+    #[case("<*{/}>", Always)]
+    #[case("<*{/,/}>", Always)]
+    #[case("<*{/,/**}>", Always)]
+    #[case("<{<<{{a/b}}{{/**}}>>}>", Always)]
+    // This pattern may match a nonexhaustive alternative that does **not** overlap with another
+    // exhaustive alternative (there is no generalizing branch).
     //
-    // To understand why this is not exhaustive, consider the match `foo/bar/b`. This matches the
-    // second branch of the alternation, but not the first. This pattern does not match any
-    // sub-tree of this match other than more `b` components (the first branch will never be
-    // matched).
-    #[case("{a/**,**/b}")]
-    #[case("<{a/**,**/b}:1>")]
-    #[case("{{<a:1,>{/**},**/b},c/**}")]
-    fn parse_expression_is_not_exhaustive(#[case] expression: &str) {
+    // Consider the match `foo/bar/b`. This matches the second branch of the alternation, but not
+    // the first. This pattern does not match any sub-tree of this match other than more `b`
+    // components (the first branch will never be matched).
+    #[case("{a/**,**/b}", Sometimes)]
+    #[case("<{a/**,**/b}:1>", Sometimes)]
+    #[case("{{<a:1,>{/**},**/b},c/**}", Sometimes)]
+    #[case("", Never)]
+    #[case("**/a", Never)]
+    #[case("a/**/b", Never)]
+    #[case("a/*", Never)]
+    #[case("<a/*>", Never)]
+    #[case("<*/a>", Never)]
+    #[case("<a/*>/*", Never)]
+    // This pattern only matches components in groups of two.
+    #[case("<*/*/>", Never)]
+    // This pattern only matches at most four components.
+    #[case("<*/:0,4>", Never)]
+    // This pattern only matches two components.
+    #[case("a/<?>", Never)]
+    #[case("a</**/b>", Never)]
+    #[case("<?>", Never)]
+    #[case("<?/>", Never)]
+    #[case("{**/a,**/b}", Never)]
+    fn parse_expression_is_exhaustive_eq(#[case] expression: &str, #[case] expected: When) {
         harness::assert_tokenized_exhaustiveness_eq(
             parse::harness::assert_parse_expression_is_ok(expression),
-            false,
+            expected,
         );
     }
 }

@@ -3,6 +3,7 @@ mod text;
 
 use std::num::NonZeroUsize;
 
+use crate::query::When;
 use crate::token::variance::natural::{
     define_natural_invariant, BoundedVariantRange, OpenedUpperBound,
 };
@@ -147,8 +148,17 @@ impl TokenVariance<Depth> {
 }
 
 impl BoundaryTerm<Depth> {
-    pub fn is_exhaustive(&self) -> bool {
-        self.clone().finalize().is_exhaustive()
+    pub fn is_exhaustive(&self) -> When {
+        match self {
+            BoundaryTerm::Conjunctive(SeparatedTerm(_, ref term)) => term.is_exhaustive().into(),
+            BoundaryTerm::Disjunctive(ref term) => term
+                .branches()
+                .map(AsRef::as_ref)
+                .map(TokenVariance::<Depth>::is_exhaustive)
+                .map(When::from)
+                .reduce(When::certainty)
+                .unwrap_or(When::Never),
+        }
     }
 }
 

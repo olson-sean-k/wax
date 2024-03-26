@@ -97,14 +97,14 @@ pub enum Variance<T, B> {
 impl<T, B> Variance<T, B> {
     pub fn invariant(self) -> Option<T> {
         match self {
-            Variance::Invariant(invariance) => Some(invariance),
+            Variance::Invariant(invariant) => Some(invariant),
             _ => None,
         }
     }
 
     pub fn variant(self) -> Option<B> {
         match self {
-            Variance::Variant(variance) => Some(variance),
+            Variance::Variant(bound) => Some(bound),
             _ => None,
         }
     }
@@ -114,8 +114,8 @@ impl<T, B> Variance<T, B> {
     /// Produces a new `Variance` that contains a reference `self`, leaving `self` in place.
     pub fn as_ref(&self) -> Variance<&T, &B> {
         match self {
-            Variance::Invariant(ref invariance) => Variance::Invariant(invariance),
-            Variance::Variant(ref variance) => Variance::Variant(variance),
+            Variance::Invariant(ref invariant) => Variance::Invariant(invariant),
+            Variance::Variant(ref bound) => Variance::Variant(bound),
         }
     }
 
@@ -262,6 +262,22 @@ impl When {
     /// [`Never`]: crate::query::When::Never
     pub fn is_never(&self) -> bool {
         matches!(self, When::Never)
+    }
+
+    /// Returns `true` if the truth value is [`Always`] or [`Sometimes`].
+    ///
+    /// [`Always`]: crate::query::When::Always
+    /// [`Sometimes`]: crate::query::When::Sometimes
+    pub fn is_maybe_true(&self) -> bool {
+        !self.is_never()
+    }
+
+    /// Returns `true` if the truth value is [`Never`] or [`Sometimes`].
+    ///
+    /// [`Never`]: crate::query::When::Never
+    /// [`Sometimes`]: crate::query::When::Sometimes
+    pub fn is_maybe_false(&self) -> bool {
+        !self.is_always()
     }
 }
 

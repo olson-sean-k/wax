@@ -142,6 +142,10 @@ where
     {
         DisjunctiveTerm(self.0.into_iter().map(f).collect())
     }
+
+    pub fn branches(&self) -> impl '_ + Iterator<Item = &'_ T> {
+        self.0.iter()
+    }
 }
 
 impl<T> Conjunction for DisjunctiveTerm<T>
@@ -289,6 +293,18 @@ impl Conjunction for Termination {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct SeparatedTerm<T>(pub Termination, pub T);
+
+impl<T> AsMut<T> for SeparatedTerm<T> {
+    fn as_mut(&mut self) -> &mut T {
+        &mut self.1
+    }
+}
+
+impl<T> AsRef<T> for SeparatedTerm<T> {
+    fn as_ref(&self) -> &T {
+        &self.1
+    }
+}
 
 impl<T, U> Conjunction<SeparatedTerm<U>> for SeparatedTerm<T>
 where

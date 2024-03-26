@@ -201,7 +201,7 @@ pub trait Program<'t>: Pattern<'t, Error = Infallible> {
     /// # Examples
     ///
     /// Text variance can be used to determine if a pattern can be trivially represented by an
-    /// equivalent path using platform file system APIs.
+    /// equivalent native path using platform file system APIs.
     ///
     /// ```rust
     /// use std::path::Path;
@@ -220,22 +220,24 @@ pub trait Program<'t>: Pattern<'t, Error = Infallible> {
     /// A glob expression that begins with a separator `/` has a root, but less trivial patterns
     /// like `/**` and `</root:1,>` can also root an expression. Some `Program` types may have
     /// indeterminate roots and may match both candidate paths with and without a root. In this
-    /// case, this functions returns [`Sometimes`] (indeterminate).
+    /// case, this functions returns [`Sometimes`].
     ///
     /// [`Sometimes`]: crate::query::When::Sometimes
     fn has_root(&self) -> When;
 
-    /// Returns `true` if the pattern is exhaustive.
+    /// Describes when the pattern matches candidate paths exhaustively.
     ///
     /// A glob expression is exhaustive if, given a matched candidate path, it necessarily matches
-    /// any and all sub-trees of that path. For example, glob expressions that end with a tree
-    /// wildcard like `.local/**` are exhaustive, but so are less trivial expressions like `<<?>/>`
-    /// and `<doc/<*/:3,>>`. This can be an important property when determining what directory
-    /// trees to read or which files and directories to select with a pattern.
+    /// any and all sub-trees of that path. For example, given the pattern `.local/**` and the
+    /// matched path `.local/bin`, any and all paths beneath `.local/bin` also match the pattern.
     ///
-    /// Note that this applies to the **pattern** and **not** to a particular match. It is possible
-    /// for a particular match against a **non**exhaustive pattern to be exhaustive.
-    fn is_exhaustive(&self) -> bool;
+    /// Patterns that end with tree wildcards are more obviously exhaustive, but less trivial
+    /// patterns like `<<?>/>`, `<doc/<*/:3,>>`, and `{a/**,b/**}` can also be exhaustive. Patterns
+    /// with alternations may only be exhaustive for some matched paths. In this case, this
+    /// function returns [`Sometimes`].
+    ///
+    /// [`Sometimes`]: crate::query::When::Sometimes
+    fn is_exhaustive(&self) -> When;
 }
 
 /// General errors concerning [`Program`]s.
@@ -758,7 +760,7 @@ impl<'t> Program<'t> for Glob<'t> {
         self.tree.as_ref().as_token().has_root()
     }
 
-    fn is_exhaustive(&self) -> bool {
+    fn is_exhaustive(&self) -> When {
         self.tree.as_ref().as_token().is_exhaustive()
     }
 }
@@ -817,7 +819,7 @@ impl<'t> Program<'t> for Any<'t> {
         self.tree.as_ref().as_token().has_root()
     }
 
-    fn is_exhaustive(&self) -> bool {
+    fn is_exhaustive(&self) -> When {
         self.tree.as_ref().as_token().is_exhaustive()
     }
 }

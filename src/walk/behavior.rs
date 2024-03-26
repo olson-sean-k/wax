@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use crate::token::{Depth, TokenVariance};
+use crate::query::DepthVariance;
 
 /// Configuration for a minimum depth of matched files in a walk.
 ///
@@ -213,9 +213,12 @@ impl DepthBehavior {
     pub fn bounded_at_depth_variance(
         min: impl Into<Option<usize>>,
         max: impl Into<Option<usize>>,
-        depth: TokenVariance<Depth>,
+        depth: DepthVariance,
     ) -> Option<Self> {
-        let lower = depth.map_invariant(usize::from).lower().into_usize();
+        let lower = match depth {
+            DepthVariance::Invariant(depth) => depth,
+            DepthVariance::Variant(bounds) => bounds.lower().bounded().map_or(0, usize::from),
+        };
         let translation = move |depth: Option<usize>| -> Result<Option<usize>, ()> {
             depth
                 .map(|depth| depth.checked_add(lower).ok_or(()))

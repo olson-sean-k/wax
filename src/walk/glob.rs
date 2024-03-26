@@ -500,7 +500,7 @@ impl FilterAny {
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)?
             .into_iter()
-            .partition::<Vec<_>, _>(|tree| tree.as_ref().as_token().is_exhaustive());
+            .partition::<Vec<_>, _>(|tree| tree.as_ref().as_token().is_exhaustive().is_always());
         FilterAnyProgram::try_from_partitions(exhaustive, nonexhaustive)
             .map(|program| FilterAny { program })
     }

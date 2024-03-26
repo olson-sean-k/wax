@@ -569,21 +569,16 @@ impl<'t, A> Token<'t, A> {
         }
     }
 
-    // TODO: Exhaustiveness should be expressed with `When` rather than `bool`. In particular,
-    //       alternations may _sometimes_ be exhaustive.
     // TODO: There is a distinction between exhaustiveness of a glob and exhaustiveness of a match
     //       (this is also true of other properties). The latter can be important for performance
     //       optimization, but may also be useful in the public API (perhaps as part of
     //       `MatchedText`).
-    // NOTE: False positives in this function may cause logic errors and are completely
-    //       unacceptable. The discovery of a false positive here almost cetainly indicates a
-    //       serious bug. False positives in negative patterns cause matching to incorrectly
-    //       discard directory trees in the `FileIterator::not` combinator.
-    pub fn is_exhaustive(&self) -> bool {
+    // NOTE: False positives in this function cause negated pattern to incorrectly discard
+    //       directory trees in the `FileIterator::not` combinator.
+    pub fn is_exhaustive(&self) -> When {
         self.fold(TreeExhaustiveness)
-            .map(Finalize::finalize)
             .as_ref()
-            .map_or(false, Variance::is_exhaustive)
+            .map_or(When::Never, BoundaryTerm::is_exhaustive)
     }
 }
 
