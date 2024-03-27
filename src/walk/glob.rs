@@ -1,11 +1,10 @@
 use itertools::Itertools;
-use regex::Regex;
 use std::borrow::Borrow;
 use std::fs::{FileType, Metadata};
 use std::path::{Component, Path, PathBuf};
 
-use crate::capture::MatchedText;
-use crate::encode::CompileError;
+use crate::capture::{MatchedText, RegexExt as _};
+use crate::encode::{CompileError, Regex};
 use crate::filter::{HierarchicalIterator, Separation};
 use crate::token::{Token, TokenTree, Tokenized};
 use crate::walk::{
@@ -313,8 +312,7 @@ impl GlobWalker {
                                 if let Some(matched) = self
                                     .program
                                     .complete
-                                    .captures(candidate.as_ref())
-                                    .map(MatchedText::from)
+                                    .matched(candidate.as_ref())
                                     .map(MatchedText::into_owned)
                                 {
                                     filtrate
@@ -342,8 +340,7 @@ impl GlobWalker {
                             return if let Some(matched) = self
                                 .program
                                 .complete
-                                .captures(candidate.as_ref())
-                                .map(MatchedText::from)
+                                .matched(candidate.as_ref())
                                 .map(MatchedText::into_owned)
                             {
                                 filtrate
@@ -371,8 +368,7 @@ impl GlobWalker {
                 if let Some(matched) = self
                     .program
                     .complete
-                    .captures(candidate.as_ref())
-                    .map(MatchedText::from)
+                    .matched(candidate.as_ref())
                     .map(MatchedText::into_owned)
                 {
                     return filtrate

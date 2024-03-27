@@ -32,12 +32,15 @@
 
 mod capture;
 mod diagnostics;
-mod encode;
+//mod encode;
 mod filter;
+mod hir;
 pub mod query;
 mod rule;
 mod token;
 pub mod walk;
+
+use hir as encode;
 
 /// Re-exports of commonly used items.
 ///
@@ -66,7 +69,6 @@ pub mod prelude {
 
 #[cfg(feature = "miette")]
 use miette::Diagnostic;
-use regex::Regex;
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
 use std::convert::Infallible;
@@ -76,8 +78,9 @@ use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
 use thiserror::Error;
 
+use crate::capture::RegexExt as _;
 use crate::diagnostics::LocatedError;
-use crate::encode::CompileError;
+use crate::encode::{CompileError, Regex};
 use crate::query::{CapturingToken, DepthVariance, TextVariance, When};
 use crate::rule::{Checked, RuleError};
 use crate::token::{
@@ -745,7 +748,7 @@ impl<'t> Program<'t> for Glob<'t> {
     }
 
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
-        self.program.captures(path.as_ref()).map(From::from)
+        self.program.matched(path.as_ref())
     }
 
     fn depth(&self) -> DepthVariance {
@@ -804,7 +807,7 @@ impl<'t> Program<'t> for Any<'t> {
     }
 
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
-        self.program.captures(path.as_ref()).map(From::from)
+        self.program.matched(path.as_ref())
     }
 
     fn depth(&self) -> DepthVariance {
@@ -1089,7 +1092,8 @@ pub mod harness {
     pub fn assert_matched_is_none(matched: Option<MatchedText<'_>>) {
         assert!(
             matched.is_none(),
-            "matched text is `Some`, but expected `None`"
+            "matched text is `{:?}`, but expected `None`",
+            matched.as_ref().map(MatchedText::complete),
         );
     }
 
@@ -1623,6 +1627,32 @@ mod tests {
         harness::assert_any_is_err(patterns);
     }
 
+    // TODO: Remove this.
+    #[rstest]
+    #[case("a/b", "a/b", harness::assert_matched_has_text([
+        (0, "a/b"),
+    ]))]
+    #[case("a?b", "axb", harness::assert_matched_has_text([
+        (0, "axb"),
+        (1, "x"),
+    ]))]
+    #[case("a?b", "axyb", harness::assert_matched_is_none)]
+    #[case("a*b", "axyb", harness::assert_matched_has_text([
+        (0, "axyb"),
+        (1, "xy"),
+    ]))]
+    #[case("a{c*,d*}{e*,f*}b", "acxfyb", harness::assert_matched_has_text([
+        (0, "acxfyb"),
+        (1, "cx"),
+        (2, "fy"),
+    ]))]
+    fn match_glob_hir<T, F>(#[case] expression: &str, #[case] path: &str, #[case] f: F)
+    where
+        F: FnOnce(Option<MatchedText<'_>>) -> T,
+    {
+        harness::assert_match_program_with(harness::assert_new_glob_is_ok(expression), path, f);
+    }
+
     #[rstest]
     #[case("", harness::assert_matched_has_text([(0, "")]))]
     #[case("abc", harness::assert_matched_is_none)]
@@ -1700,7 +1730,7 @@ mod tests {
     #[case("a/x/file.ext", harness::assert_matched_has_text([
         (0, "a/x/file.ext"),
         (1, "x"),
-        (2, "file.ext"),
+        (2, "/file.ext"),
     ]))]
     #[case("a/y/file.ext", harness::assert_matched_has_text([(1, "y")]))]
     #[case("a/i/file.ext", harness::assert_matched_has_text([(1, "i")]))]
@@ -1718,7 +1748,7 @@ mod tests {
     #[case("a/金/file.ext", harness::assert_matched_has_text([
         (0, "a/金/file.ext"),
         (1, "金"),
-        (2, "file.ext"),
+        (2, "/file.ext"),
     ]))]
     #[case("a/銀/file.ext", harness::assert_matched_has_text([(1, "銀")]))]
     #[case("a/銅/file.ext", harness::assert_matched_is_none)]
@@ -1955,17 +1985,19 @@ mod tests {
     #[rstest]
     #[case("/var/log/network.log", harness::assert_matched_has_text([
         (0, "/var/log/network.log"),
+        // TODO: It seems compelling for `/**/` to capture `/` here, but is this general or ought
+        //       this only apply to rooted tree wildcards at the beginning of an expression?
+        (1, "/"),
         (2, "var"),
         (3, "log/"),
         (4, "network"),
     ]))]
     #[case("/home/nobody/.var/network.log", harness::assert_matched_has_text([
         (0, "/home/nobody/.var/network.log"),
-        // TODO: The match and capture behavior of `**` here seems not only to cross boundaries,
-        //       but match only part of a component! Greedy or not, tree wildcards ought to operate
-        //       exclusively on some number of **complete** components: 
-        (1, "/home/nobody/."),
-        (2, "var"),
+        (1, "/home/nobody/"),
+        (2, ".var"),
+        // TODO: See capture 1 in the first test case. Should this capture `/` or `` (nothing)?
+        (3, "/"),
         (4, "network"),
     ]))]
     #[case("./var/cron.log", harness::assert_matched_is_none)]

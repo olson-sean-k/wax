@@ -1176,6 +1176,12 @@ pub enum Evaluation {
     Lazy,
 }
 
+impl Evaluation {
+    pub fn is_eager(&self) -> bool {
+        matches!(self, Evaluation::Eager)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Literal<'t> {
     text: Cow<'t, str>,

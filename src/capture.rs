@@ -1,78 +1,25 @@
-use regex::Captures as BorrowedText;
+use regex_automata::meta::Regex;
+use regex_automata::util::captures::Captures;
+use std::borrow::Cow;
 use std::str;
 
 use crate::CandidatePath;
 
-#[derive(Clone, Debug)]
-struct OwnedText {
-    matched: String,
-    ranges: Vec<Option<(usize, usize)>>,
+pub trait RegexExt {
+    fn matched<'t>(&self, text: impl Into<Cow<'t, str>>) -> Option<MatchedText<'t>>;
 }
 
-impl OwnedText {
-    pub fn get(&self, index: usize) -> Option<&str> {
-        if index == 0 {
-            Some(self.matched.as_ref())
+impl RegexExt for Regex {
+    fn matched<'t>(&self, text: impl Into<Cow<'t, str>>) -> Option<MatchedText<'t>> {
+        let text = text.into();
+        let mut captures = self.create_captures();
+        self.captures(text.as_ref(), &mut captures);
+        if captures.is_match() {
+            Some(MatchedText { text, captures })
         }
         else {
-            self.ranges
-                .get(index - 1)
-                .and_then(|range| range.map(|range| &self.matched[range.0..range.1]))
+            None
         }
-    }
-}
-
-impl<'t> From<BorrowedText<'t>> for OwnedText {
-    fn from(captures: BorrowedText<'t>) -> Self {
-        From::from(&captures)
-    }
-}
-
-impl<'m, 't> From<&'m BorrowedText<'t>> for OwnedText {
-    fn from(captures: &'m BorrowedText<'t>) -> Self {
-        let matched = captures.get(0).unwrap().as_str().into();
-        let ranges = captures
-            .iter()
-            .skip(1)
-            .map(|capture| capture.map(|capture| (capture.start(), capture.end())))
-            .collect();
-        OwnedText { matched, ranges }
-    }
-}
-
-#[derive(Debug)]
-enum MaybeOwnedText<'t> {
-    Borrowed(BorrowedText<'t>),
-    Owned(OwnedText),
-}
-
-impl<'t> MaybeOwnedText<'t> {
-    fn into_owned(self) -> MaybeOwnedText<'static> {
-        match self {
-            MaybeOwnedText::Borrowed(borrowed) => OwnedText::from(borrowed).into(),
-            MaybeOwnedText::Owned(owned) => owned.into(),
-        }
-    }
-
-    // This conversion may appear to operate in place.
-    #[must_use]
-    fn to_owned(&self) -> MaybeOwnedText<'static> {
-        match self {
-            MaybeOwnedText::Borrowed(ref borrowed) => OwnedText::from(borrowed).into(),
-            MaybeOwnedText::Owned(ref owned) => owned.clone().into(),
-        }
-    }
-}
-
-impl<'t> From<BorrowedText<'t>> for MaybeOwnedText<'t> {
-    fn from(captures: BorrowedText<'t>) -> Self {
-        MaybeOwnedText::Borrowed(captures)
-    }
-}
-
-impl From<OwnedText> for MaybeOwnedText<'static> {
-    fn from(captures: OwnedText) -> Self {
-        MaybeOwnedText::Owned(captures)
     }
 }
 
@@ -107,33 +54,19 @@ impl From<OwnedText> for MaybeOwnedText<'static> {
 /// [`Glob`]: crate::Glob
 /// [`Program`]: crate::Program
 /// [`Program::matched`]: crate::Program::matched
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MatchedText<'t> {
-    inner: MaybeOwnedText<'t>,
+    text: Cow<'t, str>,
+    captures: Captures,
 }
 
 impl<'t> MatchedText<'t> {
     /// Clones any borrowed data into an owning instance.
     pub fn into_owned(self) -> MatchedText<'static> {
-        let MatchedText { inner } = self;
+        let MatchedText { text, captures } = self;
         MatchedText {
-            inner: inner.into_owned(),
-        }
-    }
-
-    /// Clones any borrowed data to an owning instance.
-    ///
-    /// This function is similar to [`into_owned`], but does not consume its receiver. Due to a
-    /// technical limitation, `MatchedText` cannot properly implement [`Clone`], so this function
-    /// is provided as a stop gap that allows a distinct instance to be created that owns its data.
-    ///
-    /// [`Clone`]: std::clone::Clone
-    /// [`into_owned`]: crate::MatchedText::into_owned
-    // This conversion may appear to operate in place.
-    #[must_use]
-    pub fn to_owned(&self) -> MatchedText<'static> {
-        MatchedText {
-            inner: self.inner.to_owned(),
+            text: text.into_owned().into(),
+            captures,
         }
     }
 
@@ -162,32 +95,15 @@ impl<'t> MatchedText<'t> {
     ///
     /// [`Program`]: crate::Program
     pub fn get(&self, index: usize) -> Option<&str> {
-        match self.inner {
-            MaybeOwnedText::Borrowed(ref captures) => {
-                captures.get(index).map(|capture| capture.as_str())
-            },
-            MaybeOwnedText::Owned(ref captures) => captures.get(index),
-        }
+        self.captures.get_group(index).map(|span| {
+            self.text
+                .as_ref()
+                .get(span.start..span.end)
+                .expect("match span not in text")
+        })
     }
 
     pub fn to_candidate_path(&self) -> CandidatePath {
         CandidatePath::from(self.complete())
-    }
-}
-
-// TODO: This probably shouldn't be part of the public API.
-impl<'t> From<BorrowedText<'t>> for MatchedText<'t> {
-    fn from(captures: BorrowedText<'t>) -> Self {
-        MatchedText {
-            inner: captures.into(),
-        }
-    }
-}
-
-impl From<OwnedText> for MatchedText<'static> {
-    fn from(captures: OwnedText) -> Self {
-        MatchedText {
-            inner: captures.into(),
-        }
     }
 }

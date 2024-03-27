@@ -2,13 +2,18 @@ use const_format::formatcp;
 use itertools::{Itertools as _, Position};
 #[cfg(feature = "miette")]
 use miette::Diagnostic;
-use regex::{Error as RegexError, Regex};
+use regex_automata::meta::BuildError;
+use regex_syntax::hir::Hir;
 use std::borrow::{Borrow, Cow};
 #[cfg(feature = "miette")]
 use std::fmt::Display;
 use thiserror::Error;
 
-use crate::token::{ConcatenationTree, Token, TokenTopology};
+// TODO: Replace this file with `hir.rs`.
+
+pub use regex_automata::meta::Regex;
+
+use crate::token::{self, Fold, ConcatenationTree, Token, TokenTopology};
 
 /// A regular expression that never matches.
 ///
@@ -93,13 +98,13 @@ trait Escaped {
 
 impl Escaped for char {
     fn escaped(&self) -> String {
-        regex::escape(&self.to_string())
+        regex_syntax::escape(&self.to_string())
     }
 }
 
 impl Escaped for str {
     fn escaped(&self) -> String {
-        regex::escape(self)
+        regex_syntax::escape(self)
     }
 }
 
@@ -128,7 +133,7 @@ impl Grouping {
 }
 
 pub fn case_folded_eq(left: &str, right: &str) -> bool {
-    let regex = Regex::new(&format!("(?i){}", regex::escape(left)))
+    let regex = Regex::new(&format!("(?i){}", regex_syntax::escape(left)))
         .expect("failed to compile literal regular expression");
     if let Some(matched) = regex.find(right) {
         matched.start() == 0 && matched.end() == right.len()
