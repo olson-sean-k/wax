@@ -74,6 +74,8 @@ use std::cmp::Ordering;
 use std::convert::Infallible;
 use std::ffi::OsStr;
 use std::fmt::{self, Debug, Display, Formatter};
+use std::iter::Fuse;
+use std::ops::Index;
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
 use thiserror::Error;
@@ -115,6 +117,202 @@ trait StrExt {
 impl StrExt for str {
     fn has_casing(&self) -> bool {
         self.chars().any(CharExt::has_casing)
+    }
+}
+
+trait IteratorExt: Iterator + Sized {
+    fn adjacent(self) -> Adjacent<Self>
+    where
+        Self::Item: Clone;
+}
+
+impl<I> IteratorExt for I
+where
+    I: Iterator,
+{
+    fn adjacent(self) -> Adjacent<Self>
+    where
+        Self::Item: Clone,
+    {
+        Adjacent::new(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Adjacency<T> {
+    Only { item: T },
+    First { item: T, right: T },
+    Middle { left: T, item: T, right: T },
+    Last { left: T, item: T },
+}
+
+impl<T> Adjacency<T> {
+    pub fn into_item(self) -> T {
+        use Adjacency::{First, Last, Middle, Only};
+
+        match self {
+            Only { item } | First { item, .. } | Middle { item, .. } | Last { item, .. } => item,
+        }
+    }
+
+    pub fn into_tuple(self) -> (Option<T>, T, Option<T>) {
+        use Adjacency::{First, Last, Middle, Only};
+
+        match self {
+            Only { item } => (None, item, None),
+            First { item, right } => (None, item, Some(right)),
+            Middle { left, item, right } => (Some(left), item, Some(right)),
+            Last { left, item } => (Some(left), item, None),
+        }
+    }
+
+    pub fn as_ref(&self) -> Adjacency<&T> {
+        use Adjacency::{First, Last, Middle, Only};
+
+        match self {
+            Only { ref item } => Only { item },
+            First {
+                ref item,
+                ref right,
+            } => First { item, right },
+            Middle {
+                ref left,
+                ref item,
+                ref right,
+            } => Middle { left, item, right },
+            Last { ref left, ref item } => Last { left, item },
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Adjacent<I>
+where
+    I: Iterator,
+{
+    input: Fuse<I>,
+    adjacency: Option<Adjacency<I::Item>>,
+}
+
+impl<I> Adjacent<I>
+where
+    I: Iterator,
+{
+    fn new(input: I) -> Self {
+        let mut input = input.fuse();
+        let adjacency = match (input.next(), input.next()) {
+            (Some(item), Some(right)) => Some(Adjacency::First { item, right }),
+            (Some(item), None) => Some(Adjacency::Only { item }),
+            (None, None) => None,
+            // The input iterator is fused, so this cannot occur.
+            (None, Some(_)) => unreachable!(),
+        };
+        Adjacent { input, adjacency }
+    }
+}
+
+impl<I> Iterator for Adjacent<I>
+where
+    I: Iterator,
+    I::Item: Clone,
+{
+    type Item = Adjacency<I::Item>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.input.next();
+        self.adjacency.take().map(|adjacency| {
+            self.adjacency = match adjacency.clone() {
+                Adjacency::First {
+                    item: left,
+                    right: item,
+                }
+                | Adjacency::Middle {
+                    item: left,
+                    right: item,
+                    ..
+                } => {
+                    if let Some(right) = next {
+                        Some(Adjacency::Middle { left, item, right })
+                    }
+                    else {
+                        Some(Adjacency::Last { left, item })
+                    }
+                },
+                Adjacency::Only { .. } | Adjacency::Last { .. } => None,
+            };
+            adjacency
+        })
+    }
+}
+
+pub trait SliceExt<T> {
+    fn project<'a, U, F>(&'a self, f: F) -> ProjectedSlice<'a, T, F>
+    where
+        U: 'a,
+        F: Fn(&'a T) -> &'a U;
+}
+
+impl<T> SliceExt<T> for [T] {
+    fn project<'a, U, F>(&'a self, f: F) -> ProjectedSlice<'a, T, F>
+    where
+        U: 'a,
+        F: Fn(&'a T) -> &'a U,
+    {
+        ProjectedSlice { slice: self, f }
+    }
+}
+
+pub trait SliceProjection: Index<usize, Output = Self::Item> {
+    type Item;
+
+    fn get(&self, index: usize) -> Option<&Self::Item>;
+
+    fn len(&self) -> usize;
+}
+
+impl<T> SliceProjection for [T] {
+    type Item = T;
+
+    fn get(&self, index: usize) -> Option<&Self::Item> {
+        self.get(index)
+    }
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ProjectedSlice<'a, T, F> {
+    slice: &'a [T],
+    f: F,
+}
+
+impl<'a, T, U, F> Index<usize> for ProjectedSlice<'a, T, F>
+where
+    U: 'a,
+    F: Fn(&'a T) -> &'a U,
+{
+    type Output = U;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        (self.f)(&self.slice[index])
+    }
+}
+
+impl<'a, T, U, F> SliceProjection for ProjectedSlice<'a, T, F>
+where
+    U: 'a,
+    F: Fn(&'a T) -> &'a U,
+{
+    type Item = U;
+
+    fn get(&self, index: usize) -> Option<&Self::Item> {
+        self.slice.get(index).map(|item| (self.f)(item))
+    }
+
+    fn len(&self) -> usize {
+        self.slice.len()
     }
 }
 

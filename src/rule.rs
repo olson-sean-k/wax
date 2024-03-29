@@ -17,7 +17,6 @@ use std::collections::VecDeque;
 use std::convert::Infallible;
 #[cfg(feature = "miette")]
 use std::fmt::Display;
-use std::iter::Fuse;
 use std::path::PathBuf;
 use std::slice;
 use thiserror::Error;
@@ -28,7 +27,7 @@ use crate::token::{
     self, BranchKind, ExpressionMetadata, NaturalRange, Repetition, Size, Token, TokenTree,
     Tokenized,
 };
-use crate::{Any, BuildError, Glob, Pattern};
+use crate::{Adjacency, Any, BuildError, Glob, IteratorExt as _, Pattern};
 
 /// Maximum invariant size.
 ///
@@ -39,102 +38,6 @@ use crate::{Any, BuildError, Glob, Pattern};
 /// This limit is independent of the back end encoding. This code does not rely on errors in the
 /// encoder by design, such as size limitations.
 const MAX_INVARIANT_SIZE: Size = Size::new(0x10000);
-
-trait IteratorExt: Iterator + Sized {
-    fn adjacent(self) -> Adjacent<Self>
-    where
-        Self::Item: Clone;
-}
-
-impl<I> IteratorExt for I
-where
-    I: Iterator,
-{
-    fn adjacent(self) -> Adjacent<Self>
-    where
-        Self::Item: Clone,
-    {
-        Adjacent::new(self)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Adjacency<T> {
-    Only { item: T },
-    First { item: T, right: T },
-    Middle { left: T, item: T, right: T },
-    Last { left: T, item: T },
-}
-
-impl<T> Adjacency<T> {
-    pub fn into_tuple(self) -> (Option<T>, T, Option<T>) {
-        match self {
-            Adjacency::Only { item } => (None, item, None),
-            Adjacency::First { item, right } => (None, item, Some(right)),
-            Adjacency::Middle { left, item, right } => (Some(left), item, Some(right)),
-            Adjacency::Last { left, item } => (Some(left), item, None),
-        }
-    }
-}
-
-struct Adjacent<I>
-where
-    I: Iterator,
-{
-    input: Fuse<I>,
-    adjacency: Option<Adjacency<I::Item>>,
-}
-
-impl<I> Adjacent<I>
-where
-    I: Iterator,
-{
-    fn new(input: I) -> Self {
-        let mut input = input.fuse();
-        let adjacency = match (input.next(), input.next()) {
-            (Some(item), Some(right)) => Some(Adjacency::First { item, right }),
-            (Some(item), None) => Some(Adjacency::Only { item }),
-            (None, None) => None,
-            // The input iterator is fused, so this cannot occur.
-            (None, Some(_)) => unreachable!(),
-        };
-        Adjacent { input, adjacency }
-    }
-}
-
-impl<I> Iterator for Adjacent<I>
-where
-    I: Iterator,
-    I::Item: Clone,
-{
-    type Item = Adjacency<I::Item>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let next = self.input.next();
-        self.adjacency.take().map(|adjacency| {
-            self.adjacency = match adjacency.clone() {
-                Adjacency::First {
-                    item: left,
-                    right: item,
-                }
-                | Adjacency::Middle {
-                    item: left,
-                    right: item,
-                    ..
-                } => {
-                    if let Some(right) = next {
-                        Some(Adjacency::Middle { left, item, right })
-                    }
-                    else {
-                        Some(Adjacency::Last { left, item })
-                    }
-                },
-                Adjacency::Only { .. } | Adjacency::Last { .. } => None,
-            };
-            adjacency
-        })
-    }
-}
 
 trait SliceExt<T> {
     fn terminals(&self) -> Option<Terminals<&T>>;
@@ -858,8 +761,9 @@ mod tests {
     use itertools::Itertools;
     use rstest::rstest;
 
-    use crate::rule::{Adjacency, IteratorExt as _};
+    use crate::{Adjacency, IteratorExt as _};
 
+    // TODO: Relocate this test.
     #[rstest]
     #[case::empty([], [])]
     #[case::only([0], [Adjacency::Only { item: 0 }])]

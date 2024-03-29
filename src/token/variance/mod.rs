@@ -14,7 +14,9 @@ use crate::token::variance::natural::{
     BoundedVariantRange, NaturalRange, OpenedUpperBound, VariantRange,
 };
 use crate::token::variance::ops::{Conjunction, Disjunction, Product};
-use crate::token::walk::{ChildToken, Fold, Forward, ParentToken, Sequencer};
+use crate::token::walk::{
+    ChildToken, Fold, FoldPosition, Forward, ParentToken, Sequencer, TokenPath,
+};
 use crate::token::{Boundary, BranchKind, LeafKind};
 
 pub use Boundedness::{Bounded, Unbounded};
@@ -294,7 +296,12 @@ where
         Forward
     }
 
-    fn fold(&mut self, branch: &BranchKind<'t, A>, terms: Vec<Self::Term>) -> Option<Self::Term> {
+    fn fold(
+        &mut self,
+        _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        branch: &BranchKind<'t, A>,
+        terms: Vec<Self::Term>,
+    ) -> Option<Self::Term> {
         branch.fold(terms)
     }
 
@@ -302,7 +309,11 @@ where
         branch.finalize(term)
     }
 
-    fn term(&mut self, leaf: &LeafKind<'t>) -> Self::Term {
+    fn term(
+        &mut self,
+        _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        leaf: &LeafKind<'t>,
+    ) -> Self::Term {
         leaf.term()
     }
 }
@@ -311,10 +322,10 @@ where
 pub struct TreeExhaustiveness;
 
 impl Sequencer for TreeExhaustiveness {
-    fn enqueue<'i, 't, A>(
-        &mut self,
-        parent: ParentToken<'i, 't, A>,
-    ) -> impl Iterator<Item = ChildToken<'i, 't, A>> {
+    fn enqueue<'i, 't, A, T>(&mut self, parent: T) -> impl Iterator<Item = T::Child>
+    where
+        T: ParentToken<'i, 't, A>,
+    {
         parent.into_tokens().rev().take_while(|token| {
             token.as_ref().as_leaf().map_or(true, |leaf| {
                 if let Some(Boundary::Separator) = leaf.boundary() {
@@ -338,7 +349,12 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
         Self
     }
 
-    fn fold(&mut self, branch: &BranchKind<'t, A>, terms: Vec<Self::Term>) -> Option<Self::Term> {
+    fn fold(
+        &mut self,
+        _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        branch: &BranchKind<'t, A>,
+        terms: Vec<Self::Term>,
+    ) -> Option<Self::Term> {
         let n = terms.len();
         let sum = self::fold::<Depth>(branch, terms);
         if branch.tokens().into_inner().len() == n {
@@ -383,7 +399,11 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
         }
     }
 
-    fn term(&mut self, leaf: &LeafKind<'t>) -> Self::Term {
+    fn term(
+        &mut self,
+        _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        leaf: &LeafKind<'t>,
+    ) -> Self::Term {
         self::term::<Depth>(leaf)
     }
 }

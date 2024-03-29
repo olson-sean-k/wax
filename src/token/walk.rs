@@ -9,6 +9,7 @@ use crate::token::{
     Alternation, BranchKind, Composition, Concatenation, LeafKind, Repetition, Token,
     TokenTopology, TokenTree,
 };
+use crate::{IteratorExt as _, SliceExt as _, SliceProjection};
 
 type TokenFeed<'i, 't, A> = (TokenEntry<'i, 't, A>, TreeResidue<TokenEntry<'i, 't, A>>);
 
@@ -25,6 +26,128 @@ impl<'i, 't, A> Isomeric for TokenFeed<'i, 't, A> {
     }
 }
 
+pub trait ParentToken<'i, 't, A> {
+    type Child: 'i + ChildToken<'t, A>;
+
+    fn as_ref(&self) -> &BranchKind<'t, A>;
+
+    fn into_tokens(self) -> impl DoubleEndedIterator<Item = Self::Child>;
+}
+
+impl<'i, 't, A> ParentToken<'i, 't, A> for &'i BranchKind<'t, A> {
+    type Child = &'i Token<'t, A>;
+
+    fn as_ref(&self) -> &BranchKind<'t, A> {
+        *self
+    }
+
+    fn into_tokens(self) -> impl DoubleEndedIterator<Item = Self::Child> {
+        self.tokens().into_inner().iter()
+    }
+}
+
+pub trait ChildToken<'t, A> {
+    fn as_ref(&self) -> &Token<'t, A>;
+}
+
+impl<'i, 't, A, T> ChildToken<'t, A> for &'i T
+where
+    T: ChildToken<'t, A>,
+{
+    fn as_ref(&self) -> &Token<'t, A> {
+        T::as_ref(*self)
+    }
+}
+
+impl<'t, A> ChildToken<'t, A> for Token<'t, A> {
+    fn as_ref(&self) -> &Token<'t, A> {
+        self
+    }
+}
+
+#[derive(Debug)]
+pub struct Adjacency<'i, 't, A> {
+    left: Option<&'i Token<'t, A>>,
+    right: Option<&'i Token<'t, A>>,
+}
+
+impl<'i, 't, A> Adjacency<'i, 't, A> {
+    // This may appear to operate in place.
+    #[must_use]
+    pub fn or(self, left: Option<&'i Token<'t, A>>, right: Option<&'i Token<'t, A>>) -> Self {
+        Adjacency {
+            left: left.or(self.left),
+            right: right.or(self.right),
+        }
+    }
+}
+
+impl<'i, 't, A> Clone for Adjacency<'i, 't, A> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'i, 't, A> Copy for Adjacency<'i, 't, A> {}
+
+impl<'i, 't, A> Default for Adjacency<'i, 't, A> {
+    fn default() -> Self {
+        Adjacency {
+            left: None,
+            right: None,
+        }
+    }
+}
+
+impl<'i, 't, A> From<Adjacency<'i, 't, A>>
+    for (Option<&'i Token<'t, A>>, Option<&'i Token<'t, A>>)
+{
+    fn from(adjacency: Adjacency<'i, 't, A>) -> Self {
+        let Adjacency { left, right } = adjacency;
+        (left, right)
+    }
+}
+
+// TODO: This is effectively an "alias". Replace it with a trait alias when that or a similar
+//       feature is stabilized.
+pub trait TokenPath<'t, A>: SliceProjection<Item = BranchKind<'t, A>> {}
+
+impl<'t, A, P> TokenPath<'t, A> for P where P: SliceProjection<Item = BranchKind<'t, A>> {}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FoldPosition<'i, 't, A, P>
+where
+    P: SliceProjection<Item = BranchKind<'t, A>>,
+{
+    adjacency: Adjacency<'i, 't, A>,
+    path: P,
+}
+
+impl<'i, 't, A, P> FoldPosition<'i, 't, A, P>
+where
+    P: SliceProjection<Item = BranchKind<'t, A>>,
+{
+    pub fn adjacency(&self) -> &Adjacency<'i, 't, A> {
+        &self.adjacency
+    }
+
+    pub fn path(&self) -> &P {
+        &self.path
+    }
+}
+
+// TODO: Represent `FoldPosition` via a trait like this and remove the `TokenPath` "alias".
+pub trait Positional<'t, A> {
+    type Token;
+    type Path: SliceProjection<Item = BranchKind<'t, A>>;
+
+    fn adjacency(&self) -> &Adjacency<'_, 't, A>;
+
+    fn token(&self) -> &Self::Token;
+
+    fn path(&self) -> &Self::Path;
+}
+
 // Fold APIs are batched: folds operate against a complete and ordered sequence of terms rather
 // than an accumulator and a single subsequent term. This incurs a performance penalty, but
 // supports aggregations that must consider the complete sequence of terms without the need for
@@ -39,13 +162,26 @@ pub trait Fold<'t, A> {
         None
     }
 
-    fn fold(&mut self, branch: &BranchKind<'t, A>, terms: Vec<Self::Term>) -> Option<Self::Term>;
+    fn penult_or_root(&mut self, term: Self::Term) -> Self::Term {
+        term
+    }
+
+    fn fold(
+        &mut self,
+        position: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        branch: &BranchKind<'t, A>,
+        terms: Vec<Self::Term>,
+    ) -> Option<Self::Term>;
 
     fn finalize(&mut self, _branch: &BranchKind<'t, A>, term: Self::Term) -> Self::Term {
         term
     }
 
-    fn term(&mut self, leaf: &LeafKind<'t>) -> Self::Term;
+    fn term(
+        &mut self,
+        position: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        leaf: &LeafKind<'t>,
+    ) -> Self::Term;
 }
 
 impl<'f, 't, A, F> Fold<'t, A> for &'f mut F
@@ -63,16 +199,29 @@ where
         F::initialize(self, branch)
     }
 
-    fn fold(&mut self, branch: &BranchKind<'t, A>, terms: Vec<Self::Term>) -> Option<Self::Term> {
-        F::fold(self, branch, terms)
+    fn penult_or_root(&mut self, term: Self::Term) -> Self::Term {
+        F::penult_or_root(self, term)
+    }
+
+    fn fold(
+        &mut self,
+        position: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        branch: &BranchKind<'t, A>,
+        terms: Vec<Self::Term>,
+    ) -> Option<Self::Term> {
+        F::fold(self, position, branch, terms)
     }
 
     fn finalize(&mut self, branch: &BranchKind<'t, A>, term: Self::Term) -> Self::Term {
         F::finalize(self, branch, term)
     }
 
-    fn term(&mut self, leaf: &LeafKind<'t>) -> Self::Term {
-        F::term(self, leaf)
+    fn term(
+        &mut self,
+        position: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        leaf: &LeafKind<'t>,
+    ) -> Self::Term {
+        F::term(self, position, leaf)
     }
 }
 
@@ -138,19 +287,61 @@ impl BranchFold {
     }
 }
 
+impl<'i, 't, A> crate::Adjacency<&'i Token<'t, A>> {
+    pub fn fold_with_adjacent<F>(&self, f: F) -> Option<F::Term>
+    where
+        F: Fold<'t, A>,
+    {
+        let (left, token, right) = self.into_tuple();
+        token.fold_at_position(Adjacency { left, right }, f)
+    }
+}
+
 impl<'t, A> Token<'t, A> {
     pub fn fold<F>(&self, f: F) -> Option<F::Term>
     where
         F: Fold<'t, A>,
     {
-        self.fold_with_sequence(F::sequencer(), f)
+        self.fold_at_position(Default::default(), f)
     }
 
-    fn fold_with_sequence<S, F>(&self, mut sequencer: S, f: F) -> Option<F::Term>
+    fn fold_at_position<F>(&self, adjacency: Adjacency<'_, 't, A>, f: F) -> Option<F::Term>
     where
-        S: Sequencer,
         F: Fold<'t, A>,
     {
+        #[derive(Clone, Copy, Debug)]
+        struct Parent<'i, 't, A, I> {
+            branch: &'i BranchKind<'t, A>,
+            tokens: I,
+        }
+
+        impl<'i, 't, A, I> ParentToken<'i, 't, A> for Parent<'i, 't, A, I>
+        where
+            I: DoubleEndedIterator<Item = Child<'i, 't, A>>,
+        {
+            type Child = Child<'i, 't, A>;
+
+            fn as_ref(&self) -> &BranchKind<'t, A> {
+                self.branch
+            }
+
+            fn into_tokens(self) -> impl DoubleEndedIterator<Item = Self::Child> {
+                self.tokens
+            }
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        struct Child<'i, 't, A> {
+            token: &'i Token<'t, A>,
+            adjacency: Adjacency<'i, 't, A>,
+        }
+
+        impl<'i, 't, A> ChildToken<'t, A> for Child<'i, 't, A> {
+            fn as_ref(&self) -> &Token<'t, A> {
+                self.token
+            }
+        }
+
         struct TokenPath<'i, 't, A, F>
         where
             F: Fold<'t, A>,
@@ -163,29 +354,31 @@ impl<'t, A> Token<'t, A> {
         where
             F: Fold<'t, A>,
         {
-            pub fn push(&mut self, branch: &'i BranchKind<'t, A>) {
+            pub fn push(&mut self, branch: &'i BranchKind<'t, A>, adjacency: Adjacency<'i, 't, A>) {
                 let mut terms = VecDeque::with_capacity(branch.tokens().into_inner().len() + 1);
                 if let Some(term) = self.f.initialize(branch) {
                     terms.push_front(term);
                 }
-                self.branches.push(TokenBranch { branch, terms });
+                self.branches.push(TokenBranch {
+                    branch,
+                    adjacency,
+                    terms,
+                });
             }
 
             pub fn pop(&mut self, depth: usize) {
                 if let Some(n) = self.branches.len().checked_sub(depth) {
-                    self.fold_n(n);
+                    self.fold(n);
                 }
             }
 
-            pub fn fold(mut self) -> Option<F::Term> {
-                self.fold_n(usize::MAX);
-                self.branches
-                    .pop()
-                    .and_then(|branch| branch.fold(&mut self.f))
-            }
-
-            pub fn accumulate(&mut self, leaf: &'i LeafKind<'t>) -> Result<(), F::Term> {
-                let term = self.f.term(leaf);
+            pub fn accumulate(
+                &mut self,
+                leaf: &'i LeafKind<'t>,
+                adjacency: Adjacency<'i, 't, A>,
+            ) -> Result<(), F::Term> {
+                let (f, path) = self.as_fold_and_path_slice();
+                let term = f.term(FoldPosition { adjacency, path }, leaf);
                 match self.branches.last_mut() {
                     Some(branch) => {
                         branch.push(term);
@@ -195,9 +388,32 @@ impl<'t, A> Token<'t, A> {
                 }
             }
 
-            fn fold_n(&mut self, n: usize) {
+            pub fn as_fold_and_path_slice(
+                &mut self,
+            ) -> (&mut F, impl '_ + SliceProjection<Item = BranchKind<'t, A>>) {
+                (
+                    &mut self.f,
+                    self.branches.as_slice().project(|branch| branch.branch),
+                )
+            }
+
+            pub fn last(mut self) -> Option<F::Term> {
+                self.fold(usize::MAX);
+                self.branches.pop().and_then(|branch| {
+                    let (f, path) = self.as_fold_and_path_slice();
+                    branch.last(path, f)
+                })
+            }
+
+            pub fn only(mut self, term: F::Term) -> F::Term {
+                self.f.penult_or_root(term)
+            }
+
+            fn fold(&mut self, n: usize) {
                 for _ in 0..cmp::min(n, self.branches.len().saturating_sub(1)) {
-                    if let Some(term) = self.branches.pop().unwrap().fold(&mut self.f) {
+                    let branch = self.branches.pop().unwrap();
+                    let (f, path) = self.as_fold_and_path_slice();
+                    if let Some(term) = branch.fold(path, f) {
                         self.branches.last_mut().unwrap().push(term);
                     }
                 }
@@ -209,6 +425,7 @@ impl<'t, A> Token<'t, A> {
             F: Fold<'t, A>,
         {
             branch: &'i BranchKind<'t, A>,
+            adjacency: Adjacency<'i, 't, A>,
             // A queue is used to preserve the order of terms w.r.t. to the token tree and, more
             // subtly, any initializer terms.
             terms: VecDeque<F::Term>,
@@ -218,42 +435,95 @@ impl<'t, A> Token<'t, A> {
         where
             F: Fold<'t, A>,
         {
-            fn push(&mut self, term: F::Term) {
+            pub fn push(&mut self, term: F::Term) {
                 self.terms.push_front(term)
             }
 
-            fn fold(self, f: &mut F) -> Option<F::Term> {
-                let TokenBranch { branch, terms } = self;
-                f.fold(branch, terms.into())
+            pub fn fold(
+                self,
+                path: impl SliceProjection<Item = BranchKind<'t, A>>,
+                f: &mut F,
+            ) -> Option<F::Term> {
+                self.fold_map(path, |terms| (terms.into(), f))
+            }
+
+            pub fn last(
+                self,
+                path: impl SliceProjection<Item = BranchKind<'t, A>>,
+                f: &mut F,
+            ) -> Option<F::Term> {
+                self.fold_map(path, |terms| {
+                    (
+                        terms
+                            .into_iter()
+                            .map(|term| f.penult_or_root(term))
+                            .collect(),
+                        f,
+                    )
+                })
+            }
+
+            fn fold_map<'m, M>(
+                self,
+                path: impl SliceProjection<Item = BranchKind<'t, A>>,
+                map_terms_and_get_fold: M,
+            ) -> Option<F::Term>
+            where
+                F: 'm,
+                M: 'm + FnOnce(VecDeque<F::Term>) -> (Vec<F::Term>, &'m mut F),
+            {
+                let TokenBranch {
+                    branch,
+                    adjacency,
+                    terms,
+                } = self;
+                let (terms, f) = (map_terms_and_get_fold)(terms);
+                f.fold(FoldPosition { adjacency, path }, branch, terms)
                     .map(|term| f.finalize(branch, term))
             }
         }
 
+        let mut sequencer = F::sequencer();
         let mut path = TokenPath {
             branches: vec![],
             f,
         };
-        let mut tokens = vec![(self, 0usize)];
-        while let Some((token, depth)) = tokens.pop() {
+        let mut tokens = vec![(self, adjacency, 0usize)];
+        while let Some((token, adjacency, depth)) = tokens.pop() {
             path.pop(depth);
             match token.topology() {
                 TokenTopology::Branch(ref branch) => {
+                    // `Adjacent` does not implement `DoubleEndedIterator`, so it is moved into
+                    // `Map` and advanced in lockstep. This avoids collecting into an intermediate
+                    // buffer.
+                    let mut adjacencies = branch
+                        .tokens()
+                        .into_inner()
+                        .iter()
+                        .adjacent()
+                        .map(crate::Adjacency::into_tuple)
+                        .map(|(left, _, right)| adjacency.or(left, right));
                     tokens.extend(
                         sequencer
-                            .enqueue(Parent(branch))
-                            .map(|Child(token)| token)
-                            .map(|token| (token, depth + 1)),
+                            .enqueue(Parent {
+                                branch,
+                                tokens: branch.tokens().into_inner().iter().map(|token| Child {
+                                    token,
+                                    adjacency: adjacencies.next().expect("no adjacency for token"),
+                                }),
+                            })
+                            .map(|Child { token, adjacency }| (token, adjacency, depth + 1)),
                     );
-                    path.push(branch);
+                    path.push(branch, adjacency);
                 },
                 TokenTopology::Leaf(ref leaf) => {
-                    if let Err(term) = path.accumulate(leaf) {
-                        return Some(term);
+                    if let Err(term) = path.accumulate(leaf, adjacency) {
+                        return Some(path.only(term));
                     }
                 },
             }
         }
-        path.fold()
+        path.last()
     }
 
     pub fn fold_map<'o, F>(self, f: F) -> Token<'o, F::Annotation>
@@ -372,60 +642,20 @@ impl<'t, A> Token<'t, A> {
     }
 }
 
-// Together with `Child`, this type prevents `BranchSequencer` implementers from enqueuing
-// arbitrary tokens that are not associated with the given branch.
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct Parent<T>(T);
-
-pub type ParentToken<'i, 't, A> = Parent<&'i BranchKind<'t, A>>;
-
-impl<T> AsRef<T> for Parent<T> {
-    fn as_ref(&self) -> &T {
-        &self.0
-    }
-}
-
-impl<'i, 't, A> ParentToken<'i, 't, A> {
-    // It may be fragile or unclear what `Item` is without specifying `Iterator`. It is also not
-    // clear which common supertrait ought to specify this type.
-    #[allow(clippy::implied_bounds_in_impls)]
-    pub fn into_tokens(
-        self,
-    ) -> impl DoubleEndedIterator + ExactSizeIterator + Iterator<Item = ChildToken<'i, 't, A>> {
-        self.0.tokens().into_inner().iter().map(Child)
-    }
-}
-
-// Together with `Parent`, this type prevents `BranchSequencer` implementers from enqueuing
-// arbitrary tokens that are not associated with the given branch.
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct Child<T>(T);
-
-pub type ChildToken<'i, 't, A> = Child<&'i Token<'t, A>>;
-
-impl<T> AsRef<T> for Child<T> {
-    fn as_ref(&self) -> &T {
-        &self.0
-    }
-}
-
 pub trait Sequencer {
-    fn enqueue<'i, 't, A>(
-        &mut self,
-        parent: ParentToken<'i, 't, A>,
-    ) -> impl Iterator<Item = ChildToken<'i, 't, A>>;
+    fn enqueue<'i, 't, A, T>(&mut self, parent: T) -> impl Iterator<Item = T::Child>
+    where
+        T: ParentToken<'i, 't, A>;
 }
 
 #[derive(Default)]
 pub struct Forward;
 
 impl Sequencer for Forward {
-    fn enqueue<'i, 't, A>(
-        &mut self,
-        parent: ParentToken<'i, 't, A>,
-    ) -> impl Iterator<Item = ChildToken<'i, 't, A>> {
+    fn enqueue<'i, 't, A, T>(&mut self, parent: T) -> impl Iterator<Item = T::Child>
+    where
+        T: ParentToken<'i, 't, A>,
+    {
         parent.into_tokens()
     }
 }
@@ -434,17 +664,15 @@ impl Sequencer for Forward {
 pub struct Starting;
 
 impl Sequencer for Starting {
-    fn enqueue<'i, 't, A>(
-        &mut self,
-        parent: ParentToken<'i, 't, A>,
-    ) -> impl Iterator<Item = Child<&'i Token<'t, A>>> {
-        let composition = parent.as_ref().composition();
-        let tokens = parent.into_tokens();
-        let n = match composition {
+    fn enqueue<'i, 't, A, T>(&mut self, parent: T) -> impl Iterator<Item = T::Child>
+    where
+        T: ParentToken<'i, 't, A>,
+    {
+        let n = match parent.as_ref().tokens() {
             Composition::Conjunctive(_) => 1,
-            Composition::Disjunctive(_) => tokens.len(),
+            Composition::Disjunctive(tokens) => tokens.len(),
         };
-        tokens.take(n)
+        parent.into_tokens().take(n)
     }
 }
 
@@ -452,45 +680,44 @@ impl Sequencer for Starting {
 pub struct Ending;
 
 impl Sequencer for Ending {
-    fn enqueue<'i, 't, A>(
-        &mut self,
-        parent: ParentToken<'i, 't, A>,
-    ) -> impl Iterator<Item = Child<&'i Token<'t, A>>> {
-        let composition = parent.as_ref().composition();
-        let tokens = parent.into_tokens();
-        let n = match composition {
-            Composition::Conjunctive(_) => tokens.len().saturating_sub(1),
+    fn enqueue<'i, 't, A, T>(&mut self, parent: T) -> impl Iterator<Item = T::Child>
+    where
+        T: ParentToken<'i, 't, A>,
+    {
+        let n = match parent.as_ref().tokens() {
+            Composition::Conjunctive(tokens) => tokens.len().saturating_sub(1),
             Composition::Disjunctive(_) => 0,
         };
-        tokens.skip(n)
+        parent.into_tokens().skip(n)
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct Depth {
+pub struct WalkDepth {
     pub conjunctive: usize,
     pub disjunctive: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct Position {
-    pub depth: Depth,
+pub struct WalkPosition {
+    pub depth: WalkDepth,
     pub branch: usize,
 }
 
-impl Position {
+impl WalkPosition {
     // This may appear to operate in place.
     #[must_use]
     fn conjunction(self) -> Self {
-        let Position {
-            depth: Depth {
-                conjunctive,
-                disjunctive,
-            },
+        let WalkPosition {
+            depth:
+                WalkDepth {
+                    conjunctive,
+                    disjunctive,
+                },
             branch,
         } = self;
-        Position {
-            depth: Depth {
+        WalkPosition {
+            depth: WalkDepth {
                 conjunctive: conjunctive + 1,
                 disjunctive,
             },
@@ -501,15 +728,16 @@ impl Position {
     // This may appear to operate in place.
     #[must_use]
     fn disjunction(self, branch: usize) -> Self {
-        let Position {
-            depth: Depth {
-                conjunctive,
-                disjunctive,
-            },
+        let WalkPosition {
+            depth:
+                WalkDepth {
+                    conjunctive,
+                    disjunctive,
+                },
             ..
         } = self;
-        Position {
-            depth: Depth {
+        WalkPosition {
+            depth: WalkDepth {
                 conjunctive,
                 disjunctive: disjunctive + 1,
             },
@@ -520,7 +748,7 @@ impl Position {
 
 #[derive(Clone, Copy, Debug)]
 pub struct WalkEntry<T> {
-    pub position: Position,
+    pub position: WalkPosition,
     pub token: T,
 }
 
@@ -540,7 +768,7 @@ impl<T> WalkEntry<T> {
         }
     }
 
-    pub fn position(&self) -> Position {
+    pub fn position(&self) -> WalkPosition {
         self.position
     }
 }
@@ -570,28 +798,19 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(BranchEntry { position, token }) = self.branch.take() {
-            match token
-                .composition()
-                .map(|_| self.sequencer.enqueue(Parent(token)))
-            {
+            match token.composition().map(|_| self.sequencer.enqueue(token)) {
                 Composition::Conjunctive(tokens) => {
-                    self.tokens
-                        .extend(tokens.map(|child| child.0).map(|token| TokenEntry {
-                            position: position.conjunction(),
-                            token,
-                        }))
+                    self.tokens.extend(tokens.map(|token| TokenEntry {
+                        position: position.conjunction(),
+                        token,
+                    }))
                 },
                 Composition::Disjunctive(tokens) => {
                     self.tokens
-                        .extend(
-                            tokens
-                                .map(|child| child.0)
-                                .enumerate()
-                                .map(|(branch, token)| TokenEntry {
-                                    position: position.disjunction(branch),
-                                    token,
-                                }),
-                        )
+                        .extend(tokens.enumerate().map(|(branch, token)| TokenEntry {
+                            position: position.disjunction(branch),
+                            token,
+                        }))
                 },
             };
         }
@@ -627,7 +846,7 @@ where
     Walk {
         branch: None,
         tokens: Some(TokenEntry {
-            position: Position::default(),
+            position: WalkPosition::default(),
             token: tree.as_token(),
         })
         .into_iter()

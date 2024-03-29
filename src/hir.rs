@@ -8,8 +8,9 @@ use thiserror::Error;
 
 pub use regex_automata::meta::Regex;
 
-use crate::token::walk::{Fold, Forward};
+use crate::token::walk::{Fold, FoldPosition, Forward, TokenPath};
 use crate::token::{self, Archetype, BranchKind, ConcatenationTree, LeafKind};
+use crate::IteratorExt as _;
 
 trait IntoHir {
     fn into_hir(self) -> Hir;
@@ -102,6 +103,7 @@ where
 
         fn fold(
             &mut self,
+            _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
             branch: &BranchKind<'t, A>,
             terms: Vec<Self::Term>,
         ) -> Option<Self::Term> {
@@ -126,7 +128,11 @@ where
             term
         }
 
-        fn term(&mut self, leaf: &LeafKind<'t>) -> Self::Term {
+        fn term(
+            &mut self,
+            _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+            leaf: &LeafKind<'t>,
+        ) -> Self::Term {
             use token::Wildcard::{One, Tree, ZeroOrMore};
             use Archetype::{Character, Range};
             use LeafKind::{Class, Literal, Separator, Wildcard};
@@ -207,29 +213,41 @@ where
     let hir = Hir::concat(
         Some(Hir::look(hir::Look::Start))
             .into_iter()
-            .chain(tree.borrow().concatenation().iter().map(|token| {
-                let hir = token.fold(Compile::default()).unwrap_or_else(Hir::empty);
-                if token.is_capturing() {
-                    let index = capture_group_index;
-                    capture_group_index = capture_group_index
-                        .checked_add(1)
-                        .expect("overflow determining capture group index");
-                    // TODO: Some tokens require different capture topology depending on their
-                    //       position in the concatenation. Position information is trivially
-                    //       available here, but a more complex term (likely a closure of some
-                    //       kind) is needed to integrate the capture HIR into its tree. This
-                    //       namely applies to tree wildcards, which should not always capture the
-                    //       entirety of the text that they match.
-                    Hir::capture(hir::Capture {
-                        index,
-                        name: None,
-                        sub: Box::new(hir),
-                    })
-                }
-                else {
-                    hir
-                }
-            }))
+            .chain(
+                tree.borrow()
+                    .concatenation()
+                    .iter()
+                    .adjacent()
+                    .map(|token| {
+                        let hir = token
+                            .fold_with_adjacent(Compile::default())
+                            .unwrap_or_else(Hir::empty);
+                        if token.into_item().is_capturing() {
+                            let index = capture_group_index;
+                            capture_group_index = capture_group_index
+                                .checked_add(1)
+                                .expect("overflow in capture group index");
+                            // TODO: This captures any and all text that is matched by the token. This is
+                            //       much more consistent and predictable than before. However, it is
+                            //       difficult to assemble paths from matched text for some tokens.
+                            //
+                            //       To address this, provide APIs for trimming matched text. In
+                            //       particular, the matched text for tree wildcards is easier to use when
+                            //       leading separators are stripped (even when this results in empty match
+                            //       text). One exception is a tree wildcard that roots an expression. To
+                            //       handle cases like this, additional information about the capturing
+                            //       token can be gathered here and used in `MatchedText`.
+                            Hir::capture(hir::Capture {
+                                index,
+                                name: None,
+                                sub: Box::new(hir),
+                            })
+                        }
+                        else {
+                            hir
+                        }
+                    }),
+            )
             .chain(Some(Hir::look(hir::Look::End)))
             .collect(),
     );
