@@ -108,42 +108,10 @@ impl<'i, 't, A> From<Adjacency<'i, 't, A>>
     }
 }
 
-// TODO: This is effectively an "alias". Replace it with a trait alias when that or a similar
-//       feature is stabilized.
-pub trait TokenPath<'t, A>: SliceProjection<Item = BranchKind<'t, A>> {}
-
-impl<'t, A, P> TokenPath<'t, A> for P where P: SliceProjection<Item = BranchKind<'t, A>> {}
-
-#[derive(Clone, Copy, Debug)]
-pub struct FoldPosition<'i, 't, A, P>
-where
-    P: SliceProjection<Item = BranchKind<'t, A>>,
-{
-    adjacency: Adjacency<'i, 't, A>,
-    path: P,
-}
-
-impl<'i, 't, A, P> FoldPosition<'i, 't, A, P>
-where
-    P: SliceProjection<Item = BranchKind<'t, A>>,
-{
-    pub fn adjacency(&self) -> &Adjacency<'i, 't, A> {
-        &self.adjacency
-    }
-
-    pub fn path(&self) -> &P {
-        &self.path
-    }
-}
-
-// TODO: Represent `FoldPosition` via a trait like this and remove the `TokenPath` "alias".
-pub trait Positional<'t, A> {
-    type Token;
+pub trait FoldPosition<'t, A> {
     type Path: SliceProjection<Item = BranchKind<'t, A>>;
 
     fn adjacency(&self) -> &Adjacency<'_, 't, A>;
-
-    fn token(&self) -> &Self::Token;
 
     fn path(&self) -> &Self::Path;
 }
@@ -168,7 +136,7 @@ pub trait Fold<'t, A> {
 
     fn fold(
         &mut self,
-        position: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        position: impl FoldPosition<'t, A>,
         branch: &BranchKind<'t, A>,
         terms: Vec<Self::Term>,
     ) -> Option<Self::Term>;
@@ -177,11 +145,7 @@ pub trait Fold<'t, A> {
         term
     }
 
-    fn term(
-        &mut self,
-        position: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
-        leaf: &LeafKind<'t>,
-    ) -> Self::Term;
+    fn term(&mut self, position: impl FoldPosition<'t, A>, leaf: &LeafKind<'t>) -> Self::Term;
 }
 
 impl<'f, 't, A, F> Fold<'t, A> for &'f mut F
@@ -205,7 +169,7 @@ where
 
     fn fold(
         &mut self,
-        position: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        position: impl FoldPosition<'t, A>,
         branch: &BranchKind<'t, A>,
         terms: Vec<Self::Term>,
     ) -> Option<Self::Term> {
@@ -216,11 +180,7 @@ where
         F::finalize(self, branch, term)
     }
 
-    fn term(
-        &mut self,
-        position: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
-        leaf: &LeafKind<'t>,
-    ) -> Self::Term {
+    fn term(&mut self, position: impl FoldPosition<'t, A>, leaf: &LeafKind<'t>) -> Self::Term {
         F::term(self, position, leaf)
     }
 }
@@ -342,6 +302,27 @@ impl<'t, A> Token<'t, A> {
             }
         }
 
+        #[derive(Clone, Copy, Debug)]
+        pub struct Position<'i, 't, A, P> {
+            adjacency: Adjacency<'i, 't, A>,
+            path: P,
+        }
+
+        impl<'i, 't, A, P> FoldPosition<'t, A> for Position<'i, 't, A, P>
+        where
+            P: SliceProjection<Item = BranchKind<'t, A>>,
+        {
+            type Path = P;
+
+            fn adjacency(&self) -> &Adjacency<'_, 't, A> {
+                &self.adjacency
+            }
+
+            fn path(&self) -> &Self::Path {
+                &self.path
+            }
+        }
+
         struct TokenPath<'i, 't, A, F>
         where
             F: Fold<'t, A>,
@@ -378,7 +359,7 @@ impl<'t, A> Token<'t, A> {
                 adjacency: Adjacency<'i, 't, A>,
             ) -> Result<(), F::Term> {
                 let (f, path) = self.as_fold_and_path_slice();
-                let term = f.term(FoldPosition { adjacency, path }, leaf);
+                let term = f.term(Position { adjacency, path }, leaf);
                 match self.branches.last_mut() {
                     Some(branch) => {
                         branch.push(term);
@@ -478,7 +459,7 @@ impl<'t, A> Token<'t, A> {
                     terms,
                 } = self;
                 let (terms, f) = (map_terms_and_get_fold)(terms);
-                f.fold(FoldPosition { adjacency, path }, branch, terms)
+                f.fold(Position { adjacency, path }, branch, terms)
                     .map(|term| f.finalize(branch, term))
             }
         }

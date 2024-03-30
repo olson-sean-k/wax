@@ -8,7 +8,7 @@ use thiserror::Error;
 
 pub use regex_automata::meta::Regex;
 
-use crate::token::walk::{Fold, FoldPosition, Forward, TokenPath};
+use crate::token::walk::{Fold, FoldPosition, Forward};
 use crate::token::{self, Archetype, BranchKind, ConcatenationTree, LeafKind};
 use crate::IteratorExt as _;
 
@@ -103,7 +103,7 @@ where
 
         fn fold(
             &mut self,
-            _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+            _: impl FoldPosition<'t, A>,
             branch: &BranchKind<'t, A>,
             terms: Vec<Self::Term>,
         ) -> Option<Self::Term> {
@@ -128,11 +128,7 @@ where
             term
         }
 
-        fn term(
-            &mut self,
-            _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
-            leaf: &LeafKind<'t>,
-        ) -> Self::Term {
+        fn term(&mut self, _: impl FoldPosition<'t, A>, leaf: &LeafKind<'t>) -> Self::Term {
             use token::Wildcard::{One, Tree, ZeroOrMore};
             use Archetype::{Character, Range};
             use LeafKind::{Class, Literal, Separator, Wildcard};

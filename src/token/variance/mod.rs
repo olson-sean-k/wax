@@ -14,9 +14,7 @@ use crate::token::variance::natural::{
     BoundedVariantRange, NaturalRange, OpenedUpperBound, VariantRange,
 };
 use crate::token::variance::ops::{Conjunction, Disjunction, Product};
-use crate::token::walk::{
-    ChildToken, Fold, FoldPosition, Forward, ParentToken, Sequencer, TokenPath,
-};
+use crate::token::walk::{ChildToken, Fold, FoldPosition, Forward, ParentToken, Sequencer};
 use crate::token::{Boundary, BranchKind, LeafKind};
 
 pub use Boundedness::{Bounded, Unbounded};
@@ -298,7 +296,7 @@ where
 
     fn fold(
         &mut self,
-        _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        _: impl FoldPosition<'t, A>,
         branch: &BranchKind<'t, A>,
         terms: Vec<Self::Term>,
     ) -> Option<Self::Term> {
@@ -309,11 +307,7 @@ where
         branch.finalize(term)
     }
 
-    fn term(
-        &mut self,
-        _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
-        leaf: &LeafKind<'t>,
-    ) -> Self::Term {
+    fn term(&mut self, _: impl FoldPosition<'t, A>, leaf: &LeafKind<'t>) -> Self::Term {
         leaf.term()
     }
 }
@@ -351,7 +345,7 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
 
     fn fold(
         &mut self,
-        _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+        _: impl FoldPosition<'t, A>,
         branch: &BranchKind<'t, A>,
         terms: Vec<Self::Term>,
     ) -> Option<Self::Term> {
@@ -399,11 +393,7 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
         }
     }
 
-    fn term(
-        &mut self,
-        _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
-        leaf: &LeafKind<'t>,
-    ) -> Self::Term {
+    fn term(&mut self, _: impl FoldPosition<'t, A>, leaf: &LeafKind<'t>) -> Self::Term {
         self::term::<Depth>(leaf)
     }
 }

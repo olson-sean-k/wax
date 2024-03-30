@@ -19,9 +19,7 @@ use crate::token::variance::invariant::{
 };
 use crate::token::variance::ops;
 use crate::token::variance::{TreeExhaustiveness, TreeVariance, VarianceFold, VarianceTerm};
-use crate::token::walk::{
-    BranchFold, Fold, FoldMap, FoldPosition, Starting, TokenEntry, TokenPath,
-};
+use crate::token::walk::{BranchFold, Fold, FoldMap, FoldPosition, Starting, TokenEntry};
 use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
 
 pub use crate::token::parse::{parse, ParseError, ROOT_SEPARATOR_EXPRESSION};
@@ -520,7 +518,7 @@ impl<'t, A> Token<'t, A> {
 
             fn fold(
                 &mut self,
-                _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
+                _: impl FoldPosition<'t, A>,
                 branch: &BranchKind<'t, A>,
                 terms: Vec<Self::Term>,
             ) -> Option<Self::Term> {
@@ -540,11 +538,7 @@ impl<'t, A> Token<'t, A> {
                     })
             }
 
-            fn term(
-                &mut self,
-                _: FoldPosition<'_, 't, A, impl TokenPath<'t, A>>,
-                leaf: &LeafKind<'t>,
-            ) -> Self::Term {
+            fn term(&mut self, _: impl FoldPosition<'t, A>, leaf: &LeafKind<'t>) -> Self::Term {
                 leaf.is_rooting().into()
             }
         }
