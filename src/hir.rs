@@ -128,11 +128,12 @@ where
             term
         }
 
-        fn term(&mut self, _: impl FoldPosition<'t, A>, leaf: &LeafKind<'t>) -> Self::Term {
+        fn term(&mut self, position: impl FoldPosition<'t, A>, leaf: &LeafKind<'t>) -> Self::Term {
             use token::Wildcard::{One, Tree, ZeroOrMore};
             use Archetype::{Character, Range};
             use LeafKind::{Class, Literal, Separator, Wildcard};
 
+            let adjacency = position.adjacency();
             match leaf {
                 Class(ref class) => {
                     let is_negated = class.is_negated();
@@ -161,11 +162,17 @@ where
                         Hir::literal(literal.text().as_bytes())
                     }
                 },
-                // TODO: Separators should probably also match the end of text when they are at the
-                //       end of a glob expression. This may not be possible in a fold with simple
-                //       terms though, since that positional information isn't available until
-                //       reaching the root of the token tree.
-                Separator(_) => self::separator().into_hir(),
+                Separator(_) => {
+                    if adjacency.right.is_some() {
+                        self::separator().into_hir()
+                    }
+                    else {
+                        Hir::alternation(vec![
+                            self::separator().into_hir(),
+                            Hir::look(hir::Look::End),
+                        ])
+                    }
+                },
                 Wildcard(ref wildcard) => match wildcard {
                     One => Hir::class(hir::Class::Unicode(self::not_separator())),
                     Tree { has_root } => Hir::alternation(vec![
@@ -190,12 +197,13 @@ where
                         self::separator().into_hir(),
                         Hir::empty(),
                     ]),
-                    // TODO: Zero or more wildcards should match **one** or more if they comprise
-                    //       the entirety of a component, such as in `a/*/b`. This may not be
-                    //       possible in a fold with simple terms though, since adjacency
-                    //       information isn't available until reaching the root of the token tree.
                     ZeroOrMore(ref evaluation) => Hir::repetition(hir::Repetition {
-                        min: 0,
+                        min: if adjacency.is_open() || adjacency.is_closed_boundary() {
+                            1
+                        }
+                        else {
+                            0
+                        },
                         max: None,
                         greedy: evaluation.is_eager(),
                         sub: Box::new(self::not_separator().into_hir()),
@@ -215,9 +223,7 @@ where
                     .iter()
                     .adjacent()
                     .map(|token| {
-                        let hir = token
-                            .fold_with_adjacent(Compile::default())
-                            .unwrap_or_else(Hir::empty);
+                        let hir = token.fold_with_adjacent(Compile).unwrap_or_else(Hir::empty);
                         if token.into_item().is_capturing() {
                             let index = capture_group_index;
                             capture_group_index = capture_group_index

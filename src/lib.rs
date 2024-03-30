@@ -268,6 +268,10 @@ pub trait SliceProjection: Index<usize, Output = Self::Item> {
     fn get(&self, index: usize) -> Option<&Self::Item>;
 
     fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl<T> SliceProjection for [T] {

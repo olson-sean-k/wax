@@ -38,7 +38,7 @@ impl<'i, 't, A> ParentToken<'i, 't, A> for &'i BranchKind<'t, A> {
     type Child = &'i Token<'t, A>;
 
     fn as_ref(&self) -> &BranchKind<'t, A> {
-        *self
+        self
     }
 
     fn into_tokens(self) -> impl DoubleEndedIterator<Item = Self::Child> {
@@ -67,8 +67,8 @@ impl<'t, A> ChildToken<'t, A> for Token<'t, A> {
 
 #[derive(Debug)]
 pub struct Adjacency<'i, 't, A> {
-    left: Option<&'i Token<'t, A>>,
-    right: Option<&'i Token<'t, A>>,
+    pub left: Option<&'i Token<'t, A>>,
+    pub right: Option<&'i Token<'t, A>>,
 }
 
 impl<'i, 't, A> Adjacency<'i, 't, A> {
@@ -79,6 +79,20 @@ impl<'i, 't, A> Adjacency<'i, 't, A> {
             left: left.or(self.left),
             right: right.or(self.right),
         }
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.left.is_none() && self.right.is_none()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.left.is_some() && self.right.is_some()
+    }
+
+    pub fn is_closed_boundary(&self) -> bool {
+        let is_boundary =
+            |token: Option<&Token<'_, _>>| token.map_or(false, |token| token.boundary().is_some());
+        is_boundary(self.left) && is_boundary(self.right)
     }
 }
 
