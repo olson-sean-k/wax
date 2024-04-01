@@ -421,7 +421,7 @@ where
     }
 
     fn is_zom<A>(token: &Token<'_, A>) -> bool {
-        matches!(token.as_leaf(), Some(Wildcard(ZeroOrMore(_))))
+        matches!(token.as_leaf(), Some(Wildcard(ZeroOrMore { .. })))
     }
 
     fn has_starting_boundary<A>(token: Option<&Token<'_, A>>) -> bool {
@@ -520,8 +520,8 @@ where
             // The branch is prefixed by a zero-or-more token; disallow leading zero-or-more tokens.
             //
             // For example, `foo*{bar,*,baz}`.
-            Only((inner, Some(Wildcard(ZeroOrMore(_)))))
-            | StartEnd((inner, Some(Wildcard(ZeroOrMore(_)))), _)
+            Only((inner, Some(Wildcard(ZeroOrMore { .. }))))
+            | StartEnd((inner, Some(Wildcard(ZeroOrMore { .. }))), _)
                 if has_ending_zom(left) =>
             {
                 Err(CorrelatedError::new(
@@ -534,8 +534,8 @@ where
             // tokens.
             //
             // For example, `{foo,*,bar}*baz`.
-            Only((inner, Some(Wildcard(ZeroOrMore(_)))))
-            | StartEnd(_, (inner, Some(Wildcard(ZeroOrMore(_)))))
+            Only((inner, Some(Wildcard(ZeroOrMore { .. }))))
+            | StartEnd(_, (inner, Some(Wildcard(ZeroOrMore { .. }))))
                 if has_starting_zom(right) =>
             {
                 Err(CorrelatedError::new(
@@ -645,7 +645,7 @@ where
             // The repetition is a singular zero-or-more wildcard.
             //
             // For example, `<*:1,>`.
-            Only((token, Some(Wildcard(ZeroOrMore(_))))) => Err(CorrelatedError::new(
+            Only((token, Some(Wildcard(ZeroOrMore { .. })))) => Err(CorrelatedError::new(
                 RuleErrorKind::SingularZeroOrMore,
                 None,
                 token,

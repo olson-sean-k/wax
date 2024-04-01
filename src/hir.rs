@@ -22,6 +22,17 @@ impl IntoHir for hir::ClassUnicode {
     }
 }
 
+trait Negated {
+    fn negated(self) -> Self;
+}
+
+impl Negated for hir::ClassUnicode {
+    fn negated(mut self) -> Self {
+        self.negate();
+        self
+    }
+}
+
 /// Describes errors that occur when compiling a glob expression.
 ///
 /// **This error only occurs when the size of the compiled program is too large.** All other
@@ -49,15 +60,30 @@ impl Diagnostic for CompileError {
     }
 }
 
-// TODO: The implementation of this function depends on platform/OS.
+#[cfg(unix)]
 fn separator() -> hir::ClassUnicode {
     hir::ClassUnicode::new([hir::ClassUnicodeRange::new('/', '/')])
 }
 
-fn not_separator() -> hir::ClassUnicode {
-    let mut hir = separator();
-    hir.negate();
-    hir
+#[cfg(windows)]
+fn separator() -> hir::ClassUnicode {
+    hir::ClassUnicode::new([
+        hir::ClassUnicodeRange::new('/', '/'),
+        hir::ClassUnicodeRange::new('\\', '\\'),
+    ])
+}
+
+// This pattern only matches the platform's **main** separator, so any additional separators behave
+// nominally rather than structurally. It may be better to have explicit platform support and
+// invoke `compile_error!` on unsupported platforms, as this could cause very aberrant behavior.
+// Then again, it seems that platforms using more than one separator are rare. GS/OS, OS/2, and
+// Windows are likely the best known examples, and of those only Windows is a supported Rust target
+// at time of writing.
+#[cfg(not(any(unix, windows)))]
+fn separator() -> hir::ClassUnicode {
+    use std::path::MAIN_SEPARATOR;
+
+    hir::ClassUnicode::new([hir::ClassUnicodeRange::new(MAIN_SEPARATOR, MAIN_SEPARATOR)])
 }
 
 fn case_folded_literal(text: impl AsRef<str>) -> Hir {
@@ -174,8 +200,8 @@ where
                     }
                 },
                 Wildcard(ref wildcard) => match wildcard {
-                    One => Hir::class(hir::Class::Unicode(self::not_separator())),
-                    Tree { has_root } => Hir::alternation(vec![
+                    One => Hir::class(hir::Class::Unicode(self::separator().negated())),
+                    Tree { ref has_root } => Hir::alternation(vec![
                         Hir::concat(vec![
                             if *has_root {
                                 self::separator().into_hir()
@@ -197,23 +223,49 @@ where
                         self::separator().into_hir(),
                         Hir::empty(),
                     ]),
-                    ZeroOrMore(ref evaluation) => Hir::repetition(hir::Repetition {
-                        min: if adjacency.is_open() || adjacency.is_closed_boundary() {
-                            1
-                        }
-                        else {
-                            0
-                        },
+                    // TODO: Adjacency and simple `Hir` terms are insufficient for any tokens that
+                    //       represent some kind of repetition like this. Likely, some kind of
+                    //       `BoundaryTerm` with `DisjunctiveTerm`s for alternations are necessary.
+                    //
+                    //       Consider `{a/,b}*`. The `*` must be redistributed in the conjunction,
+                    //       because it must encode two different programs for each branch. Notice
+                    //       that this always occurs when a zero-or-more repetition token (of any
+                    //       kind) forms a component wherein a boundary occurs `Sometimes`. In this
+                    //       case, the equivalent glob expression must be `{a/<?:1,>,b<?>}`. Note
+                    //       too that the end of the expression behaves like a boundary in this
+                    //       context: the distributed equivalent of `{a/,b}*c` is `{a/<?>,b<?>}c`
+                    //       wherein `*` is `<?>` in both branches of the alternation.
+                    //
+                    //       This of course applies to repetition tokens too. `a/<x>/b` must become
+                    //       `a/<x:1,>/b`. Similarly, `{a/,b}<x>` must be equivalent to
+                    //       `{a/<x:1,>,b<x>}`.
+                    //
+                    //       Moreover, it may not be possible to encode this in the HIR with only
+                    //       additional HIR nodes. There is no notion of "this node, but never
+                    //       empty", for example. Instead, the `hir::Repetition` likely needs to be
+                    //       constructed in `fold` with an appropriate bound. However, it may be
+                    //       possible to do so by always using a minimum bound of one and nesting
+                    //       in a repetition with a minimum bound of zero, but this requires most
+                    //       of the information needed to construct the necessary repetition alone
+                    //       anyway.
+                    //
+                    //       Tree wildcards need no special attention. They cannot be adjacent to
+                    //       other boundary tokens (even `Sometimes`), so their lower bound can
+                    //       always remain zero. Even if adjacent boundary tokens were allowed,
+                    //       then they would also need to coalesce, and patterns like `{a/,b}**/`
+                    //       would be equivalent to `{a,b}/**/` and `{a/**/,b/**/}`.
+                    ZeroOrMore { ref is_greedy } => Hir::repetition(hir::Repetition {
+                        min: if adjacency.is_component() { 1 } else { 0 },
                         max: None,
-                        greedy: evaluation.is_eager(),
-                        sub: Box::new(self::not_separator().into_hir()),
+                        greedy: *is_greedy,
+                        sub: Box::new(self::separator().negated().into_hir()),
                     }),
                 },
             }
         }
     }
 
-    let mut capture_group_index = 1u32;
+    let mut capture_group_index = 0u32;
     let hir = Hir::concat(
         Some(Hir::look(hir::Look::Start))
             .into_iter()
@@ -223,24 +275,20 @@ where
                     .iter()
                     .adjacent()
                     .map(|token| {
+                        // TODO: Regarding TODOs above: this approach to captures should continue
+                        //       to work, but just requires a conjunction of terms and finalization
+                        //       here, outside of the `Fold` implementation.
+                        //
+                        //       This is ideal, because it allows `Token`s to cleanly abstract what
+                        //       captures (i.e., `Token::is_capturing` is both meaningful and
+                        //       authoritative).
                         let hir = token.fold_with_adjacent(Compile).unwrap_or_else(Hir::empty);
                         if token.into_item().is_capturing() {
-                            let index = capture_group_index;
                             capture_group_index = capture_group_index
                                 .checked_add(1)
                                 .expect("overflow in capture group index");
-                            // TODO: This captures any and all text that is matched by the token. This is
-                            //       much more consistent and predictable than before. However, it is
-                            //       difficult to assemble paths from matched text for some tokens.
-                            //
-                            //       To address this, provide APIs for trimming matched text. In
-                            //       particular, the matched text for tree wildcards is easier to use when
-                            //       leading separators are stripped (even when this results in empty match
-                            //       text). One exception is a tree wildcard that roots an expression. To
-                            //       handle cases like this, additional information about the capturing
-                            //       token can be gathered here and used in `MatchedText`.
                             Hir::capture(hir::Capture {
-                                index,
+                                index: capture_group_index,
                                 name: None,
                                 sub: Box::new(hir),
                             })
@@ -263,4 +311,59 @@ where
             },
             _ => panic!("failed to compile glob"),
         })
+}
+
+#[cfg(test)]
+pub mod harness {
+    use crate::encode;
+
+    pub fn assert_case_folded_eq_eq(lhs: &str, rhs: &str, expected: bool) -> bool {
+        let eq = encode::case_folded_eq(lhs, rhs);
+        assert!(
+            eq == expected,
+            "`encode::case_folded_eq` is `{}`, but expected `{}`",
+            eq,
+            expected,
+        );
+        eq
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use crate::encode::harness;
+
+    #[rstest]
+    #[case::ascii_with_no_casing("", "")]
+    #[case::ascii_with_no_casing("0", "0")]
+    #[case::ascii_with_no_casing("_", "_")]
+    #[case::ascii_with_casing("a", "a")]
+    #[case::ascii_with_casing("a", "A")]
+    #[case::ascii_with_casing("aa", "aa")]
+    #[case::ascii_with_casing("aa", "aA")]
+    #[case::ascii_with_casing("aa", "Aa")]
+    #[case::ascii_with_casing("aa", "AA")]
+    #[case::ascii_with_casing("z", "z")]
+    #[case::ascii_with_casing("z", "Z")]
+    #[case::cjk("愛", "愛")]
+    #[case::cjk("グロブ", "グロブ")]
+    fn case_folded_eq_eq(#[case] lhs: &str, #[case] rhs: &str) {
+        harness::assert_case_folded_eq_eq(lhs, rhs, true);
+    }
+
+    #[rstest]
+    #[case::whitespace("", " ")]
+    #[case::whitespace(" ", "\t")]
+    #[case::whitespace(" ", "  ")]
+    #[case::length("a", "aa")]
+    #[case::ascii_with_no_casing("0", "1")]
+    #[case::ascii_with_casing("a", "b")]
+    #[case::ascii_with_casing("a", "B")]
+    #[case::cjk("金", "銀")]
+    #[case::cjk("もー", "もぉ")]
+    fn case_folded_eq_not_eq(#[case] lhs: &str, #[case] rhs: &str) {
+        harness::assert_case_folded_eq_eq(lhs, rhs, false);
+    }
 }

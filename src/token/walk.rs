@@ -89,10 +89,13 @@ impl<'i, 't, A> Adjacency<'i, 't, A> {
         self.left.is_some() && self.right.is_some()
     }
 
-    pub fn is_closed_boundary(&self) -> bool {
-        let is_boundary =
-            |token: Option<&Token<'_, _>>| token.map_or(false, |token| token.boundary().is_some());
-        is_boundary(self.left) && is_boundary(self.right)
+    // TODO: This function is incorrect and must query the trees of the adjacent tokens rather than
+    //       only the immediate tokens (`Token::boundary` does not inspect the tree, only the given
+    //       token).
+    pub fn is_component(&self) -> bool {
+        let has_left_boundary = self.left.map_or(true, |token| token.boundary().is_some());
+        let has_right_boundary = self.right.map_or(true, |token| token.boundary().is_some());
+        has_left_boundary && has_right_boundary
     }
 }
 

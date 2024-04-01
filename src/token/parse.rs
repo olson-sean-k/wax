@@ -9,8 +9,8 @@ use thiserror::Error;
 
 use crate::diagnostics::{LocatedError, Span};
 use crate::token::{
-    Alternation, Archetype, BranchKind, Class, Concatenation, Evaluation, ExpressionMetadata,
-    LeafKind, Literal, Repetition, Separator, Token, TokenTopology, Tokenized, Wildcard,
+    Alternation, Archetype, BranchKind, Class, Concatenation, ExpressionMetadata, LeafKind,
+    Literal, Repetition, Separator, Token, TokenTopology, Tokenized, Wildcard,
 };
 use crate::PATHS_ARE_CASE_INSENSITIVE;
 
@@ -381,7 +381,7 @@ pub fn parse(expression: &str) -> Result<Tokenized<'_, ExpressionMetadata>, Pars
                             terminator.clone(),
                         )),
                     ),
-                    |_| LeafKind::from(Wildcard::ZeroOrMore(Evaluation::Eager)).into(),
+                    |_| LeafKind::from(Wildcard::ZeroOrMore { is_greedy: true }).into(),
                 ),
             ),
             error::context(
@@ -400,7 +400,7 @@ pub fn parse(expression: &str) -> Result<Tokenized<'_, ExpressionMetadata>, Pars
                             terminator,
                         )),
                     ),
-                    |_| LeafKind::from(Wildcard::ZeroOrMore(Evaluation::Lazy)).into(),
+                    |_| LeafKind::from(Wildcard::ZeroOrMore { is_greedy: false }).into(),
                 ),
             ),
         ))

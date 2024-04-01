@@ -1171,18 +1171,6 @@ impl<'t, A> VarianceFold<Text<'t>> for Concatenation<'t, A> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Evaluation {
-    Eager,
-    Lazy,
-}
-
-impl Evaluation {
-    pub fn is_eager(&self) -> bool {
-        matches!(self, Evaluation::Eager)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Literal<'t> {
     text: Cow<'t, str>,
@@ -1376,7 +1364,7 @@ impl<'t> VarianceTerm<Text<'t>> for Separator {
 #[derive(Clone, Copy, Debug)]
 pub enum Wildcard {
     One,
-    ZeroOrMore(Evaluation),
+    ZeroOrMore { is_greedy: bool },
     Tree { has_root: bool },
 }
 
