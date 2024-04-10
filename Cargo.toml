@@ -40,7 +40,7 @@ pori = "=0.0.0"
 thiserror = "^1.0.0"
 
 [dependencies.miette]
-version = "^5.10.0"
+version = "^7.0.0"
 default-features = false
 optional = true
 
