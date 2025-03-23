@@ -40,7 +40,7 @@ default-features = false
 features = ["perf", "std", "unicode-case"]
 
 [dependencies.tardar]
-version = "^0.1.0"
+version = "^0.2.0"
 optional = true
 
 [dependencies.walkdir]
