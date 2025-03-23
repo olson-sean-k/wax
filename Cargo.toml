@@ -23,11 +23,11 @@ miette = ["dep:miette", "dep:tardar"]
 walk = ["dep:walkdir"]
 
 [dependencies]
-const_format = "^0.2.0"
+const_format = "^0.2.34"
 itertools = "^0.14.0"
 nom = "^7.0.0"
 pori = "=0.0.0"
-thiserror = "^2.0.0"
+thiserror = "^2.0.12"
 
 [dependencies.miette]
 version = "^7.5.0"
