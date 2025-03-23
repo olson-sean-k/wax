@@ -48,8 +48,8 @@ version = "^2.5.0"
 optional = true
 
 [dev-dependencies]
-build-fs-tree = "^0.6.0"
+build-fs-tree = "^0.7.1"
 dunce = "^1.0.0"
 expect_macro = "^0.2.0"
-rstest = "^0.18.0"
-tempfile = "^3.8.0"
+rstest = "^0.25.0"
+tempfile = "^3.19.1"
