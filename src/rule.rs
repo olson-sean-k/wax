@@ -124,8 +124,7 @@ where
                 } => {
                     if let Some(right) = next {
                         Some(Adjacency::Middle { left, item, right })
-                    }
-                    else {
+                    } else {
                         Some(Adjacency::Last { left, item })
                     }
                 },
@@ -409,7 +408,7 @@ where
     A: Spanned,
 {
     if let Some((left, right)) = walk::forward(tree)
-        .group_by(TokenEntry::position)
+        .chunk_by(TokenEntry::position)
         .into_iter()
         .flat_map(|(_, group)| {
             group
@@ -425,8 +424,7 @@ where
             RuleErrorKind::AdjacentBoundary,
             CompositeSpan::spanned("here", left.union(right)),
         ))
-    }
-    else {
+    } else {
         Ok(())
     }
 }
@@ -820,8 +818,7 @@ where
             RuleErrorKind::IncompatibleBounds,
             CompositeSpan::spanned("here", *token.annotation().span()),
         ))
-    }
-    else {
+    } else {
         Ok(())
     }
 }
@@ -847,8 +844,7 @@ where
             RuleErrorKind::OversizedInvariant,
             CompositeSpan::spanned("here", *token.annotation().span()),
         ))
-    }
-    else {
+    } else {
         Ok(())
     }
 }
