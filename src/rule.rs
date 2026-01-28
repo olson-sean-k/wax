@@ -408,7 +408,7 @@ where
     A: Spanned,
 {
     if let Some((left, right)) = walk::forward(tree)
-        .group_by(TokenEntry::position)
+        .chunk_by(TokenEntry::position)
         .into_iter()
         .flat_map(|(_, group)| {
             group
