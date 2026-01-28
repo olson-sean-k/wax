@@ -8,7 +8,7 @@ use std::num::NonZeroUsize;
 use crate::query::When;
 use crate::token::variance::invariant::{
     BoundaryTerm, Breadth, Depth, Finalize, Invariant, InvariantBound, InvariantTerm, One, Text,
-    UnitBound, Zero,
+    TreeTerm, UnitBound, Zero,
 };
 use crate::token::variance::natural::{
     BoundedVariantRange, NaturalRange, OpenedUpperBound, VariantRange,

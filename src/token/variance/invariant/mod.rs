@@ -1,16 +1,19 @@
+mod depth;
 mod term;
 mod text;
 
 use std::num::NonZeroUsize;
 
-use crate::query::When;
 use crate::token::variance::natural::{
     define_natural_invariant, BoundedVariantRange, OpenedUpperBound,
 };
-use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
+use crate::token::variance::ops::{Conjunction, Disjunction, Product};
 use crate::token::variance::{Boundedness, TokenVariance};
 
-pub use crate::token::variance::invariant::term::{BoundaryTerm, SeparatedTerm, Termination};
+pub use crate::token::variance::invariant::depth::Depth;
+pub use crate::token::variance::invariant::term::{
+    BoundaryTerm, Coalescence, DisjunctiveTerm, SeparatedTerm, Termination, TreeTerm,
+};
 pub use crate::token::variance::invariant::text::{IntoNominalText, IntoStructuralText, Text};
 
 pub type InvariantTerm<T> = <T as Invariant>::Term;
@@ -133,47 +136,6 @@ impl Invariant for Breadth {
 
     fn into_lower_bound(self) -> Boundedness<Self::Bound> {
         ().into()
-    }
-}
-
-define_natural_invariant!(
-    /// Depth of a glob expression.
-    Depth => BoundaryTerm,
-);
-
-impl TokenVariance<Depth> {
-    pub fn is_exhaustive(&self) -> bool {
-        !self.has_upper_bound()
-    }
-}
-
-impl BoundaryTerm<Depth> {
-    pub fn is_exhaustive(&self) -> When {
-        match self {
-            BoundaryTerm::Conjunctive(SeparatedTerm(_, ref term)) => term.is_exhaustive().into(),
-            BoundaryTerm::Disjunctive(ref term) => term
-                .branches()
-                .map(AsRef::as_ref)
-                .map(TokenVariance::<Depth>::is_exhaustive)
-                .map(When::from)
-                .reduce(When::certainty)
-                .unwrap_or(When::Never),
-        }
-    }
-}
-
-impl Finalize for SeparatedTerm<TokenVariance<Depth>> {
-    type Output = TokenVariance<Depth>;
-
-    fn finalize(self) -> Self::Output {
-        use Termination::{Closed, Open};
-
-        let SeparatedTerm(termination, term) = self;
-        match termination {
-            Open => ops::conjunction(term, One::one()),
-            Closed => term.map_invariant(|term| term.map(|term| term.saturating_sub(1))),
-            _ => term,
-        }
     }
 }
 

@@ -7,7 +7,7 @@ use crate::token::variance::ops::{self, BinaryOperand, Conjunction, Disjunction,
 use crate::token::variance::{Bounded, Boundedness, Unbounded, Variance};
 
 macro_rules! impl_natural_invariant {
-    ($name:ident => $term:ident $(,)?) => {
+    ($name:ident => $term:ty $(,)?) => {
         const _: () = {
             use std::num::NonZeroUsize;
 
@@ -68,7 +68,7 @@ macro_rules! impl_natural_invariant {
             }
 
             impl Invariant for $name {
-                type Term = $term<$name>;
+                type Term = $term;
                 type Bound = BoundedVariantRange;
 
                 fn bound(lhs: Self, rhs: Self) -> Boundedness<Self::Bound> {
@@ -143,9 +143,9 @@ pub(crate) use impl_natural_invariant;
 
 macro_rules! define_natural_invariant {
     ($(#[$attr:meta])* $name:ident $(,)?) => {
-        define_natural_invariant!($(#[$attr])* $name => TokenVariance);
+        define_natural_invariant!($(#[$attr])* $name => TokenVariance<$name>);
     };
-    ($(#[$attr:meta])* $name:ident => $term:ident $(,)?) => {
+    ($(#[$attr:meta])* $name:ident => $term:ty $(,)?) => {
         $(#[$attr])*
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         #[repr(transparent)]

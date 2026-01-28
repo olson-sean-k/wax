@@ -1,7 +1,8 @@
 #[cfg(feature = "miette")]
 use miette::Diagnostic;
-use regex_syntax::hir::{self, Hir};
+use regex_syntax::hir;
 use std::borrow::Borrow;
+use std::collections::VecDeque;
 #[cfg(feature = "miette")]
 use std::fmt::Display;
 use thiserror::Error;
@@ -9,16 +10,27 @@ use thiserror::Error;
 pub use regex_automata::meta::Regex;
 
 use crate::token::walk::{Fold, FoldPosition, Forward};
-use crate::token::{self, Archetype, BranchKind, ConcatenationTree, LeafKind};
+use crate::token::{
+    self, ops, Archetype, BoundaryTerm, BranchKind, Composition, ConcatenationTree, Conjunction,
+    Finalize, LeafKind, SeparatedTerm, Termination, TreeTerm,
+};
 use crate::IteratorExt as _;
 
+impl Conjunction for hir::Hir {
+    type Output = Self;
+
+    fn conjunction(self, rhs: Self) -> Self::Output {
+        hir::Hir::concat(vec![self, rhs])
+    }
+}
+
 trait IntoHir {
-    fn into_hir(self) -> Hir;
+    fn into_hir(self) -> hir::Hir;
 }
 
 impl IntoHir for hir::ClassUnicode {
-    fn into_hir(self) -> Hir {
-        Hir::class(hir::Class::Unicode(self))
+    fn into_hir(self) -> hir::Hir {
+        hir::Hir::class(hir::Class::Unicode(self))
     }
 }
 
@@ -86,8 +98,8 @@ fn separator() -> hir::ClassUnicode {
     hir::ClassUnicode::new([hir::ClassUnicodeRange::new(MAIN_SEPARATOR, MAIN_SEPARATOR)])
 }
 
-fn case_folded_literal(text: impl AsRef<str>) -> Hir {
-    Hir::concat(
+fn case_folded_literal(text: impl AsRef<str>) -> hir::Hir {
+    hir::Hir::concat(
         text.as_ref()
             .chars()
             .map(|point| hir::ClassUnicode::new([hir::ClassUnicodeRange::new(point, point)]))
@@ -96,7 +108,7 @@ fn case_folded_literal(text: impl AsRef<str>) -> Hir {
                 hir
             })
             .map(hir::Class::Unicode)
-            .map(Hir::class)
+            .map(hir::Hir::class)
             .collect(),
     )
 }
@@ -112,16 +124,273 @@ pub fn case_folded_eq(lhs: impl AsRef<str>, rhs: impl AsRef<str>) -> bool {
     })
 }
 
+// <*/> => Last(ZeroOrMore)
+// x<*/> => [Open(Hir(x)), Last(ZeroOrMore(*/))]
+//          {Open(Hir(x)), Last(Hir(x*/))}
+// <*/>* => [Last(ZeroOrMore), Open(Many(None,None))]
+//          {Open(Many(None,None)), Open(Many(Hir,None))}
+// x<*/>* => [{Open(Hir(x)), Last(Hir(x*/))}, Open(Many(None,Hir(*),None))]
+//           {Open(Hir(x*)), Open(Many(Hir(x*/),Hir(*),None))}
+// {a/,b} => {Last(Hir(a/)), Open(Hir(b))}
+// {a/,b}* => [{Last(Hir(a/)), Open(Hir(b))}, Open(Many(None,Hir(*),None))]
+//            {Open(Many(Hir(a/),Hir(*),None)), Open(Hir(b*))}
+// x<*/>* => [Open(Hir(x)),{Open(Hir(@)),Last(Hir(<*/:1,>))},Open(ZeroOrOne(Only([*])))]
+//           [{Open(Hir(x)),Last(Hir(x<*/:1,>))},Open(ZeroOrOne(Only([*])))]
+//           {Open(Hir(x<?:0,>)),Open(ZeroOrOne(Left(Hir(x<*/:1,>),[*])))}
+//        F= Hir({x<?:0,>,x<*/:1,><?:1,>})
+// <a:0,5>* => [Open(ZeroOrOne(Only([a]))),Open(ZeroOrOne(Only([*])))]
+//             Open(ZeroOrOne(Only([a,*])))
+//          F= Hir({<a:1,5><?:0,>,<a:0,5><?:1,>})
+// $<a>b => [Open(ZeroOrOne(Only([$]))),Open(ZeroOrOne(Only([a]))),Open(Hir(b))]
+//          [Open(ZeroOrOne(Only([$,a]))),Open(Hir(b))]
+//          Open(Hir(<#:0,><a:0,>b))
+// */a => [Open(ZeroOrOne(Only([*]))),Closed(Hir(/)),Open(Hir(a))]
+//        [Last(ZeroOrOne(Right([*],Hir(/)))),Open(Hir(a))]
+//        Open(ZeroOrOne(Right([*],Hir(/a))))
+// {a/,b}* => [{Last(Hir(a/)),Open(Hir(b))},Open(ZeroOrOne(Only[*]))]
+//            {Open(ZeroOrOne(Left(Hir(a/),[*]))),Open(Hir(b<?:0,>))}
 pub fn compile<'t, T>(tree: impl Borrow<T>) -> Result<Regex, CompileError>
 where
     T: ConcatenationTree<'t>,
 {
+    impl Conjunction for BoundaryTerm<Deferred> {
+        type Output = Self;
+
+        fn conjunction(self, rhs: Self) -> Self::Output {
+            use Composition::{Conjunctive, Disjunctive};
+
+            //match (self, rhs) {
+            //    (Conjunctive(lhs), Conjunctive(rhs)) => ops::conjunction(lhs, rhs),
+            //    (Conjunctive(lhs), Disjunctive(rhs)) => ops::conjunction(lhs, rhs),
+            //    (Disjunctive(lhs), Conjunctive(rhs)) => ops::conjunction(lhs, rhs),
+            //    (Disjunctive(lhs), Disjunctive(rhs)) => ops::conjunction(lhs, rhs),
+            //}
+            todo!()
+        }
+    }
+
+    impl Conjunction for SeparatedTerm<Deferred> {
+        type Output = BoundaryTerm<Deferred>;
+
+        fn conjunction(self, rhs: Self) -> Self::Output {
+            todo!()
+        }
+    }
+
+    trait Capture {
+        fn capture(self, index: u32) -> Self;
+    }
+
+    trait IntoRepetition {
+        fn zero_or_more(self) -> hir::Hir;
+
+        fn at_least_one(self) -> hir::Hir;
+    }
+
+    #[derive(Clone, Debug)]
+    struct MaybeZero {
+        hir: hir::Hir,
+        max: Option<u32>,
+        is_greedy: bool,
+    }
+
+    impl MaybeZero {
+        fn into_repetition(self, min: u32) -> hir::Repetition {
+            let MaybeZero {
+                hir,
+                max,
+                is_greedy,
+            } = self;
+            hir::Repetition {
+                min,
+                max,
+                greedy: self.is_greedy,
+                sub: Box::new(hir),
+            }
+        }
+    }
+
+    impl Capture for MaybeZero {
+        fn capture(mut self, index: u32) -> Self {
+            self.hir = hir::Hir::capture(hir::Capture {
+                index,
+                name: None,
+                sub: Box::new(self.hir),
+            });
+            self
+        }
+    }
+
+    impl Finalize for MaybeZero {
+        type Output = hir::Hir;
+
+        fn finalize(self) -> Self::Output {
+            self.at_least_one()
+        }
+    }
+
+    impl IntoRepetition for MaybeZero {
+        fn zero_or_more(self) -> hir::Hir {
+            hir::Hir::repetition(self.into_repetition(0))
+        }
+
+        fn at_least_one(self) -> hir::Hir {
+            hir::Hir::repetition(self.into_repetition(1))
+        }
+    }
+
+    impl IntoRepetition for VecDeque<MaybeZero> {
+        fn zero_or_more(self) -> hir::Hir {
+            hir::Hir::concat(self.into_iter().map(MaybeZero::zero_or_more).collect())
+        }
+
+        fn at_least_one(self) -> hir::Hir {
+            // TODO: What about captures? How does `regex` handle identical capture indices, in
+            //       particular when they are composed into alternatives?
+            hir::Hir::alternation(
+                (0..self.len())
+                    .map(|at_least_one_index| {
+                        hir::Hir::concat(
+                            self.iter()
+                                .cloned()
+                                .enumerate()
+                                .map(|(index, repetition)| {
+                                    if at_least_one_index == index {
+                                        repetition.at_least_one()
+                                    }
+                                    else {
+                                        repetition.zero_or_more()
+                                    }
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    #[derive(Debug)]
+    struct ZeroOrOneLeft(pub Box<Deferred<ZeroOrOneRight>>, pub MaybeZero);
+
+    impl Finalize for ZeroOrOneLeft {
+        type Output = hir::Hir;
+
+        fn finalize(self) -> Self::Output {
+            let ZeroOrOneLeft(left, repetition) = self;
+            hir::Hir::concat(vec![
+                left.finalize(),
+                repetition.finalize(),
+            ])
+        }
+    }
+
+    #[derive(Debug)]
+    struct ZeroOrOneRight(pub MaybeZero, pub Box<Deferred<ZeroOrOneLeft>>);
+
+    impl<N> Conjunction<Deferred<N>> for ZeroOrOneRight {
+        type Output = TreeTerm<Self>;
+
+        fn conjunction(self, rhs: Deferred<N>) -> Self::Output {
+            todo!()
+        }
+    }
+
+    impl Finalize for ZeroOrOneRight {
+        type Output = hir::Hir;
+
+        fn finalize(self) -> Self::Output {
+            let ZeroOrOneRight(repetition, right) = self;
+            hir::Hir::concat(vec![
+                repetition.finalize(),
+                right.finalize(),
+            ])
+        }
+    }
+
+    // TODO: It looks like this would need an ordered vector of `MaybeZero`s for when the
+    //       repetition components of `ZeroOrOne`s are conjoined. In that case, there is no way to
+    //       encode the repetitions into a `Hir` until the lower bound is determined. Moreover, the
+    //       pattern may get nasty: it looks like it may require an alternation with N branches
+    //       wherein one of the repetitions has a lower bound of one.
+    #[derive(Debug)]
+    enum ZeroOrOne {
+        Only(MaybeZero),
+        Left(ZeroOrOneLeft),
+        Right(ZeroOrOneRight),
+    }
+
+    impl Finalize for ZeroOrOne {
+        type Output = hir::Hir;
+
+        fn finalize(self) -> Self::Output {
+            match self {
+                ZeroOrOne::Left(left) => left.finalize(),
+                ZeroOrOne::Only(only) => only.finalize(),
+                ZeroOrOne::Right(right) => right.finalize(),
+            }
+        }
+    }
+
+    //#[derive(Debug)]
+    //struct ZeroAndMaybeOne(pub MaybeZero);
+
+    //impl Finalize for ZeroAndMaybeOne {
+    //    type Output = hir::Hir;
+
+    //    fn finalize(self) -> Self::Output {
+    //        self.zero_or_more()
+    //    }
+    //}
+
+    #[derive(Debug)]
+    enum Deferred<N = ZeroOrOne> {
+        Ready(hir::Hir),
+        ZeroOrOne(N),
+        // TODO: This variant is not necessary. A couple observations:
+        //
+        //       1. Any token/term representing some kind of repetition falls into this category if
+        //          it (or its composition) has a termination. Today, this is only possible with
+        //          repetition tokens. For example, `<a/>` but NOT `<a>` NOR `<a/b>`.
+        //       2. When this happens, the token can be IMMEDIATELY rendered as a disjunctive term!
+        //          For example, `<a/>` is correctly represented by the term
+        //          `{Open(Hir(@)),Last(Hir(<a/:1,>))}`, where `@` means "empty". This combines
+        //          properly with subsequent terms.
+        //ZeroAndMaybeOne(ZeroAndMaybeOne),
+    }
+
+    impl<N> Capture for Deferred<N>
+    where
+        N: Capture,
+    {
+        fn capture(self, index: u32) -> Self {
+            match self {
+                Deferred::Ready(hir) => Deferred::Ready(hir.capture(index)),
+                Deferred::ZeroOrOne(repetition) => Deferred::ZeroOrOne(repetition.capture(index)),
+            }
+        }
+    }
+
+    impl<N> Finalize for Deferred<N>
+    where
+        N: Finalize<Output = hir::Hir>,
+    {
+        type Output = hir::Hir;
+
+        fn finalize(self) -> Self::Output {
+            match self {
+                Deferred::Ready(hir) => hir,
+                Deferred::ZeroOrOne(repetition) => repetition.finalize(),
+            }
+        }
+    }
+
     #[derive(Debug, Default)]
     struct Compile;
 
     impl<'t, A> Fold<'t, A> for Compile {
         type Sequencer = Forward;
-        type Term = Hir;
+        type Term = hir::Hir;
 
         fn sequencer() -> Self::Sequencer {
             Forward
@@ -136,22 +405,18 @@ where
             use BranchKind::{Alternation, Concatenation, Repetition};
 
             Some(match branch {
-                Alternation(_) => Hir::alternation(terms),
-                Concatenation(_) => Hir::concat(terms),
+                Alternation(_) => hir::Hir::alternation(terms),
+                Concatenation(_) => hir::Hir::concat(terms),
                 Repetition(ref repetition) => {
                     let (min, max) = repetition.bound_specification();
-                    Hir::repetition(hir::Repetition {
+                    hir::Hir::repetition(hir::Repetition {
                         min: u32::try_from(min).unwrap_or(u32::MAX),
                         max: max.map(u32::try_from).transpose().unwrap_or(Some(u32::MAX)),
                         greedy: true,
-                        sub: Box::new(Hir::concat(terms)),
+                        sub: Box::new(hir::Hir::concat(terms)),
                     })
                 },
             })
-        }
-
-        fn finalize(&mut self, _branch: &BranchKind<'t, A>, term: Self::Term) -> Self::Term {
-            term
         }
 
         fn term(&mut self, position: impl FoldPosition<'t, A>, leaf: &LeafKind<'t>) -> Self::Term {
@@ -185,7 +450,7 @@ where
                         self::case_folded_literal(literal.text())
                     }
                     else {
-                        Hir::literal(literal.text().as_bytes())
+                        hir::Hir::literal(literal.text().as_bytes())
                     }
                 },
                 Separator(_) => {
@@ -193,35 +458,35 @@ where
                         self::separator().into_hir()
                     }
                     else {
-                        Hir::alternation(vec![
+                        hir::Hir::alternation(vec![
                             self::separator().into_hir(),
-                            Hir::look(hir::Look::End),
+                            hir::Hir::look(hir::Look::End),
                         ])
                     }
                 },
                 Wildcard(ref wildcard) => match wildcard {
-                    One => Hir::class(hir::Class::Unicode(self::separator().negated())),
-                    Tree { ref has_root } => Hir::alternation(vec![
-                        Hir::concat(vec![
+                    One => hir::Hir::class(hir::Class::Unicode(self::separator().negated())),
+                    Tree { ref has_root } => hir::Hir::alternation(vec![
+                        hir::Hir::concat(vec![
                             if *has_root {
                                 self::separator().into_hir()
                             }
                             else {
-                                Hir::empty()
+                                hir::Hir::empty()
                             },
-                            Hir::repetition(hir::Repetition {
+                            hir::Hir::repetition(hir::Repetition {
                                 min: 0,
                                 max: None,
                                 greedy: true,
-                                sub: Box::new(Hir::dot(hir::Dot::AnyChar)),
+                                sub: Box::new(hir::Hir::dot(hir::Dot::AnyChar)),
                             }),
-                            Hir::alternation(vec![
+                            hir::Hir::alternation(vec![
                                 self::separator().into_hir(),
-                                Hir::look(hir::Look::End),
+                                hir::Hir::look(hir::Look::End),
                             ]),
                         ]),
                         self::separator().into_hir(),
-                        Hir::empty(),
+                        hir::Hir::empty(),
                     ]),
                     // TODO: Adjacency and simple `Hir` terms are insufficient for any tokens that
                     //       represent some kind of repetition like this. Likely, some kind of
@@ -238,7 +503,11 @@ where
                     //
                     //       This of course applies to repetition tokens too. `a/<x>/b` must become
                     //       `a/<x:1,>/b`. Similarly, `{a/,b}<x>` must be equivalent to
-                    //       `{a/<x:1,>,b<x>}`.
+                    //       `{a/<x:1,>,b<x>}`. However, this is only the case for repetitions with
+                    //       open sub-globs (no separators at terminations). This is important not
+                    //       only for correctness, but also for avoiding the need for indirection
+                    //       in term types to prevent infinitely sized types (because an
+                    //       intermediate `ZeroOrMore` may need to contain itself).
                     //
                     //       Moreover, it may not be possible to encode this in the HIR with only
                     //       additional HIR nodes. There is no notion of "this node, but never
@@ -254,7 +523,7 @@ where
                     //       always remain zero. Even if adjacent boundary tokens were allowed,
                     //       then they would also need to coalesce, and patterns like `{a/,b}**/`
                     //       would be equivalent to `{a,b}/**/` and `{a/**/,b/**/}`.
-                    ZeroOrMore { ref is_greedy } => Hir::repetition(hir::Repetition {
+                    ZeroOrMore { ref is_greedy } => hir::Hir::repetition(hir::Repetition {
                         min: if adjacency.is_component() { 1 } else { 0 },
                         max: None,
                         greedy: *is_greedy,
@@ -266,8 +535,8 @@ where
     }
 
     let mut capture_group_index = 0u32;
-    let hir = Hir::concat(
-        Some(Hir::look(hir::Look::Start))
+    let hir = hir::Hir::concat(
+        Some(hir::Hir::look(hir::Look::Start))
             .into_iter()
             .chain(
                 tree.borrow()
@@ -282,12 +551,14 @@ where
                         //       This is ideal, because it allows `Token`s to cleanly abstract what
                         //       captures (i.e., `Token::is_capturing` is both meaningful and
                         //       authoritative).
-                        let hir = token.fold_with_adjacent(Compile).unwrap_or_else(Hir::empty);
+                        let hir = token
+                            .fold_with_adjacent(Compile)
+                            .unwrap_or_else(hir::Hir::empty);
                         if token.into_item().is_capturing() {
                             capture_group_index = capture_group_index
                                 .checked_add(1)
                                 .expect("overflow in capture group index");
-                            Hir::capture(hir::Capture {
+                            hir::Hir::capture(hir::Capture {
                                 index: capture_group_index,
                                 name: None,
                                 sub: Box::new(hir),
@@ -298,7 +569,7 @@ where
                         }
                     }),
             )
-            .chain(Some(Hir::look(hir::Look::End)))
+            .chain(Some(hir::Hir::look(hir::Look::End)))
             .collect(),
     );
     // TODO: Remove this.

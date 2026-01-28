@@ -15,9 +15,8 @@ use std::str;
 use crate::diagnostics::{Span, Spanned};
 use crate::query::When;
 use crate::token::variance::invariant::{
-    BoundaryTerm, Finalize, IntoNominalText, IntoStructuralText, InvariantTerm, One, Zero,
+    IntoNominalText, IntoStructuralText, InvariantTerm, One, Zero,
 };
-use crate::token::variance::ops;
 use crate::token::variance::{TreeExhaustiveness, TreeVariance, VarianceFold, VarianceTerm};
 use crate::token::walk::{BranchFold, Fold, FoldMap, FoldPosition, Starting, TokenEntry};
 use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
@@ -26,6 +25,15 @@ pub use crate::token::parse::{parse, ParseError, ROOT_SEPARATOR_EXPRESSION};
 pub use crate::token::variance::invariant::{Breadth, Depth, Invariant, Size, Text};
 pub use crate::token::variance::natural::{BoundedVariantRange, NaturalRange, VariantRange};
 pub use crate::token::variance::{Boundedness, TokenVariance, Variance};
+
+// TODO: Reorganize modules. Folding, operations, terms, etc. are **not** exclusive to variance.
+//       Instead, `variance` should be a top-level module and operations, terms, etc. should be a
+//       part of a more complete `token::walk` module. This enables sharing this code more
+//       naturally.
+pub use crate::token::variance::invariant::{
+    BoundaryTerm, Finalize, SeparatedTerm, Termination, TreeTerm,
+};
+pub use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
 
 // TODO: Tree representations of expressions are intrusive and only differ in their annotations.
 //       This supports some distinctions between tree types, but greatly limits the ability to
