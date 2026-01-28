@@ -7,12 +7,12 @@ use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 use thiserror::Error;
 
+use crate::PATHS_ARE_CASE_INSENSITIVE;
 use crate::diagnostics::{LocatedError, Span};
 use crate::token::{
     Alternation, Archetype, BranchKind, Class, Concatenation, Evaluation, ExpressionMetadata,
     LeafKind, Literal, Repetition, Separator, Token, TokenTopology, Tokenized, Wildcard,
 };
-use crate::PATHS_ARE_CASE_INSENSITIVE;
 
 type Expression<'i> = Located<'i, str>;
 type Input<'i> = Stateful<Expression<'i>, ParserState>;
@@ -172,11 +172,11 @@ enum FlagToggle {
     CaseInsensitive(bool),
 }
 
-pub fn parse(expression: &str) -> Result<Tokenized<'_, ExpressionMetadata>, ParseError> {
+pub fn parse(expression: &str) -> Result<Tokenized<'_, ExpressionMetadata>, ParseError<'_>> {
     use nom::bytes::complete as bytes;
     use nom::character::complete as character;
     use nom::error;
-    use nom::{branch, combinator, multi, sequence, IResult, Parser};
+    use nom::{IResult, Parser, branch, combinator, multi, sequence};
 
     use crate::token::parse::FlagToggle::CaseInsensitive;
 
@@ -557,7 +557,7 @@ pub fn parse(expression: &str) -> Result<Tokenized<'_, ExpressionMetadata>, Pars
 pub mod harness {
     use expect_macro::expect;
 
-    use crate::token::{parse, ExpressionMetadata, Tokenized};
+    use crate::token::{ExpressionMetadata, Tokenized, parse};
 
     pub fn assert_parse_expression_is_ok(expression: &str) -> Tokenized<'_, ExpressionMetadata> {
         expect!(

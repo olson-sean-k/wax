@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 
 use crate::query::When;
 use crate::token::variance::natural::{
-    define_natural_invariant, BoundedVariantRange, OpenedUpperBound,
+    BoundedVariantRange, OpenedUpperBound, define_natural_invariant,
 };
 use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
 use crate::token::variance::{Boundedness, TokenVariance};
@@ -150,8 +150,8 @@ impl TokenVariance<Depth> {
 impl BoundaryTerm<Depth> {
     pub fn is_exhaustive(&self) -> When {
         match self {
-            BoundaryTerm::Conjunctive(SeparatedTerm(_, ref term)) => term.is_exhaustive().into(),
-            BoundaryTerm::Disjunctive(ref term) => term
+            BoundaryTerm::Conjunctive(SeparatedTerm(_, term)) => term.is_exhaustive().into(),
+            BoundaryTerm::Disjunctive(term) => term
                 .branches()
                 .map(AsRef::as_ref)
                 .map(TokenVariance::<Depth>::is_exhaustive)

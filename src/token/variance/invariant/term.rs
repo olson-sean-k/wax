@@ -2,10 +2,10 @@ use itertools::Itertools;
 use std::collections::HashSet;
 use std::hash::Hash;
 
+use crate::token::Composition;
 use crate::token::variance::invariant::{Finalize, Invariant, One, Zero};
 use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
 use crate::token::variance::{Boundedness, TokenVariance, Variance};
-use crate::token::Composition;
 
 pub type BoundaryTerm<T> = TreeTerm<SeparatedTerm<TokenVariance<T>>>;
 
@@ -23,7 +23,7 @@ where
 
     pub fn as_variance(&self) -> Variance<&T, Option<&Boundedness<T::Bound>>> {
         match self {
-            BoundaryTerm::Conjunctive(ref term) => term.1.as_ref().map_variant(Some),
+            BoundaryTerm::Conjunctive(term) => term.1.as_ref().map_variant(Some),
             BoundaryTerm::Disjunctive(_) => Variance::Variant(None),
         }
     }

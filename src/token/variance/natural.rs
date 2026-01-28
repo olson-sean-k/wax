@@ -178,7 +178,7 @@ impl Cobound for NaturalBound {
 
         match self {
             Variant(Unbounded) => Unbounded,
-            Variant(Bounded(ref bound)) => Bounded(bound.get()),
+            Variant(Bounded(bound)) => Bounded(bound.get()),
             Invariant(Zero) => Bounded(0),
         }
     }
@@ -313,24 +313,24 @@ impl NaturalRange {
 
     pub fn lower(&self) -> NaturalLower {
         match self {
-            Variance::Invariant(ref n) => NaturalBound::from(*n).into_lower(),
-            Variance::Variant(ref range) => range.lower().map(Variance::Variant),
+            Variance::Invariant(n) => NaturalBound::from(*n).into_lower(),
+            Variance::Variant(range) => range.lower().map(Variance::Variant),
         }
     }
 
     pub fn upper(&self) -> NaturalUpper {
         match self {
-            Variance::Invariant(ref n) => NaturalBound::from(*n).into_upper(),
-            Variance::Variant(ref range) => range.upper().map(Variance::Variant),
+            Variance::Invariant(n) => NaturalBound::from(*n).into_upper(),
+            Variance::Variant(range) => range.upper().map(Variance::Variant),
         }
     }
 
     pub fn is_one(&self) -> bool {
-        self.as_ref().invariant().map_or(false, |&n| n == 1)
+        self.as_ref().invariant().is_some_and(|&n| n == 1)
     }
 
     pub fn is_zero(&self) -> bool {
-        self.as_ref().invariant().map_or(false, |&n| n == 0)
+        self.as_ref().invariant().is_some_and(|&n| n == 0)
     }
 }
 
@@ -407,7 +407,7 @@ impl<T> Boundedness<T> {
 
     pub fn as_ref(&self) -> Boundedness<&T> {
         match self {
-            Bounded(ref bound) => Bounded(bound),
+            Bounded(bound) => Bounded(bound),
             _ => Unbounded,
         }
     }
@@ -556,10 +556,10 @@ where
     fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
         use Ordering::{Equal, Greater, Less};
 
-        match (self.bound.cobound(), rhs.bound.cobound()) {
+        match (&self.bound.cobound(), &rhs.bound.cobound()) {
             (Unbounded, Bounded(_)) => Some(Less),
             (Bounded(_), Unbounded) => Some(Greater),
-            (Bounded(ref lhs), Bounded(ref rhs)) => lhs.partial_cmp(rhs),
+            (Bounded(lhs), Bounded(rhs)) => lhs.partial_cmp(rhs),
             _ => Some(Equal),
         }
     }
@@ -598,10 +598,10 @@ where
     fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
         use Ordering::{Equal, Greater, Less};
 
-        match (self.bound.cobound(), rhs.bound.cobound()) {
+        match (&self.bound.cobound(), &rhs.bound.cobound()) {
             (Unbounded, Bounded(_)) => Some(Greater),
             (Bounded(_), Unbounded) => Some(Less),
-            (Bounded(ref lhs), Bounded(ref rhs)) => lhs.partial_cmp(rhs),
+            (Bounded(lhs), Bounded(rhs)) => lhs.partial_cmp(rhs),
             _ => Some(Equal),
         }
     }
@@ -704,7 +704,7 @@ impl BoundedVariantRange {
         use BoundedVariantRange::{Both, Lower, Upper};
 
         match self {
-            Lower(ref lower) | Both { ref lower, .. } => Bounded(*lower),
+            Lower(lower) | Both { lower, .. } => Bounded(*lower),
             Upper(_) => Unbounded,
         }
         .into_lower()
@@ -714,12 +714,9 @@ impl BoundedVariantRange {
         use BoundedVariantRange::{Both, Lower, Upper};
 
         match self {
-            Both {
-                ref lower,
-                ref extent,
-            } => Bounded(Self::upper_from_lower_extent(*lower, *extent)),
+            Both { lower, extent } => Bounded(Self::upper_from_lower_extent(*lower, *extent)),
             Lower(_) => Unbounded,
-            Upper(ref upper) => Bounded(*upper),
+            Upper(upper) => Bounded(*upper),
         }
         .into_upper()
     }

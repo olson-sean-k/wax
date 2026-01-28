@@ -58,10 +58,10 @@ pub mod walk;
 /// }
 /// ```
 pub mod prelude {
+    pub use crate::Program as _;
     pub use crate::query::LocatedError as _;
     #[cfg(feature = "walk")]
     pub use crate::walk::{Entry as _, FileIterator as _, PathExt as _};
-    pub use crate::Program as _;
 }
 
 #[cfg(feature = "miette")]
@@ -142,6 +142,7 @@ impl StrExt for str {
 ///         "**/*.tex",
 ///     ]),
 /// ])?; // Defer error handling until the here.
+///
 /// # Ok(())
 /// # }
 /// ```
@@ -359,13 +360,13 @@ impl BuildError {
     /// [`LocatedError`]: crate::query::LocatedError
     /// [`Span`]: crate::query::Span
     pub fn locations(&self) -> impl Iterator<Item = &dyn LocatedError> {
-        let locations: Vec<_> = match self.kind {
-            BuildErrorKind::Parse(ref error) => error
+        let locations: Vec<_> = match &self.kind {
+            BuildErrorKind::Parse(error) => error
                 .locations()
                 .iter()
                 .map(|location| location as &dyn LocatedError)
                 .collect(),
-            BuildErrorKind::Rule(ref error) => error
+            BuildErrorKind::Rule(error) => error
                 .locations()
                 .iter()
                 .map(|location| location as &dyn LocatedError)
@@ -953,7 +954,7 @@ where
 // It is possible to call this function using a mutable reference, which may appear to mutate the
 // parameter in place.
 #[must_use]
-pub fn escape(unescaped: &str) -> Cow<str> {
+pub fn escape(unescaped: &str) -> Cow<'_, str> {
     const ESCAPE: char = '\\';
 
     if unescaped.chars().any(is_meta_character) {

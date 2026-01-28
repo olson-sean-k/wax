@@ -20,8 +20,8 @@ impl DepthMin {
     /// The following example places a minimum bound on the depth of a walk.
     ///
     /// ```rust,no_run
-    /// use wax::walk::DepthMin;
     /// use wax::Glob;
+    /// use wax::walk::DepthMin;
     ///
     /// for entry in Glob::new("**")
     ///     .unwrap()
@@ -103,8 +103,8 @@ impl DepthMinMax {
     /// The following example places both a minimum and maximum bound on the depth of a walk.
     ///
     /// ```rust,no_run
-    /// use wax::walk::DepthMinMax;
     /// use wax::Glob;
+    /// use wax::walk::DepthMinMax;
     ///
     /// for entry in Glob::new("**")
     ///     .unwrap()
@@ -181,8 +181,8 @@ impl DepthBehavior {
     /// minimum depth (`None`).
     ///
     /// ```rust,no_run
-    /// use wax::walk::DepthBehavior;
     /// use wax::Glob;
+    /// use wax::walk::DepthBehavior;
     ///
     /// for entry in Glob::new("**")
     ///     .unwrap()
@@ -303,8 +303,8 @@ pub enum LinkBehavior {
 /// linked targets, use [`LinkBehavior::ReadTarget`].
 ///
 /// ```rust,no_run
-/// use wax::walk::LinkBehavior;
 /// use wax::Glob;
+/// use wax::walk::LinkBehavior;
 ///
 /// for entry in Glob::new("**")
 ///     .unwrap()

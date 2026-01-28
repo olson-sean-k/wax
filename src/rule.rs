@@ -111,7 +111,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let next = self.input.next();
-        self.adjacency.take().map(|adjacency| {
+        self.adjacency.take().inspect(|adjacency| {
             self.adjacency = match adjacency.clone() {
                 Adjacency::First {
                     item: left,
@@ -131,7 +131,6 @@ where
                 },
                 Adjacency::Only { .. } | Adjacency::Last { .. } => None,
             };
-            adjacency
         })
     }
 }
@@ -453,11 +452,7 @@ where
             CorrelatedError {
                 kind,
                 location: CorrelatedSpan::split_some(
-                    outer
-                        .map(Token::annotation)
-                        .map(A::span)
-                        .copied()
-                        .map(From::from),
+                    outer.map(Token::annotation).map(A::span).copied(),
                     *inner.annotation().span(),
                 ),
             }
@@ -508,9 +503,7 @@ where
         I: Iterator<Item = TokenEntry<'i, 't, A>>,
         P: FnMut(&'i Token<'t, A>) -> bool,
     {
-        token.map_or(false, |token| {
-            traversal(token).any(move |entry| predicate(entry.into_token()))
-        })
+        token.is_some_and(|token| traversal(token).any(move |entry| predicate(entry.into_token())))
     }
 
     fn is_boundary<A>(token: &Token<'_, A>) -> bool {
@@ -763,7 +756,7 @@ where
             .map(Adjacency::into_tuple)
         {
             match token.as_branch() {
-                Some(Alternation(ref alternation)) => {
+                Some(Alternation(alternation)) => {
                     outer = outer.or(left, right);
                     let diagnose = diagnose(tree.expression(), token, "in this alternation");
                     for token in alternation.tokens() {
@@ -775,7 +768,7 @@ where
                     }
                     tokens.extend(alternation.tokens());
                 },
-                Some(Repetition(ref repetition)) => {
+                Some(Repetition(repetition)) => {
                     outer = outer.or(left, right);
                     let diagnose = diagnose(tree.expression(), token, "in this repetition");
                     let token = repetition.token();
@@ -810,9 +803,7 @@ where
                 .as_repetition()
                 .map(Repetition::bound_specification)
                 .and_then(|(lower, upper)| upper.map(|upper| (lower, upper)))
-                .map_or(false, |(lower, upper)| {
-                    (lower > upper) || (lower == 0 && lower == upper)
-                })
+                .is_some_and(|(lower, upper)| (lower > upper) || (lower == 0 && lower == upper))
         })
     {
         Err(RuleError::new(
@@ -839,7 +830,7 @@ where
             token
                 .variance::<Size>()
                 .invariant()
-                .map_or(false, |size| size >= MAX_INVARIANT_SIZE)
+                .is_some_and(|size| size >= MAX_INVARIANT_SIZE)
         })
     {
         Err(RuleError::new(

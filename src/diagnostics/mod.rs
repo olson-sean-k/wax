@@ -104,15 +104,14 @@ impl CompositeSpan {
     #[cfg(feature = "miette")]
     pub fn labels(&self) -> Vec<LabeledSpan> {
         let label = Some(self.label.to_string());
-        match self.kind {
-            CompositeSpanKind::Span(ref span) => vec![LabeledSpan::new_with_span(label, *span)],
-            CompositeSpanKind::Correlated {
-                ref span,
-                ref correlated,
-            } => Some(LabeledSpan::new_with_span(label, *span))
-                .into_iter()
-                .chain(correlated.labels())
-                .collect(),
+        match &self.kind {
+            CompositeSpanKind::Span(span) => vec![LabeledSpan::new_with_span(label, *span)],
+            CompositeSpanKind::Correlated { span, correlated } => {
+                Some(LabeledSpan::new_with_span(label, *span))
+                    .into_iter()
+                    .chain(correlated.labels())
+                    .collect()
+            },
         }
     }
 }
@@ -125,10 +124,8 @@ impl Display for CompositeSpan {
 
 impl LocatedError for CompositeSpan {
     fn span(&self) -> Span {
-        match self.kind {
-            CompositeSpanKind::Span(ref span) | CompositeSpanKind::Correlated { ref span, .. } => {
-                *span
-            },
+        match &self.kind {
+            CompositeSpanKind::Span(span) | CompositeSpanKind::Correlated { span, .. } => *span,
         }
     }
 }
@@ -163,10 +160,10 @@ impl CorrelatedSpan {
     pub fn labels(&self) -> Vec<LabeledSpan> {
         let label = Some("here".to_string());
         match self {
-            CorrelatedSpan::Contiguous(ref span) => {
+            CorrelatedSpan::Contiguous(span) => {
                 vec![LabeledSpan::new_with_span(label, *span)]
             },
-            CorrelatedSpan::Split(ref left, ref right) => vec![
+            CorrelatedSpan::Split(left, right) => vec![
                 LabeledSpan::new_with_span(label.clone(), *left),
                 LabeledSpan::new_with_span(label, *right),
             ],

@@ -8,7 +8,7 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::iter;
 use std::mem;
-use std::path::{PathBuf, MAIN_SEPARATOR_STR};
+use std::path::{MAIN_SEPARATOR_STR, PathBuf};
 use std::slice;
 use std::str;
 
@@ -20,9 +20,9 @@ use crate::token::variance::invariant::{
 use crate::token::variance::ops;
 use crate::token::variance::{TreeExhaustiveness, TreeVariance, VarianceFold, VarianceTerm};
 use crate::token::walk::{BranchFold, Fold, FoldMap, Starting, TokenEntry};
-use crate::{StrExt as _, PATHS_ARE_CASE_INSENSITIVE};
+use crate::{PATHS_ARE_CASE_INSENSITIVE, StrExt as _};
 
-pub use crate::token::parse::{parse, ParseError, ROOT_SEPARATOR_EXPRESSION};
+pub use crate::token::parse::{ParseError, ROOT_SEPARATOR_EXPRESSION, parse};
 pub use crate::token::variance::invariant::{Breadth, Depth, Invariant, Size, Text};
 pub use crate::token::variance::natural::{BoundedVariantRange, NaturalRange, VariantRange};
 pub use crate::token::variance::{Boundedness, TokenVariance, Variance};
@@ -107,8 +107,8 @@ impl<C, D> Composition<C, D> {
 
     pub fn as_ref(&self) -> Composition<&C, &D> {
         match self {
-            Composition::Conjunctive(ref inner) => Composition::Conjunctive(inner),
-            Composition::Disjunctive(ref inner) => Composition::Disjunctive(inner),
+            Composition::Conjunctive(inner) => Composition::Conjunctive(inner),
+            Composition::Disjunctive(inner) => Composition::Disjunctive(inner),
         }
     }
 }
@@ -142,9 +142,7 @@ impl<T> Composition<T, T> {
 impl<T> AsMut<T> for Composition<T, T> {
     fn as_mut(&mut self) -> &mut T {
         match self {
-            Composition::Conjunctive(ref mut inner) | Composition::Disjunctive(ref mut inner) => {
-                inner
-            },
+            Composition::Conjunctive(inner) | Composition::Disjunctive(inner) => inner,
         }
     }
 }
@@ -152,7 +150,7 @@ impl<T> AsMut<T> for Composition<T, T> {
 impl<T> AsRef<T> for Composition<T, T> {
     fn as_ref(&self) -> &T {
         match self {
-            Composition::Conjunctive(ref inner) | Composition::Disjunctive(ref inner) => inner,
+            Composition::Conjunctive(inner) | Composition::Disjunctive(inner) => inner,
         }
     }
 }
@@ -297,7 +295,7 @@ impl<'t, A> Token<'t, A> {
         let mut tokens: VecDeque<Self> = [self.into_non_trivial()].into_iter().collect();
         while let Some(mut token) = tokens.pop_front() {
             match token.as_branch_mut() {
-                Some(BranchKind::Alternation(ref mut alternation)) => {
+                Some(BranchKind::Alternation(alternation)) => {
                     for token in alternation.0.drain(..).map(Token::into_non_trivial) {
                         if token.is_alternation() {
                             tokens.push_back(token);
@@ -376,8 +374,8 @@ impl<'t, A> Token<'t, A> {
         LeafKind<'t>: Unroot<A, Output = usize>,
     {
         let annotation = &mut self.annotation;
-        match self.topology {
-            TokenTopology::Leaf(ref mut leaf) => leaf.unroot(annotation),
+        match &mut self.topology {
+            TokenTopology::Leaf(leaf) => leaf.unroot(annotation),
             _ => 0,
         }
     }
@@ -474,7 +472,7 @@ impl<'t, A> Token<'t, A> {
         }
 
         let mut tokens = self.concatenation().iter().peekable();
-        if tokens.peek().map_or(false, |token| {
+        if tokens.peek().is_some_and(|token| {
             // This is a very general predicate, but at time of writing amounts to, "Is this a tree
             // wildcard?"
             token.has_root().is_always() && token.variance::<Text>().is_variant()
@@ -498,7 +496,7 @@ impl<'t, A> Token<'t, A> {
                         Some(_) => head,
                         None => checkpoint,
                     }
-                    .map_or_else(empty, Prefix::into_count_text)
+                    .map_or_else(empty, Prefix::into_count_text);
                 },
             }
         }
@@ -528,7 +526,7 @@ impl<'t, A> Token<'t, A> {
                         Composition::Disjunctive(_) => When::certainty,
                     })
                     .map(|term| {
-                        if let BranchKind::Repetition(ref repetition) = branch {
+                        if let BranchKind::Repetition(repetition) = branch {
                             if repetition.variance().lower().into_bound().is_unbounded() {
                                 return term.and(When::Sometimes);
                             }
@@ -556,9 +554,9 @@ impl<'t, A> Token<'t, A> {
     }
 
     pub fn is_capturing(&self) -> bool {
-        match self.topology {
-            TokenTopology::Branch(ref branch) => branch.is_capturing(),
-            TokenTopology::Leaf(ref leaf) => leaf.is_capturing(),
+        match &self.topology {
+            TokenTopology::Branch(branch) => branch.is_capturing(),
+            TokenTopology::Leaf(leaf) => leaf.is_capturing(),
         }
     }
 
@@ -584,78 +582,78 @@ impl<'t, A> Token<'t, A> {
 
 impl<'t, A> Token<'t, A> {
     pub fn as_branch(&self) -> Option<&BranchKind<'t, A>> {
-        match self.topology {
-            TokenTopology::Branch(ref branch) => Some(branch),
+        match &self.topology {
+            TokenTopology::Branch(branch) => Some(branch),
             _ => None,
         }
     }
 
     fn as_branch_mut(&mut self) -> Option<&mut BranchKind<'t, A>> {
-        match self.topology {
-            TokenTopology::Branch(ref mut branch) => Some(branch),
+        match &mut self.topology {
+            TokenTopology::Branch(branch) => Some(branch),
             _ => None,
         }
     }
 
     pub fn as_leaf(&self) -> Option<&LeafKind<'t>> {
-        match self.topology {
-            TokenTopology::Leaf(ref leaf) => Some(leaf),
+        match &self.topology {
+            TokenTopology::Leaf(leaf) => Some(leaf),
             _ => None,
         }
     }
 
     pub fn as_alternation(&self) -> Option<&Alternation<'t, A>> {
         self.as_branch().and_then(|branch| match branch {
-            BranchKind::Alternation(ref alternation) => Some(alternation),
+            BranchKind::Alternation(alternation) => Some(alternation),
             _ => None,
         })
     }
 
     pub fn as_class(&self) -> Option<&Class> {
         self.as_leaf().and_then(|leaf| match leaf {
-            LeafKind::Class(ref class) => Some(class),
+            LeafKind::Class(class) => Some(class),
             _ => None,
         })
     }
 
     pub fn as_concatenation(&self) -> Option<&Concatenation<'t, A>> {
         self.as_branch().and_then(|branch| match branch {
-            BranchKind::Concatenation(ref concatenation) => Some(concatenation),
+            BranchKind::Concatenation(concatenation) => Some(concatenation),
             _ => None,
         })
     }
 
     fn as_concatenation_mut(&mut self) -> Option<&mut Concatenation<'t, A>> {
         self.as_branch_mut().and_then(|branch| match branch {
-            BranchKind::Concatenation(ref mut concatenation) => Some(concatenation),
+            BranchKind::Concatenation(concatenation) => Some(concatenation),
             _ => None,
         })
     }
 
     pub fn as_literal(&self) -> Option<&Literal<'t>> {
         self.as_leaf().and_then(|leaf| match leaf {
-            LeafKind::Literal(ref literal) => Some(literal),
+            LeafKind::Literal(literal) => Some(literal),
             _ => None,
         })
     }
 
     pub fn as_repetition(&self) -> Option<&Repetition<'t, A>> {
         self.as_branch().and_then(|branch| match branch {
-            BranchKind::Repetition(ref repetition) => Some(repetition),
+            BranchKind::Repetition(repetition) => Some(repetition),
             _ => None,
         })
     }
 
     pub fn as_separator(&self) -> Option<&Separator> {
         self.as_leaf().and_then(|leaf| match leaf {
-            LeafKind::Separator(ref separator) => Some(separator),
+            LeafKind::Separator(separator) => Some(separator),
             _ => None,
         })
     }
 
     pub fn as_wildcard(&self) -> Option<&Wildcard> {
         self.as_leaf().and_then(|leaf| match leaf {
-            LeafKind::Wildcard(ref wildcard) => Some(wildcard),
+            LeafKind::Wildcard(wildcard) => Some(wildcard),
             _ => None,
         })
     }
@@ -787,9 +785,9 @@ impl<'t, A> BranchKind<'t, A> {
         use Composition::{Conjunctive, Disjunctive};
 
         match self {
-            Alternation(ref alternation) => Disjunctive(alternation.tokens()),
-            Concatenation(ref concatenation) => Conjunctive(concatenation.tokens()),
-            Repetition(ref repetition) => Conjunctive(slice::from_ref(repetition.token())),
+            Alternation(alternation) => Disjunctive(alternation.tokens()),
+            Concatenation(concatenation) => Conjunctive(concatenation.tokens()),
+            Repetition(repetition) => Conjunctive(slice::from_ref(repetition.token())),
         }
     }
 
@@ -831,9 +829,9 @@ where
         use BranchKind::{Alternation, Concatenation, Repetition};
 
         match self {
-            Alternation(ref alternation) => alternation.fold(terms),
-            Concatenation(ref concatenation) => concatenation.fold(terms),
-            Repetition(ref repetition) => repetition.fold(terms),
+            Alternation(alternation) => alternation.fold(terms),
+            Concatenation(concatenation) => concatenation.fold(terms),
+            Repetition(repetition) => repetition.fold(terms),
         }
     }
 
@@ -841,9 +839,9 @@ where
         use BranchKind::{Alternation, Concatenation, Repetition};
 
         match self {
-            Alternation(ref alternation) => alternation.finalize(term),
-            Concatenation(ref concatenation) => concatenation.finalize(term),
-            Repetition(ref repetition) => repetition.finalize(term),
+            Alternation(alternation) => alternation.finalize(term),
+            Concatenation(concatenation) => concatenation.finalize(term),
+            Repetition(repetition) => repetition.finalize(term),
         }
     }
 }
@@ -925,7 +923,7 @@ where
 
     fn unroot(&mut self, annotation: &mut A) -> Self::Output {
         match self {
-            LeafKind::Wildcard(ref mut wildcard) => Unroot::unroot(wildcard, annotation),
+            LeafKind::Wildcard(wildcard) => Unroot::unroot(wildcard, annotation),
             _ => Default::default(),
         }
     }
@@ -943,10 +941,10 @@ where
         use LeafKind::{Class, Literal, Separator, Wildcard};
 
         match self {
-            Class(ref class) => class.term(),
-            Literal(ref literal) => literal.term(),
-            Separator(ref separator) => separator.term(),
-            Wildcard(ref wildcard) => wildcard.term(),
+            Class(class) => class.term(),
+            Literal(literal) => literal.term(),
+            Separator(separator) => separator.term(),
+            Wildcard(wildcard) => wildcard.term(),
         }
     }
 }
@@ -1241,7 +1239,7 @@ impl<'t> VarianceTerm<Size> for Literal<'t> {
     fn term(&self) -> InvariantTerm<Size> {
         // TODO: This assumes that the size of graphemes in a casing set are the same. Is that
         //       correct?
-        Variance::Invariant(self.text.as_bytes().len().into())
+        Variance::Invariant(self.text.len().into())
     }
 }
 
@@ -1356,7 +1354,7 @@ impl VarianceTerm<Size> for Separator {
     fn term(&self) -> InvariantTerm<Size> {
         // TODO: This is incorrect. The compiled regular expression may ignore a terminating
         //       separator, in which case the size is a bounded range.
-        Variance::Invariant(Separator::INVARIANT_TEXT.as_bytes().len().into())
+        Variance::Invariant(Separator::INVARIANT_TEXT.len().into())
     }
 }
 
@@ -1376,7 +1374,7 @@ pub enum Wildcard {
 impl Wildcard {
     fn unroot(&mut self) -> bool {
         match self {
-            Wildcard::Tree { ref mut has_root } => mem::replace(has_root, false),
+            Wildcard::Tree { has_root } => mem::replace(has_root, false),
             _ => false,
         }
     }
@@ -1583,7 +1581,7 @@ mod tests {
     use rstest::{fixture, rstest};
     use std::path::Path;
 
-    use crate::token::{harness, parse, ExpressionMetadata, Token, TokenTree, Tokenized};
+    use crate::token::{ExpressionMetadata, Token, TokenTree, Tokenized, harness, parse};
 
     // This fixture constructs a `Tokenized` with the following tokens in its (filtered)
     // concatenation:

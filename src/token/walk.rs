@@ -13,14 +13,15 @@ use crate::token::{
 type TokenFeed<'i, 't, A> = (TokenEntry<'i, 't, A>, TreeResidue<TokenEntry<'i, 't, A>>);
 
 impl<'i, 't, A> Isomeric for TokenFeed<'i, 't, A> {
-    type Substituent<'a> = &'a TokenEntry<'i, 't, A>
+    type Substituent<'a>
+        = &'a TokenEntry<'i, 't, A>
     where
         Self: 'a;
 
     fn substituent(separation: &Separation<Self>) -> Self::Substituent<'_> {
         match separation {
-            Separation::Filtrate(ref filtrate) => filtrate.get(),
-            Separation::Residue(ref residue) => residue.get().get(),
+            Separation::Filtrate(filtrate) => filtrate.get(),
+            Separation::Residue(residue) => residue.get().get(),
         }
     }
 }
@@ -48,7 +49,7 @@ pub trait Fold<'t, A> {
     fn term(&mut self, leaf: &LeafKind<'t>) -> Self::Term;
 }
 
-impl<'f, 't, A, F> Fold<'t, A> for &'f mut F
+impl<'t, A, F> Fold<'t, A> for &mut F
 where
     F: Fold<'t, A>,
 {
@@ -237,7 +238,7 @@ impl<'t, A> Token<'t, A> {
         while let Some((token, depth)) = tokens.pop() {
             path.pop(depth);
             match token.topology() {
-                TokenTopology::Branch(ref branch) => {
+                TokenTopology::Branch(branch) => {
                     tokens.extend(
                         sequencer
                             .enqueue(Parent(branch))
@@ -246,7 +247,7 @@ impl<'t, A> Token<'t, A> {
                     );
                     path.push(branch);
                 },
-                TokenTopology::Leaf(ref leaf) => {
+                TokenTopology::Leaf(leaf) => {
                     if let Err(term) = path.accumulate(leaf) {
                         return Some(term);
                     }

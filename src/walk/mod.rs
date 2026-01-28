@@ -25,8 +25,8 @@
 //! tree.
 //!
 //! ```rust,no_run
-//! use wax::walk::Entry;
 //! use wax::Glob;
+//! use wax::walk::Entry;
 //!
 //! let glob = Glob::new("**/src/**").unwrap();
 //! for entry in glob.walk("projects") {
@@ -101,14 +101,15 @@ where
     //       to use `TreeEntry` as the substituent and require that `T` is `AsRef<TreeEntry>` or
     //       similar. This does not require dynamic dispatch, but places more restrictive
     //       constraints on entry types. Revisit this.
-    type Substituent<'a> = &'a dyn Entry
+    type Substituent<'a>
+        = &'a dyn Entry
     where
         Self: 'a;
 
     fn substituent(separation: &Separation<Self>) -> Self::Substituent<'_> {
         match separation {
-            Separation::Filtrate(ref filtrate) => filtrate.get(),
-            Separation::Residue(ref residue) => residue.get().get(),
+            Separation::Filtrate(filtrate) => filtrate.get(),
+            Separation::Residue(residue) => residue.get().get(),
         }
     }
 }
@@ -210,8 +211,8 @@ impl From<walkdir::Error> for WalkError {
 
 impl From<WalkError> for io::Error {
     fn from(error: WalkError) -> Self {
-        let kind = match error.kind {
-            WalkErrorKind::Io { ref error, .. } => error.kind(),
+        let kind = match &error.kind {
+            WalkErrorKind::Io { error, .. } => error.kind(),
             _ => io::ErrorKind::Other,
         };
         io::Error::new(kind, error)
@@ -233,8 +234,8 @@ enum WalkErrorKind {
 impl WalkErrorKind {
     pub fn path(&self) -> Option<&Path> {
         match self {
-            WalkErrorKind::Io { ref path, .. } => path.as_ref().map(PathBuf::as_ref),
-            WalkErrorKind::LinkCycle { ref leaf, .. } => Some(leaf.as_ref()),
+            WalkErrorKind::Io { path, .. } => path.as_ref().map(PathBuf::as_ref),
+            WalkErrorKind::LinkCycle { leaf, .. } => Some(leaf.as_ref()),
         }
     }
 }
@@ -528,8 +529,8 @@ pub trait FileIterator:
     /// combinator does not read conventionally hidden directory trees.
     ///
     /// ```rust,no_run
-    /// use wax::walk::{Entry, FileIterator};
     /// use wax::Glob;
+    /// use wax::walk::{Entry, FileIterator};
     ///
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
     /// let walk = glob.walk("./Pictures");
@@ -600,8 +601,8 @@ pub trait FileIterator:
     /// additional patterns as a filter.
     ///
     /// ```rust,no_run
-    /// use wax::walk::FileIterator;
     /// use wax::Glob;
+    /// use wax::walk::FileIterator;
     ///
     /// // Find image files by extension, but not if they are beneath a directory with a name that
     /// // suggests that they are private.
@@ -882,11 +883,11 @@ mod tests {
     use rstest::{fixture, rstest};
     use std::collections::HashSet;
 
+    use crate::Pattern;
     use crate::filter::{HierarchicalIterator, Separation, TreeResidue};
     use crate::walk::behavior::{DepthBehavior, DepthMax, DepthMin, DepthMinMax, LinkBehavior};
-    use crate::walk::harness::{self, assert_set_eq, TempTree};
+    use crate::walk::harness::{self, TempTree, assert_set_eq};
     use crate::walk::{Entry, FileIterator, PathExt};
-    use crate::Pattern;
 
     const ALL: [&str; 11] = [
         "",
@@ -1079,7 +1080,7 @@ mod tests {
             // `filter_map_tree`.
             .filter_map_tree(|_, separation| {
                 paths.insert(match separation.as_ref() {
-                    Separation::Filtrate(ref filtrate) => Filtrate(
+                    Separation::Filtrate(filtrate) => Filtrate(
                         filtrate
                             .get()
                             .as_ref()
@@ -1087,7 +1088,7 @@ mod tests {
                             .path()
                             .to_path_buf(),
                     ),
-                    Separation::Residue(ref residue) => Residue(
+                    Separation::Residue(residue) => Residue(
                         residue
                             .get()
                             .as_ref()

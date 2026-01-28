@@ -48,8 +48,8 @@ impl<'t> Glob<'t> {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use wax::walk::Entry;
     /// use wax::Glob;
+    /// use wax::walk::Entry;
     ///
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
     /// for entry in glob.walk("./Pictures") {
@@ -64,8 +64,8 @@ impl<'t> Glob<'t> {
     /// when matching [exhaustive negations][`Program::is_exhaustive`].**
     ///
     /// ```rust,no_run
-    /// use wax::walk::{Entry, FileIterator};
     /// use wax::Glob;
+    /// use wax::walk::{Entry, FileIterator};
     ///
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg,png}").unwrap();
     /// for entry in glob
@@ -108,8 +108,8 @@ impl<'t> Glob<'t> {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use wax::walk::{Entry, WalkBehavior};
     /// use wax::Glob;
+    /// use wax::walk::{Entry, WalkBehavior};
     ///
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
     /// for entry in glob.walk_with_behavior("./Pictures", WalkBehavior::default()) {
@@ -123,8 +123,8 @@ impl<'t> Glob<'t> {
     /// [`LinkBehavior`].
     ///
     /// ```rust,no_run
-    /// use wax::walk::{Entry, LinkBehavior};
     /// use wax::Glob;
+    /// use wax::walk::{Entry, LinkBehavior};
     ///
     /// let glob = Glob::new("**/*.txt").unwrap();
     /// for entry in glob.walk_with_behavior("/var/log", LinkBehavior::ReadTarget) {
@@ -438,15 +438,16 @@ impl FilterAnyProgram {
         use FilterAnyProgram::{Exhaustive, Nonexhaustive, Partitioned};
 
         match self {
-            Exhaustive(ref exhaustive) | Partitioned { ref exhaustive, .. }
+            Exhaustive(exhaustive) | Partitioned { exhaustive, .. }
                 if exhaustive.is_match(candidate.as_ref()) =>
             {
                 Some(EntryResidue::Tree)
             },
-            Nonexhaustive(ref nonexhaustive)
-            | Partitioned {
-                ref nonexhaustive, ..
-            } if nonexhaustive.is_match(candidate.as_ref()) => Some(EntryResidue::File),
+            Nonexhaustive(nonexhaustive) | Partitioned { nonexhaustive, .. }
+                if nonexhaustive.is_match(candidate.as_ref()) =>
+            {
+                Some(EntryResidue::File)
+            },
             _ => None,
         }
     }
@@ -572,7 +573,7 @@ impl Entry for GlobEntry {
     }
 
     fn metadata(&self) -> Result<Metadata, WalkError> {
-        self.entry.metadata().map_err(WalkError::from)
+        self.entry.metadata()
     }
 
     fn depth(&self) -> usize {

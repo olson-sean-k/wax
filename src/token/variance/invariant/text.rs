@@ -2,12 +2,12 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 
+use crate::PATHS_ARE_CASE_INSENSITIVE;
 use crate::encode;
 use crate::token::variance::invariant::{Invariant, UnitBound, Zero};
 use crate::token::variance::natural::VariantRange;
 use crate::token::variance::ops::{self, Conjunction, Disjunction, Product};
 use crate::token::variance::{Boundedness, TokenVariance, Variance};
-use crate::PATHS_ARE_CASE_INSENSITIVE;
 
 use Fragment::{Nominal, Structural};
 
@@ -225,7 +225,7 @@ impl<'t> Fragment<'t> {
 
     pub fn as_string(&self) -> &Cow<'t, str> {
         match self {
-            Nominal(ref text) | Structural(ref text) => text,
+            Nominal(text) | Structural(text) => text,
         }
     }
 }
@@ -251,7 +251,7 @@ impl<'t> Conjunction for Fragment<'t> {
 impl<'t> PartialEq for Fragment<'t> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Nominal(ref left), Nominal(ref right)) => {
+            (Nominal(left), Nominal(right)) => {
                 if PATHS_ARE_CASE_INSENSITIVE {
                     // This comparison uses Unicode simple case folding. It would be better to use
                     // full case folding (and better still to use case folding appropriate for the
@@ -265,7 +265,7 @@ impl<'t> PartialEq for Fragment<'t> {
                     left == right
                 }
             },
-            (Structural(ref left), Structural(ref right)) => left == right,
+            (Structural(left), Structural(right)) => left == right,
             _ => false,
         }
     }

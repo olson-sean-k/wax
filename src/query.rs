@@ -25,7 +25,7 @@ impl VariantRange {
     /// Gets the lower bound of the range.
     pub fn lower(&self) -> Boundedness<NonZeroUsize> {
         match self {
-            Bounded(ref range) => range.lower(),
+            Bounded(range) => range.lower(),
             _ => Unbounded,
         }
     }
@@ -33,7 +33,7 @@ impl VariantRange {
     /// Gets the upper bound of the range.
     pub fn upper(&self) -> Boundedness<NonZeroUsize> {
         match self {
-            Bounded(ref range) => range.upper(),
+            Bounded(range) => range.upper(),
             _ => Unbounded,
         }
     }
@@ -114,8 +114,8 @@ impl<T, B> Variance<T, B> {
     /// Produces a new `Variance` that contains a reference `self`, leaving `self` in place.
     pub fn as_ref(&self) -> Variance<&T, &B> {
         match self {
-            Variance::Invariant(ref invariant) => Variance::Invariant(invariant),
-            Variance::Variant(ref bound) => Variance::Variant(bound),
+            Variance::Invariant(invariant) => Variance::Invariant(invariant),
+            Variance::Variant(bound) => Variance::Variant(bound),
         }
     }
 
@@ -283,12 +283,7 @@ impl When {
 
 impl From<bool> for When {
     fn from(is_always: bool) -> Self {
-        if is_always {
-            When::Always
-        }
-        else {
-            When::Never
-        }
+        if is_always { When::Always } else { When::Never }
     }
 }
 

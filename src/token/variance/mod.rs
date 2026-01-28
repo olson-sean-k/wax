@@ -88,8 +88,8 @@ impl<T, B> Variance<T, B> {
 
     pub fn as_ref(&self) -> Variance<&T, &B> {
         match self {
-            Variance::Invariant(ref invariant) => Variance::Invariant(invariant),
-            Variance::Variant(ref bound) => Variance::Variant(bound),
+            Variance::Invariant(invariant) => Variance::Invariant(invariant),
+            Variance::Variant(bound) => Variance::Variant(bound),
         }
     }
 
@@ -132,7 +132,7 @@ impl<T, B> Variance<T, Boundedness<B>> {
     pub fn is_unbounded(&self) -> bool {
         self.as_ref()
             .variant()
-            .map_or(false, Boundedness::is_unbounded)
+            .is_some_and(Boundedness::is_unbounded)
     }
 }
 
@@ -140,7 +140,7 @@ impl<T> Variance<T, VariantRange> {
     pub fn has_upper_bound(&self) -> bool {
         self.as_ref()
             .variant()
-            .map_or(true, |range| range.upper().into_bound().is_bounded())
+            .is_none_or(|range| range.upper().into_bound().is_bounded())
     }
 }
 
@@ -316,7 +316,7 @@ impl Sequencer for TreeExhaustiveness {
         parent: ParentToken<'i, 't, A>,
     ) -> impl Iterator<Item = ChildToken<'i, 't, A>> {
         parent.into_tokens().rev().take_while(|token| {
-            token.as_ref().as_leaf().map_or(true, |leaf| {
+            token.as_ref().as_leaf().is_none_or(|leaf| {
                 if let Some(Boundary::Separator) = leaf.boundary() {
                     true
                 }
@@ -352,7 +352,7 @@ impl<'t, A> Fold<'t, A> for TreeExhaustiveness {
                 .as_ref()
                 .map(BoundaryTerm::is_exhaustive)
                 .as_ref()
-                .map_or(false, When::is_maybe_true)
+                .is_some_and(When::is_maybe_true)
             {
                 sum
             }
@@ -483,7 +483,7 @@ mod tests {
     use crate::query::When;
     use crate::token::parse;
     use crate::token::variance::invariant::{Depth, Size, Text};
-    use crate::token::variance::{harness, TokenVariance, Variance};
+    use crate::token::variance::{TokenVariance, Variance, harness};
 
     use When::{Always, Never, Sometimes};
 

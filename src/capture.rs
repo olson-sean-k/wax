@@ -58,8 +58,8 @@ impl<'t> MaybeOwnedText<'t> {
     #[must_use]
     fn to_owned(&self) -> MaybeOwnedText<'static> {
         match self {
-            MaybeOwnedText::Borrowed(ref borrowed) => OwnedText::from(borrowed).into(),
-            MaybeOwnedText::Owned(ref owned) => owned.clone().into(),
+            MaybeOwnedText::Borrowed(borrowed) => OwnedText::from(borrowed).into(),
+            MaybeOwnedText::Owned(owned) => owned.clone().into(),
         }
     }
 }
@@ -162,15 +162,15 @@ impl<'t> MatchedText<'t> {
     ///
     /// [`Program`]: crate::Program
     pub fn get(&self, index: usize) -> Option<&str> {
-        match self.inner {
-            MaybeOwnedText::Borrowed(ref captures) => {
+        match &self.inner {
+            MaybeOwnedText::Borrowed(captures) => {
                 captures.get(index).map(|capture| capture.as_str())
             },
-            MaybeOwnedText::Owned(ref captures) => captures.get(index),
+            MaybeOwnedText::Owned(captures) => captures.get(index),
         }
     }
 
-    pub fn to_candidate_path(&self) -> CandidatePath {
+    pub fn to_candidate_path(&self) -> CandidatePath<'_> {
         CandidatePath::from(self.complete())
     }
 }

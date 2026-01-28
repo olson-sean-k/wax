@@ -8,10 +8,10 @@ use tardar::{
 };
 use thiserror::Error;
 
+use crate::Glob;
 use crate::diagnostics::{SpanExt, Spanned};
 use crate::rule::{self, Checked};
 use crate::token::{self, Boundary, ExpressionMetadata, TokenTree, Tokenized};
-use crate::Glob;
 
 /// APIs for diagnosing globs.
 impl<'t> Glob<'t> {
@@ -86,7 +86,7 @@ pub struct TerminatingSeparatorWarning<'t> {
 
 fn parse_and_diagnose(
     expression: &str,
-) -> DiagnosticResult<Checked<Tokenized<ExpressionMetadata>>> {
+) -> DiagnosticResult<'_, Checked<Tokenized<'_, ExpressionMetadata>>> {
     token::parse(expression)
         .into_error_diagnostic()
         .and_then_diagnose(|tree| rule::check(tree).into_error_diagnostic())
@@ -168,7 +168,7 @@ pub mod harness {
         assert!(
             diagnostics.iter().any(|diagnostic| diagnostic
                 .code()
-                .map_or(false, |code| code.to_string() == expected)),
+                .is_some_and(|code| code.to_string() == expected)),
             "expected diagnostic code `{}`, but not found: diagnostics: `{:?}`",
             expected,
             diagnostics,
