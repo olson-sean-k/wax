@@ -37,7 +37,7 @@ const_format = "^0.2.0"
 itertools = "^0.11.0"
 nom = "^7.0.0"
 pori = "=0.0.0"
-thiserror = "^1.0.0"
+thiserror = "^2.0.0"
 
 [dependencies.miette]
 version = "^5.10.0"
