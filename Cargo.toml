@@ -11,7 +11,7 @@ license = "MIT"
 keywords = [
     "glob",
     "pattern",
-    "regex"
+    "regex",
 ]
 categories = ["filesystem"]
 
@@ -19,7 +19,7 @@ categories = ["filesystem"]
 all-features = true
 rustdoc-args = [
     "--cfg",
-    "docsrs"
+    "docsrs",
 ]
 
 [features]
@@ -50,7 +50,7 @@ default-features = false
 features = [
     "perf",
     "std",
-    "unicode-case"
+    "unicode-case",
 ]
 
 [dependencies.tardar]
